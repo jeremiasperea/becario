@@ -5,14 +5,14 @@ No hay administración desde Telegram a propósito: agregar o quitar gente
 del cluster es una decisión que se toma fuera del chat.
 
 Uso (interactivo, recomendado para gente sin experiencia):
-    python scripts/manage_users.py add   # te pregunta los datos uno por uno
+    python3 scripts/manage_users.py add   # te pregunta los datos uno por uno
 
 Uso (con flags, para automatizar):
-    python scripts/manage_users.py add --telegram-id 111111111 \
+    python3 scripts/manage_users.py add --telegram-id 111111111 \
         --ssh-user jperez --ssh-key /home/becario/.ssh/id_jperez \
         --name "Juan Pérez"
-    python scripts/manage_users.py list
-    python scripts/manage_users.py remove --telegram-id 111111111
+    python3 scripts/manage_users.py list
+    python3 scripts/manage_users.py remove --telegram-id 111111111
 """
 from __future__ import annotations
 

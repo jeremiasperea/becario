@@ -4,13 +4,15 @@
 y las cablea entre sí (Dependency Injection manual — no hace falta más).
 
 Uso:
-    export BECARIO_BOT_TOKEN=...
-    export BECARIO_SSH_HOST=cluster.ejemplo.edu.ar
-    export BECARIO_USERS_FILE=users.json   # roster del grupo, ver README
+    python3 main.py
 
-Para agregar/quitar miembros del grupo (no se hace por Telegram):
-    python scripts/manage_users.py add --telegram-id 111111111 \
-        --ssh-user jperez --ssh-key ~/.ssh/id_jperez --name "Juan Pérez"
+La primera vez, si no encuentra configuración, un asistente interactivo pide
+token del bot, host del cluster y Ollama, y los guarda en un `.env` local
+(gitignoreado). El entorno tiene prioridad sobre el `.env` si preferís exportar
+las variables a mano.
+
+Para registrar tu cuenta del cluster (no se hace por Telegram):
+    python3 scripts/manage_users.py add
 """
 from __future__ import annotations
 
@@ -37,6 +39,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx loguea la URL completa en INFO, y esa URL incluye el token del bot.
+# Lo subimos a WARNING para no filtrar el token a los logs (aplica también a
+# las llamadas internas de python-telegram-bot).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def build_bot(settings: Settings) -> TelegramBot:
@@ -87,6 +93,41 @@ def _roster_is_empty(users_file: str) -> bool:
     return not data.get("users")
 
 
+def _check_telegram_token(token: str, timeout: float = 10.0) -> None:
+    """Valida el token contra la API de Telegram ANTES de arrancar el polling.
+
+    python-telegram-bot no propaga el error de token inválido fuera de
+    run_polling() (lo maneja en su retry loop interno y lo loguea con un
+    traceback), así que hacemos una verificación temprana con un mensaje claro.
+    """
+    import httpx
+
+    try:
+        resp = httpx.get(
+            f"https://api.telegram.org/bot{token}/getMe", timeout=timeout
+        )
+    except httpx.HTTPError:
+        print(
+            "\n❌ No pude conectarme a Telegram para verificar el token.\n"
+            "   Revisá tu conexión a internet y volvé a intentar."
+        )
+        raise SystemExit(1)
+
+    if resp.status_code == 200 and resp.json().get("ok"):
+        return  # token válido
+    if resp.status_code in (401, 404):
+        print(
+            "\n❌ El token del bot de Telegram no es válido.\n"
+            "   Verificá el token con @BotFather, borrá el archivo .env y volvé a correr."
+        )
+        raise SystemExit(1)
+    print(
+        f"\n❌ Telegram respondió algo inesperado (HTTP {resp.status_code}) al "
+        "verificar el token.\n   Volvé a intentar en un rato."
+    )
+    raise SystemExit(1)
+
+
 def main() -> None:
     # 1) Si falta la config obligatoria, guiar al usuario para crearla.
     if not required_config_present():
@@ -105,27 +146,15 @@ def main() -> None:
         print(
             "\n⚠️  Todavía no registraste tu cuenta del cluster, así que el bot\n"
             "    no va a poder ejecutar nada hasta que lo hagas. Corré:\n\n"
-            "        python scripts/manage_users.py add\n"
+            "        python3 scripts/manage_users.py add\n"
         )
 
-    # 4) Arrancar el bot, traduciendo errores de arranque a mensajes claros.
-    try:
-        build_bot(settings).run()
-    except Exception as exc:  # noqa: BLE001 - queremos un mensaje amigable, no un traceback
-        name = type(exc).__name__
-        if name == "InvalidToken":
-            print(
-                "\n❌ El token del bot de Telegram no es válido.\n"
-                "   Verificá el token con @BotFather, borrá el archivo .env y volvé a correr."
-            )
-        elif name in ("NetworkError", "TimedOut"):
-            print(
-                "\n❌ No pude conectarme a Telegram. Revisá tu conexión a internet\n"
-                "   y volvé a intentar."
-            )
-        else:
-            raise
-        raise SystemExit(1)
+    # 4) Verificar el token temprano (mensaje claro en vez de un traceback de PTB).
+    _check_telegram_token(settings.telegram_token)
+
+    # 5) Arrancar el bot. El token ya fue validado; una caída de red posterior
+    #    la maneja PTB con su propio backoff.
+    build_bot(settings).run()
 
 
 if __name__ == "__main__":

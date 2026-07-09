@@ -52,10 +52,10 @@ Administrar el roster (dar de alta/baja a alguien) es una operación fuera
 de Telegram, con `scripts/manage_users.py`:
 
 ```bash
-python scripts/manage_users.py add --telegram-id 111111111 \
+python3 scripts/manage_users.py add --telegram-id 111111111 \
     --ssh-user jperez --ssh-key /home/becario/.ssh/id_jperez --name "Juan Pérez"
-python scripts/manage_users.py list
-python scripts/manage_users.py remove --telegram-id 111111111
+python3 scripts/manage_users.py list
+python3 scripts/manage_users.py remove --telegram-id 111111111
 ```
 
 ### Seguridad (defensa en profundidad)
@@ -78,13 +78,13 @@ pip install -e ".[dev]"
 
 # 1) Arrancá: la primera vez, el asistente te pide token del bot, host del
 #    cluster y Ollama, y crea el .env por vos.
-python main.py
+python3 main.py
 
 # 2) Registrá tu cuenta del cluster (interactivo: te pregunta los datos):
-python scripts/manage_users.py add
+python3 scripts/manage_users.py add
 
 # 3) Volvé a arrancar; ya no vuelve a pedir nada.
-python main.py
+python3 main.py
 ```
 
 Los secretos y datos locales (`.env`, `users.json`, `becario.db`) están en
@@ -120,8 +120,8 @@ WantedBy=multi-user.target
 ## Tests
 
 ```bash
-python -m pytest            # 144 tests
-python -m pytest --cov=becario --cov-report=term-missing
+python3 -m pytest            # 154 tests
+python3 -m pytest --cov=becario --cov-report=term-missing
 ```
 
 La suite cubre: sanitización contra inyección de shell y SQL, parseo
