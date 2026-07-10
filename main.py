@@ -46,7 +46,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def build_bot(settings: Settings) -> TelegramBot:
-    router = OllamaRouter(base_url=settings.ollama_url, model=settings.ollama_model)
+    router = OllamaRouter(
+        base_url=settings.ollama_url,
+        model=settings.ollama_model,
+        timeout=settings.ollama_timeout_seconds,
+    )
     registry = JSONUserRegistry(settings.users_file)
     cluster_factory = SSHClusterGatewayFactory(
         default_host=settings.ssh_host, default_port=settings.ssh_port

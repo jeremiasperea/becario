@@ -90,6 +90,7 @@ class Settings:
     users_file: str = "users.json"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:12b"
+    ollama_timeout_seconds: float = 120.0
     db_path: str = "becario.db"
     structures_dir: str = "./structures"
     confirmation_ttl_seconds: float = 600.0
@@ -105,6 +106,7 @@ class Settings:
             users_file=os.environ.get("BECARIO_USERS_FILE", "users.json"),
             ollama_url=os.environ.get("BECARIO_OLLAMA_URL", "http://localhost:11434"),
             ollama_model=os.environ.get("BECARIO_OLLAMA_MODEL", "gemma4:12b"),
+            ollama_timeout_seconds=_float_env("BECARIO_OLLAMA_TIMEOUT", "120"),
             db_path=os.environ.get("BECARIO_DB_PATH", "becario.db"),
             structures_dir=os.environ.get("BECARIO_STRUCTURES_DIR", "./structures"),
             confirmation_ttl_seconds=_float_env("BECARIO_CONFIRM_TTL", "600"),

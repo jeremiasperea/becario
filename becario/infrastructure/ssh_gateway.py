@@ -88,16 +88,20 @@ class SSHClusterGateway:
     # ClusterGateway
     # ------------------------------------------------------------------
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
-        script = "\n".join(
-            [
-                "#!/bin/bash",
-                f"#SBATCH --job-name={req.job_name}",
-                f"#SBATCH --partition={req.partition}",
-                f"#SBATCH --nodes={req.nodes}",
-                f"#SBATCH --time={req.time_limit}",
-                f"bash {shlex.quote(req.script_path)}",
-            ]
-        )
+        lines = [
+            "#!/bin/bash",
+            f"#SBATCH --job-name={req.job_name}",
+        ]
+        # "default" es el relleno de la capa de aplicación cuando el usuario no
+        # pidió partición: se omite la directiva y decide la default del cluster.
+        if req.partition != "default":
+            lines.append(f"#SBATCH --partition={req.partition}")
+        lines += [
+            f"#SBATCH --nodes={req.nodes}",
+            f"#SBATCH --time={req.time_limit}",
+            f"bash {shlex.quote(req.script_path)}",
+        ]
+        script = "\n".join(lines)
         # sbatch acepta el script por stdin: evitamos archivo temporal remoto.
         command = f"sbatch <<'BECARIO_EOF'\n{script}\nBECARIO_EOF"
         result = self._run(command)
