@@ -130,6 +130,7 @@ class SQLiteJobTracker:
                     chat_id INTEGER NOT NULL,
                     ssh_user TEXT NOT NULL,
                     job_name TEXT NOT NULL,
+                    script_path TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'PENDING',
                     notified INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now')),
@@ -137,18 +138,25 @@ class SQLiteJobTracker:
                 )
                 """
             )
+            # Migración suave: bases creadas antes de que existiera script_path.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(trabajos_monitoreados)")}
+            if "script_path" not in columns:
+                conn.execute(
+                    "ALTER TABLE trabajos_monitoreados "
+                    "ADD COLUMN script_path TEXT NOT NULL DEFAULT ''"
+                )
 
     def track(self, job: TrackedJob) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO trabajos_monitoreados
-                    (job_id, owner_id, chat_id, ssh_user, job_name, status, notified)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (job_id, owner_id, chat_id, ssh_user, job_name, script_path, status, notified)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id, job.owner_id, job.chat_id, job.ssh_user,
-                    job.job_name, job.status.value, int(job.notified),
+                    job.job_name, job.script_path, job.status.value, int(job.notified),
                 ),
             )
 
@@ -161,6 +169,7 @@ class SQLiteJobTracker:
             TrackedJob(
                 job_id=r["job_id"], owner_id=r["owner_id"], chat_id=r["chat_id"],
                 ssh_user=r["ssh_user"], job_name=r["job_name"],
+                script_path=r["script_path"],
                 status=JobStatus(r["status"]), notified=bool(r["notified"]),
             )
             for r in rows

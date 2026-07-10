@@ -315,6 +315,19 @@ class JobStatus(str, Enum):
         corresponde notificar y dejar de rastrearlo."""
         return frozenset({cls.COMPLETED, cls.FAILED, cls.CANCELLED, cls.TIMEOUT})
 
+    @property
+    def label_es(self) -> str:
+        """Nombre del estado para mostrarle al usuario (en español)."""
+        return {
+            JobStatus.PENDING: "en cola",
+            JobStatus.RUNNING: "corriendo",
+            JobStatus.COMPLETED: "completado",
+            JobStatus.FAILED: "falló",
+            JobStatus.CANCELLED: "cancelado",
+            JobStatus.TIMEOUT: "agotó el tiempo límite",
+            JobStatus.UNKNOWN: "desconocido",
+        }[self]
+
     @classmethod
     def from_slurm(cls, raw: Optional[str]) -> "JobStatus":
         """Traduce el campo State de sacct a nuestro estado normalizado.
@@ -355,6 +368,7 @@ class TrackedJob:
     chat_id: int
     ssh_user: str
     job_name: str
+    script_path: str = ""  # ruta remota del script: su directorio es la corrida
     status: JobStatus = JobStatus.PENDING
     notified: bool = False
     created_at: float = field(default_factory=time.time)

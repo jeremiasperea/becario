@@ -68,6 +68,8 @@ class Reply:
     text: str
     needs_confirmation: bool = False
     confirmation_token: Optional[str] = None
+    # Pide fuente de ancho fijo (tablas): cada canal decide cómo lograrlo.
+    monospace: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,28 @@ class _Ctx:
     user_id: int
     identity: ClusterIdentity
     cluster: ClusterGateway
+
+
+def _format_history_table(rows: list[dict]) -> str:
+    """Tabla de ancho fijo con el historial. Pensada para mostrarse con
+    fuente monoespaciada (ver `Reply.monospace`)."""
+    headers = ("Fecha", "Job", "Nombre", "Estado")
+    table = [
+        (
+            str(r.get("fecha", ""))[:16],  # sin segundos, ocupa menos
+            str(r.get("job_id", "")),
+            str(r.get("nombre_trabajo", "")) or "-",
+            str(r.get("estado", "")),
+        )
+        for r in rows
+    ]
+    widths = [max(len(h), *(len(t[i]) for t in table)) for i, h in enumerate(headers)]
+
+    def fila(cells: tuple[str, ...]) -> str:
+        return "  ".join(c.ljust(w) for c, w in zip(cells, widths)).rstrip()
+
+    separador = "-" * (sum(widths) + 2 * (len(widths) - 1))
+    return "\n".join([fila(headers), separador] + [fila(t) for t in table])
 
 
 class BecarioService:
@@ -158,9 +182,6 @@ class BecarioService:
         if action.intent is Intent.SUBMIT_SLURM:
             req = SlurmJobRequest(**action.payload)
             result = cluster.submit_job(req)
-            icon = "🚀"
-            status = "✅" if result.ok else "❌"
-            text = f"{status} {icon} {result.message}"
             if result.ok and result.job_id:
                 self._job_tracker.track(TrackedJob(
                     job_id=result.job_id,
@@ -168,16 +189,41 @@ class BecarioService:
                     chat_id=action.chat_id,
                     ssh_user=identity.ssh_user,
                     job_name=req.job_name,
+                    script_path=req.script_path,
                 ))
-                text += f"\n📌 Seguimiento activado para el job {result.job_id}: te aviso cuando termine."
+                self._history.add(
+                    owner_id=requester_id, job_id=result.job_id,
+                    nombre_trabajo=req.job_name, estado="enviado",
+                )
+                text = (
+                    f"✅ 🚀 Trabajo enviado al cluster.\n"
+                    f"• Job: {result.job_id}\n"
+                    f"• Nombre: {req.job_name}\n"
+                    f"• Partición: {req.partition if req.partition != 'default' else 'la default del cluster'}\n"
+                    f"📌 Seguimiento activado para el job {result.job_id}: te aviso cuando termine."
+                )
+            elif result.ok:
+                # sbatch aceptó el trabajo pero no pudimos leer el número de job.
+                text = (
+                    f"✅ 🚀 {result.message}\n"
+                    "⚠️ No pude leer el número de job, así que no voy a poder avisarte "
+                    "cuando termine. Consultalo con «estado de mis trabajos»."
+                )
+            else:
+                text = f"❌ 🚀 {result.message}"
             return Reply(text=text)
         elif action.intent is Intent.CANCEL_JOB:
             jid = JobId(value=action.payload["job_id"])
             result = cluster.cancel_job(jid)
             if result.ok:
                 # Ya lo sabe (lo canceló él mismo): evita el aviso duplicado
-                # del monitor cuando vea el estado CANCELLED más tarde.
+                # del monitor cuando vea el estado CANCELLED más tarde. Como el
+                # monitor tampoco lo va a registrar, queda asentado acá.
                 self._job_tracker.mark_notified(jid.value, requester_id)
+                self._history.add(
+                    owner_id=requester_id, job_id=jid.value,
+                    nombre_trabajo="", estado="cancelado",
+                )
             status = "✅" if result.ok else "❌"
             return Reply(text=f"{status} 🛑 {result.message}")
         else:  # pragma: no cover - defensivo
@@ -270,8 +316,7 @@ class BecarioService:
         rows = self._history.search(flt)
         if not rows:
             return Reply(text="📋 Historial:\nNo se encontraron registros.")
-        lines = [" | ".join(f"{k}: {v}" for k, v in row.items()) for row in rows]
-        return Reply(text="📋 Historial:\n" + "\n".join(lines))
+        return Reply(text="📋 Historial:\n" + _format_history_table(rows), monospace=True)
 
     def _modify_structure(self, ctx: _Ctx, params: dict) -> Reply:
         formula = params.get("formula") or params.get("formula_quimica")

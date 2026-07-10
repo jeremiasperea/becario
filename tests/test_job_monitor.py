@@ -110,7 +110,7 @@ class TestJobMonitorService:
         assert "1" in notes[0].text
         assert tracker.notified_calls == [("1", ALICE.telegram_user_id)]
         assert len(history.added) == 1
-        assert history.added[0]["estado"] == "COMPLETED"
+        assert history.added[0]["estado"] == "completado"
 
         # Una segunda vuelta no vuelve a notificar (ya no está en active_jobs).
         notes2 = monitor.poll_and_notify()

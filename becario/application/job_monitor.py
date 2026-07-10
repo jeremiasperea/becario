@@ -8,6 +8,7 @@ programación periódica (cada cuánto correr `poll_and_notify`) vive en
 from __future__ import annotations
 
 import logging
+import posixpath
 from dataclasses import dataclass
 
 from ..domain.models import JobId, JobStatus
@@ -69,11 +70,15 @@ class JobMonitorService:
             icon = "✅" if new_status is JobStatus.COMPLETED else "⚠️"
             text = (
                 f"{icon} Tu trabajo {job.job_id} ({job.job_name}) terminó: "
-                f"{new_status.value.lower()}"
+                f"{new_status.label_es}."
             )
+            if job.script_path:
+                # El directorio del script es donde quedaron los resultados
+                # (los scripts de cálculo hacen cd a su propio directorio).
+                text += f"\n📂 Corrida en: {posixpath.dirname(job.script_path)}"
             self._history.add(
                 owner_id=job.owner_id, job_id=job.job_id,
-                nombre_trabajo=job.job_name, estado=new_status.value,
+                nombre_trabajo=job.job_name, estado=new_status.label_es,
             )
             self._tracker.mark_notified(job.job_id, job.owner_id)
             notifications.append(Notification(chat_id=job.chat_id, text=text))

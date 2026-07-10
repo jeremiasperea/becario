@@ -139,6 +139,13 @@ class FakeHistory:
     def __init__(self, rows: Optional[list[dict]] = None):
         self.rows = rows or []
         self.last_filter: Optional[HistoryFilter] = None
+        self.added: list[dict] = []
+
+    def add(self, owner_id: int, job_id: str, nombre_trabajo: str, estado: str) -> None:
+        self.added.append({
+            "owner_id": owner_id, "job_id": job_id,
+            "nombre_trabajo": nombre_trabajo, "estado": estado,
+        })
 
     def search(self, flt: HistoryFilter) -> list[dict]:
         self.last_filter = flt

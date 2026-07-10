@@ -9,6 +9,7 @@ sobre "quién puede usar el bot" (una allowlist acá y el roster allá).
 """
 from __future__ import annotations
 
+import html
 import logging
 import tempfile
 from pathlib import Path
@@ -80,6 +81,15 @@ class TelegramBot:
             if reply.needs_confirmation and reply.confirmation_token
             else None
         )
+        if reply.monospace:
+            # <pre> respeta el ancho fijo (tablas); el texto va escapado para
+            # que ningún carácter del contenido se interprete como HTML.
+            await update.effective_chat.send_message(
+                f"<pre>{html.escape(reply.text)}</pre>",
+                reply_markup=markup,
+                parse_mode="HTML",
+            )
+            return
         await update.effective_chat.send_message(reply.text, reply_markup=markup)
 
     # ------------------------------------------------------------------
