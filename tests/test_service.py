@@ -622,6 +622,7 @@ class TestDuplicateDetection:
 
         reply = self._prepare(service, router, self.W_RELAX)
         assert "ESTO YA SE CORRIÓ" in reply.text
+        assert reply.text.startswith("🔁")  # el aviso va PRIMERO, no enterrado
         assert "4242" in reply.text  # el job de la corrida previa
         assert reply.needs_confirmation  # igual se puede correr de nuevo
 

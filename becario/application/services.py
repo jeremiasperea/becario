@@ -678,10 +678,13 @@ class BecarioService:
             request_params=dict(params),
         )
         token = self._confirmations.put(action)
+        # El aviso de duplicado va PRIMERO: al final de un mensaje largo
+        # pasa desapercibido.
+        warning_block = f"{duplicate_note}\n\n" if duplicate_note else ""
         return Reply(
             text=(
-                f"✅ Inputs generados y subidos al cluster.\n\n"
-                f"⚠️ ¿Confirmás el envío?\n\n{action.description}{duplicate_note}"
+                f"{warning_block}✅ Inputs generados y subidos al cluster.\n\n"
+                f"⚠️ ¿Confirmás el envío?\n\n{action.description}"
             ),
             needs_confirmation=True,
             confirmation_token=token,
@@ -699,14 +702,14 @@ class BecarioService:
         exact = next((r for r in rows if r.get("fingerprint") == fingerprint), None)
         if exact is not None:
             header = (
-                f"\n\n🔁 Ojo: ESTO YA SE CORRIÓ, con exactamente las mismas "
+                f"🔁 OJO: ESTO YA SE CORRIÓ, con exactamente las mismas "
                 f"condiciones, el {exact.get('fecha', '?')} "
                 f"(job {exact.get('job_id', '?')}):\n📂 {exact.get('run_dir', '?')}"
             )
         else:
             prev = rows[0]
             header = (
-                f"\n\n🔁 Ojo: ya corriste algo muy similar (mismo material y "
+                f"🔁 OJO: ya corriste algo muy similar (mismo material y "
                 f"tipo de cálculo) el {prev.get('fecha', '?')} "
                 f"(job {prev.get('job_id', '?')}):\n📂 {prev.get('run_dir', '?')}"
             )
