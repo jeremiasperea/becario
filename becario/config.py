@@ -104,6 +104,10 @@ class Settings:
     # Dónde viven las corridas en el cluster (relativa al home remoto
     # salvo que empiece con /).
     remote_base: str = "becario_runs"
+    # Transcripción local de notas de voz (faster-whisper). "off" la apaga;
+    # tiny/base/small/medium según la RAM disponible.
+    whisper_model: str = "small"
+    whisper_language: str = "es"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -125,4 +129,7 @@ class Settings:
             vasp_prelude=os.environ.get("BECARIO_VASP_PRELUDE", "").strip(),
             remote_base=os.environ.get("BECARIO_REMOTE_BASE", "becario_runs").strip()
             or "becario_runs",
+            whisper_model=os.environ.get("BECARIO_WHISPER_MODEL", "small").strip()
+            or "small",
+            whisper_language=os.environ.get("BECARIO_WHISPER_LANGUAGE", "es").strip(),
         )

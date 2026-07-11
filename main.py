@@ -90,11 +90,29 @@ def build_bot(settings: Settings) -> TelegramBot:
         tracker=job_tracker,
         history=history,
     )
+    transcriber = None
+    if settings.whisper_model.lower() != "off":
+        try:
+            from becario.infrastructure.whisper_transcriber import (
+                FasterWhisperTranscriber,
+            )
+
+            transcriber = FasterWhisperTranscriber(
+                model_size=settings.whisper_model,
+                language=settings.whisper_language,
+            )
+        except ImportError:
+            logging.getLogger(__name__).warning(
+                "faster-whisper no está instalado: las notas de voz quedan "
+                "deshabilitadas (pip install faster-whisper)."
+            )
+
     return TelegramBot(
         token=settings.telegram_token,
         service=service,
         job_monitor=job_monitor,
         monitor_interval_seconds=settings.monitor_interval_seconds,
+        transcriber=transcriber,
     )
 
 

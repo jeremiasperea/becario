@@ -120,6 +120,9 @@ class TelegramBot:
                 "🎙️ No pude entender el audio, probá de nuevo."
             )
             return
+        # Mostrar qué se entendió ANTES de actuar: si la transcripción vino
+        # mal, el usuario lo ve enseguida y puede repetir.
+        await update.effective_chat.send_message(f"🎙️ Entendí: «{text.strip()}»")
         reply = self._service.handle_text(
             chat_id=update.effective_chat.id,
             user_id=update.effective_user.id,
