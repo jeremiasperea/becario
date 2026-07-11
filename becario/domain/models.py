@@ -31,6 +31,7 @@ class Intent(str, Enum):
     CHECK_STATUS = "revisar_estado"
     CANCEL_JOB = "cancelar_calculo"
     CREATE_DIR = "crear_directorio"
+    LIST_FILES = "listar_archivos"
     UNKNOWN = "error"
 
     @classmethod
@@ -135,6 +136,21 @@ class RemoteDirRequest(BaseModel):
 
     Misma política de rutas que `remote_dest_dir` en `StructureRequest`:
     absoluta, sin metacaracteres de shell y sin '..'.
+    """
+
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def _v_path(cls, v: str) -> str:
+        return _validate_remote_dir_path(v.strip())
+
+
+class ListFilesRequest(BaseModel):
+    """Directorio remoto validado a listar (solo lectura).
+
+    Comparte la política de rutas de `RemoteDirRequest` vía
+    `_validate_remote_dir_path`.
     """
 
     path: str

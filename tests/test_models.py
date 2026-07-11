@@ -11,6 +11,7 @@ from becario.domain.models import (
     HistoryFilter,
     Intent,
     JobId,
+    ListFilesRequest,
     PendingAction,
     RemoteDirRequest,
     SlurmJobRequest,
@@ -128,6 +129,19 @@ class TestRemoteDirRequest:
     def test_injection_rejected(self, evil):
         with pytest.raises(ValidationError):
             RemoteDirRequest(path=evil)
+
+
+class TestListFilesRequest:
+    """Comparte `_validate_remote_dir_path` con `RemoteDirRequest`: basta
+    verificar que la política compartida rige también acá."""
+
+    def test_valid_path_and_whitespace(self):
+        assert ListFilesRequest(path="  /data/becario_runs ").path == "/data/becario_runs"
+
+    @pytest.mark.parametrize("evil", ["relativa/x", "/tmp/../etc", "/tmp/$(id)"])
+    def test_injection_rejected(self, evil):
+        with pytest.raises(ValidationError):
+            ListFilesRequest(path=evil)
 
 
 class TestHistoryFilter:

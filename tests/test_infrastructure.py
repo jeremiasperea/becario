@@ -256,6 +256,50 @@ class TestSSHCommandConstruction:
         # El fallo llega intacto: la rama del mensaje fabricado no se activa.
         assert result is failure
 
+    def test_list_directory_uses_tree_and_quotes_path(self):
+        gw = RecordingGateway()
+        gw.list_directory("/data/becario runs")
+        assert gw.commands[0] == "tree -L 2 --noreport -- '/data/becario runs'"
+
+    def test_list_directory_failure_passes_through(self, monkeypatch):
+        # Un fallo real (no "command not found") no dispara el fallback.
+        gw = RecordingGateway()
+        failure = CommandResult(ok=False, stderr="tree: permiso denegado")
+        monkeypatch.setattr(gw, "_run", lambda cmd: failure)
+        assert gw.list_directory("/root/prohibido") is failure
+
+    def test_list_directory_falls_back_to_find_without_tree(self):
+        gw = RecordingGateway()
+        outputs = {
+            "tree": CommandResult(
+                ok=False, stderr="bash: line 1: tree: command not found"
+            ),
+            "find": CommandResult(
+                ok=True,
+                stdout=(
+                    "/data/runs/corrida_1\n"
+                    "/data/runs/corrida_1/INCAR\n"
+                    "/data/runs/corrida_2\n"
+                ),
+            ),
+        }
+        gw._run = lambda cmd: outputs["tree" if cmd.startswith("tree") else "find"]
+        result = gw.list_directory("/data/runs")
+        assert result.ok
+        assert result.stdout == (
+            "/data/runs\n  corrida_1\n    INCAR\n  corrida_2"
+        )
+
+    def test_list_directory_fallback_find_failure_passes_through(self):
+        gw = RecordingGateway()
+        find_failure = CommandResult(ok=False, stderr="find: no existe")
+        gw._run = lambda cmd: (
+            CommandResult(ok=False, stderr="tree: command not found")
+            if cmd.startswith("tree")
+            else find_failure
+        )
+        assert gw.list_directory("/data/nada") is find_failure
+
     def test_upload_creates_remote_dir_quoted(self, monkeypatch):
         gw = RecordingGateway()
         # Interceptamos SFTP: solo nos interesa el mkdir -p generado.

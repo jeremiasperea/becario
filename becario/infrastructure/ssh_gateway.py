@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 _SBATCH_JOB_ID_RE = re.compile(r"Submitted batch job (\d+)")
 
 
+def _format_tree(base: str, find_output: str) -> str:
+    """Emula la salida de `tree -L 2` a partir de `find -maxdepth 2`.
+
+    Recibe rutas absolutas (una por línea, ya ordenadas) y las convierte
+    en un árbol indentado de dos espacios por nivel, con la base arriba.
+    """
+    base_depth = len(PurePosixPath(base).parts)
+    lines = [base]
+    for raw in find_output.strip().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        parts = PurePosixPath(raw).parts
+        depth = len(parts) - base_depth
+        if depth < 1:
+            continue
+        lines.append("  " * depth + parts[-1])
+    return "\n".join(lines)
+
+
 class SSHClusterGateway:
     """Gateway al nodo login del cluster mediante paramiko."""
 
@@ -152,6 +172,21 @@ class SSHClusterGateway:
             # "listo" y no "creado": si ya existía, mkdir -p no crea nada.
             return CommandResult(ok=True, stdout=f"Directorio listo: {path}")
         return result
+
+    def list_directory(self, path: str) -> CommandResult:
+        # Vista de árbol de dos niveles. `tree` no está garantizado en
+        # todos los clusters: si falta, se emula con find + indentación.
+        result = self._run(f"tree -L 2 --noreport -- {shlex.quote(path)}")
+        if result.ok or "not found" not in result.stderr:
+            return result
+        found = self._run(f"find {shlex.quote(path)} -mindepth 1 -maxdepth 2 | sort")
+        if not found.ok:
+            return found
+        return CommandResult(
+            ok=True,
+            stdout=_format_tree(path, found.stdout),
+            stderr=found.stderr,
+        )
 
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:
         """Sube un archivo por SFTP (reutiliza la conexión paramiko)."""

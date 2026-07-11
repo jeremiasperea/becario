@@ -13,6 +13,8 @@ from becario.application.services import (
     NOT_REGISTERED_TEXT,
     BecarioService,
     HELP_TEXT,
+    _LISTING_MAX_CHARS,
+    _truncate_listing,
 )
 from becario.domain.models import (
     CalcDirResult,
@@ -75,6 +77,9 @@ class FakeCluster:
         self.made_dirs: list[str] = []
         # Si se define, make_directory devuelve esto (para simular fallos):
         self.make_directory_result: CommandResult | None = None
+        self.listed_dirs: list[str] = []
+        # Si se define, list_directory devuelve esto (fallos o listados largos):
+        self.list_directory_result: CommandResult | None = None
         self.uploads: list[tuple[str, str]] = []
         self.uploaded_dirs: list[tuple[str, str]] = []
         self.concatenated: list[tuple[tuple[str, ...], str]] = []
@@ -100,6 +105,14 @@ class FakeCluster:
         if self.make_directory_result is not None:
             return self.make_directory_result
         return CommandResult(ok=True, stdout=f"Directorio listo: {path}")
+
+    def list_directory(self, path: str) -> CommandResult:
+        self.listed_dirs.append(path)
+        if self.list_directory_result is not None:
+            return self.list_directory_result
+        return CommandResult(
+            ok=True, stdout="total 8\ndrwxr-xr-x 2 alice alice 4,0K corrida_1"
+        )
 
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:
         self.uploads.append((local_path, remote_path))
@@ -517,6 +530,130 @@ class TestCreateDirectory:
         assert reply.text.startswith("❌")
         assert "permiso denegado" in reply.text
         assert gateway.made_dirs == ["/home/alice/pruebas"]
+
+
+class TestListFiles:
+    """`listar_archivos` es de solo lectura: ejecuta directo, sin
+    confirmación, pero la ruta pasa igual por el dominio."""
+
+    def test_lists_explicit_path_on_requesters_own_account(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.LIST_FILES, params={"destino_remoto": "/data/becario_runs"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="qué archivos hay"
+        )
+        assert not reply.needs_confirmation
+        assert reply.monospace
+        assert "corrida_1" in reply.text
+        assert factory.gateways["alice"].listed_dirs == ["/data/becario_runs"]
+        assert "bob" not in factory.gateways
+
+    def test_missing_path_falls_back_to_remote_base(self, env):
+        # remote_base es relativa ("becario_runs"): se resuelve contra el
+        # home remoto, igual que al subir una corrida.
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.LIST_FILES, params={})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mostrame los archivos"
+        )
+        assert factory.gateways["alice"].listed_dirs == ["/home/alice/becario_runs"]
+        assert "corrida_1" in reply.text
+
+    @pytest.mark.parametrize(
+        "evil",
+        ["/tmp/../etc", "relativa/pruebas", "/tmp/x; rm -rf /", "/tmp/$(id)"],
+    )
+    def test_invalid_path_never_reaches_the_gateway(self, env, evil):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.LIST_FILES, params={"destino_remoto": evil})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="listá")
+        assert "Ruta inválida" in reply.text
+        assert factory.gateways["alice"].listed_dirs == []
+
+    def test_gateway_failure_is_reported_to_the_user(self, env):
+        service, router, factory, *_ = env
+        gateway = FakeCluster("alice")
+        gateway.list_directory_result = CommandResult(
+            ok=False, stderr="ls: permiso denegado"
+        )
+        factory.gateways["alice"] = gateway
+        router.next = RoutedRequest(
+            intent=Intent.LIST_FILES, params={"destino_remoto": "/data/privado"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="listá /data/privado"
+        )
+        assert reply.text.startswith("❌")
+        assert "permiso denegado" in reply.text
+
+    def test_long_listing_is_truncated(self, env):
+        service, router, factory, *_ = env
+        gateway = FakeCluster("alice")
+        long_listing = "\n".join(f"-rw-r--r-- 1 alice alice 1K archivo_{i}.dat" for i in range(200))
+        assert len(long_listing) > 3500  # el fake tiene que superar el límite
+        gateway.list_directory_result = CommandResult(ok=True, stdout=long_listing)
+        factory.gateways["alice"] = gateway
+        router.next = RoutedRequest(
+            intent=Intent.LIST_FILES, params={"destino_remoto": "/data/becario_runs"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="listá las corridas"
+        )
+        assert len(reply.text) < 3700  # listado acotado + encabezado
+        assert "(listado truncado)" in reply.text
+        # Se corta en un borde de línea: la última entrada visible está entera.
+        assert "archivo_0.dat" in reply.text
+
+    def test_empty_directory_listing_passes_through(self, env):
+        service, router, factory, *_ = env
+        gateway = FakeCluster("alice")
+        gateway.list_directory_result = CommandResult(ok=True, stdout="total 0")
+        factory.gateways["alice"] = gateway
+        router.next = RoutedRequest(
+            intent=Intent.LIST_FILES, params={"destino_remoto": "/data/vacia"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="listá /data/vacia"
+        )
+        assert reply.text == "📂 /data/vacia:\ntotal 0"
+
+    def test_unresolvable_home_asks_to_check_connection(self, env):
+        # remote_base relativa y home remoto irresoluble: no hay ruta que
+        # listar, se avisa en vez de mandar un ls sin sentido.
+        service, router, factory, *_ = env
+        gateway = FakeCluster("alice")
+        gateway.home_dir = lambda: None
+        factory.gateways["alice"] = gateway
+        router.next = RoutedRequest(intent=Intent.LIST_FILES, params={})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mostrame los archivos"
+        )
+        assert "No pude resolver el home remoto" in reply.text
+        assert gateway.listed_dirs == []
+
+
+class TestTruncateListing:
+    """El recorte protege el límite de 4096 caracteres de Telegram."""
+
+    def test_text_at_the_limit_is_untouched(self):
+        text = "x" * _LISTING_MAX_CHARS
+        assert _truncate_listing(text) == text
+
+    def test_one_char_over_the_limit_truncates(self):
+        text = "y" * (_LISTING_MAX_CHARS + 1)
+        out = _truncate_listing(text)
+        assert "(listado truncado)" in out
+        assert len(out) < len(text) + 30
+
+    def test_single_long_line_is_hard_cut(self):
+        # Sin newline previo al límite no hay borde de línea: corte duro.
+        text = "z" * (_LISTING_MAX_CHARS * 2)
+        out = _truncate_listing(text)
+        assert out.startswith("z" * 100)
+        assert "(listado truncado)" in out
+        assert len(out) <= _LISTING_MAX_CHARS + 30
 
 
 class TestStructureGeneration:

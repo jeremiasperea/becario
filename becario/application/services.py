@@ -29,6 +29,7 @@ from ..domain.models import (
     HistoryFilter,
     Intent,
     JobId,
+    ListFilesRequest,
     OutputFormat,
     PendingAction,
     RemoteDirRequest,
@@ -63,7 +64,8 @@ HELP_TEXT = (
     '• "Cancelá el trabajo 12345"\n'
     '• "Consultá el historial"\n'
     '• "Generá un POSCAR de Si diamond 2x2x2"\n'
-    '• "Creame la carpeta /home/usuario/pruebas"'
+    '• "Creame la carpeta /home/usuario/pruebas"\n'
+    '• "Qué archivos hay en /data/becario_runs"'
 )
 
 NOT_REGISTERED_TEXT = (
@@ -160,6 +162,21 @@ def _calc_fingerprint(req: VaspCalcRequest) -> str:
     if req.calc_kind is CalcKind.ENCUT_SCAN:
         data["encut_values"] = req.scan_values()
     return json.dumps(data, sort_keys=True, default=str)
+
+
+_LISTING_MAX_CHARS = 3500  # margen bajo el límite de 4096 de Telegram
+
+
+def _truncate_listing(text: str) -> str:
+    """Recorta un listado largo en un borde de línea para que la respuesta
+    entre en un mensaje de Telegram."""
+    text = text.strip()
+    if len(text) <= _LISTING_MAX_CHARS:
+        return text
+    cut = text.rfind("\n", 0, _LISTING_MAX_CHARS)
+    if cut <= 0:
+        cut = _LISTING_MAX_CHARS
+    return text[:cut].rstrip() + "\n… (listado truncado)"
 
 
 def _format_history_table(rows: list[dict]) -> str:
@@ -261,6 +278,7 @@ class BecarioService:
             Intent.PREPARE_CALC: self._prepare_calc,
             Intent.QUERY_RESULTS: self._query_results,
             Intent.CREATE_DIR: self._create_directory,
+            Intent.LIST_FILES: self._list_files,
         }
 
     # ------------------------------------------------------------------
@@ -505,6 +523,38 @@ class BecarioService:
             logger.warning("mkdir remoto falló para %s: %s", req.path, result.message)
         status = "✅" if result.ok else "❌"
         return Reply(text=f"{status} 📁 {result.message}")
+
+    def _list_files(self, ctx: _Ctx, params: dict) -> Reply:
+        raw = params.get("destino_remoto")
+        if not raw:
+            # Sin ruta: listar la base de corridas, resuelta contra el home
+            # remoto si la config es relativa (mismo criterio que al subir
+            # una corrida).
+            base = self._remote_base
+            if not base.startswith("/"):
+                home = ctx.cluster.home_dir()
+                if not home:
+                    return Reply(
+                        text="⚠️ No pude resolver el home remoto para listar. "
+                        "Revisá la conexión al cluster."
+                    )
+                base = f"{home}/{base}"
+            raw = base
+        try:
+            req = ListFilesRequest(path=str(raw))
+        except (ValidationError, ValueError):
+            return Reply(
+                text=f"⚠️ Ruta inválida: {raw!r}. Tiene que ser una ruta "
+                "absoluta (empezar con /), sin caracteres especiales ni '..'."
+            )
+        result = ctx.cluster.list_directory(req.path)
+        if not result.ok:
+            logger.warning("ls remoto falló para %s: %s", req.path, result.message)
+            return Reply(text=f"❌ 📂 {result.message}")
+        return Reply(
+            text=f"📂 {req.path}:\n{_truncate_listing(result.message)}",
+            monospace=True,
+        )
 
     def _query_history(self, ctx: _Ctx, params: dict) -> Reply:
         try:

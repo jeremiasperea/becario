@@ -73,6 +73,11 @@ class ClusterGateway(Protocol):
         La ruta ya viene validada por el dominio (`RemoteDirRequest`)."""
         ...
 
+    def list_directory(self, path: str) -> CommandResult:
+        """Listado legible de un directorio remoto (solo lectura).
+        La ruta ya viene validada por el dominio (`ListFilesRequest`)."""
+        ...
+
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult: ...
 
     def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:
