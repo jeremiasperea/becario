@@ -121,6 +121,19 @@ class SQLiteCalcRunRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_recent(
+        self, owner_id: int, job_name_prefix: str = "", limit: int = 5
+    ) -> list[dict]:
+        # El prefijo viene de una fórmula ya validada ([A-Za-z0-9]): no
+        # puede colar comodines de LIKE.
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM corridas_vasp WHERE owner_id = ? AND job_name LIKE ? "
+                "ORDER BY fecha DESC, id DESC LIMIT ?",
+                (owner_id, f"{job_name_prefix}%", limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
 
 class InMemoryConfirmationStore:
     """Acciones pendientes con TTL. Thread-safe (PTB usa asyncio pero los

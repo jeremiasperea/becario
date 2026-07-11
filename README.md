@@ -177,12 +177,19 @@ máximo del barrido):
 ```
 
 La confirmación ofrece tres botones: **✅ Confirmar**, **❌ Cancelar** y
-**✏️ Modificar** — este último descarta el envío y espera un mensaje con
-el cambio ("subí el ENCUT máximo a 600"); el resto del plan se mantiene y
-se rearma la confirmación. Además, cada envío queda registrado con una
-huella de sus parámetros: si pedís algo idéntico o muy similar a una
+**✏️ Modificar** — este último espera un mensaje con el cambio ("usá 2
+nodos", "subí el ENCUT máximo a 600"); el resto del plan se mantiene y se
+rearma la confirmación, iterando las veces que haga falta. Si un cambio
+no se entiende, el plan sigue vivo y se vuelve a preguntar: solo un
+«cancelar» explícito lo descarta. Además, cada envío queda registrado con
+una huella de sus parámetros: si pedís algo idéntico o muy similar a una
 corrida previa, la confirmación te lo avisa (con fecha, job y directorio)
 y podés correrlo igual o usarlo de base con ✏️ Modificar.
+
+Los resultados de corridas previas se consultan en lenguaje natural
+("dame los parámetros de red del zirconio"): el bot busca tu corrida más
+reciente de ese material (prefiere relajaciones), lee el CONTCAR remoto y
+responde a, b, c, ángulos y energía final.
 
 Requiere configurar en el `.env`: `BECARIO_POTCAR_DIR` (biblioteca en el
 cluster), `BECARIO_VASP_CMD` y opcionalmente `BECARIO_VASP_PRELUDE` y

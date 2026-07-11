@@ -27,6 +27,7 @@ class Intent(str, Enum):
     PREPARE_CALC = "preparar_calculo"
     SUBMIT_SLURM = "enviar_slurm"
     QUERY_DB = "consultar_db"
+    QUERY_RESULTS = "consultar_resultados"
     CHECK_STATUS = "revisar_estado"
     CANCEL_JOB = "cancelar_calculo"
     UNKNOWN = "error"

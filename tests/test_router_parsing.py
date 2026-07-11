@@ -21,6 +21,7 @@ class TestParseLLMOutput:
             ("preparar_calculo", Intent.PREPARE_CALC),
             ("enviar_slurm", Intent.SUBMIT_SLURM),
             ("consultar_db", Intent.QUERY_DB),
+            ("consultar_resultados", Intent.QUERY_RESULTS),
             ("revisar_estado", Intent.CHECK_STATUS),
             ("cancelar_calculo", Intent.CANCEL_JOB),
         ]:

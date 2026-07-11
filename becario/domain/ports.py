@@ -30,6 +30,12 @@ class IntentRouter(Protocol):
 
     def route(self, user_text: str) -> RoutedRequest: ...
 
+    def extract_params(self, user_text: str) -> dict:
+        """Solo parámetros, sin decidir acción: para mensajes que describen
+        un CAMBIO sobre un pedido ya armado («usá 2 nodos», «subí el ENCUT
+        a 600»). Devuelve {} si no encontró nada."""
+        ...
+
 
 class StructureBuilder(Protocol):
     """Construye estructuras atómicas y escribe archivos de entrada
@@ -148,6 +154,13 @@ class CalcRunRepository(Protocol):
     ) -> list[dict]:
         """Corridas previas del MISMO dueño con el mismo job_name
         (material + tipo de cálculo), más recientes primero."""
+        ...
+
+    def find_recent(
+        self, owner_id: int, job_name_prefix: str = "", limit: int = 5
+    ) -> list[dict]:
+        """Corridas del dueño cuyo job_name empieza con el prefijo (p. ej.
+        'Zr_' = cualquier cálculo de Zr), más recientes primero."""
         ...
 
 

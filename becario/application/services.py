@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +37,7 @@ from ..domain.models import (
     TrackedJob,
     VaspCalcRequest,
 )
+from .job_monitor import _parse_last_e0
 from ..domain.ports import (
     CalcInputGenerator,
     CalcRunRepository,
@@ -54,6 +57,7 @@ HELP_TEXT = (
     "❓ No pude interpretar tu pedido. Probá con:\n"
     '• "Relajá los parámetros de red del bulk de W"\n'
     '• "Hacé la curva de convergencia de ENCUT para Zr hcp"\n'
+    '• "Dame los parámetros de red del cálculo del Zr"\n'
     '• "Mostrá el estado de mis trabajos"\n'
     '• "Cancelá el trabajo 12345"\n'
     '• "Consultá el historial"\n'
@@ -100,6 +104,50 @@ class _Ctx:
     user_id: int
     identity: ClusterIdentity
     cluster: ClusterGateway
+
+
+_CANCEL_RE = re.compile(r"\A\s*(cancel|descart|olvid|dejal|no,?\s*(dejalo|nada))", re.IGNORECASE)
+
+
+def _is_cancel_message(text: str) -> bool:
+    """¿El mensaje pide descartar el plan en edición? («cancelar»,
+    «cancelalo», «descartá todo», «olvidalo»…)."""
+    return bool(_CANCEL_RE.match(text or ""))
+
+
+def _parse_poscar_cell(
+    poscar: Optional[str],
+) -> Optional[tuple[float, float, float, float, float, float]]:
+    """(a, b, c, α, β, γ) de un POSCAR/CONTCAR. None si no se pudo leer."""
+    if not poscar:
+        return None
+    lines = poscar.splitlines()
+    if len(lines) < 5:
+        return None
+    try:
+        scale = float(lines[1].split()[0])
+        vectors = [
+            [float(x) * scale for x in lines[i].split()[:3]] for i in (2, 3, 4)
+        ]
+    except (ValueError, IndexError):
+        return None
+    if scale <= 0:  # escala negativa = volumen objetivo; no lo generamos
+        return None
+
+    def norm(v: list[float]) -> float:
+        return math.sqrt(sum(x * x for x in v))
+
+    def angle(u: list[float], v: list[float]) -> float:
+        cos = sum(a * b for a, b in zip(u, v)) / (norm(u) * norm(v))
+        return math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+
+    va, vb, vc = vectors
+    if min(norm(va), norm(vb), norm(vc)) == 0:
+        return None
+    return (
+        norm(va), norm(vb), norm(vc),
+        angle(vb, vc), angle(va, vc), angle(va, vb),
+    )
 
 
 def _calc_fingerprint(req: VaspCalcRequest) -> str:
@@ -209,6 +257,7 @@ class BecarioService:
             Intent.QUERY_DB: self._query_history,
             Intent.MODIFY_STRUCTURE: self._modify_structure,
             Intent.PREPARE_CALC: self._prepare_calc,
+            Intent.QUERY_RESULTS: self._query_results,
         }
 
     # ------------------------------------------------------------------
@@ -223,17 +272,29 @@ class BecarioService:
 
     def _apply_edit(self, ctx: _Ctx, edit: _PendingEdit, text: str) -> Reply:
         """El mensaje describe el cambio: el LLM extrae solo los parámetros
-        nuevos y se mezclan sobre el pedido original (lo nuevo gana)."""
-        routed = self._router.route(text)
-        if not routed.params:
+        nuevos y se mezclan sobre el pedido original (lo nuevo gana). El
+        plan NUNCA se descarta solo: si no se entiende el cambio se vuelve
+        a preguntar, y solo un «cancelar» explícito lo tira."""
+        if _is_cancel_message(text):
             return Reply(
-                text="⚠️ No entendí qué querés cambiar, así que descarté el "
-                "plan anterior. Pedime el cálculo de nuevo, completo."
+                text="❌ Plan descartado. Pedime el cálculo de nuevo cuando quieras."
             )
-        merged = {**edit.base_params, **routed.params}
+        new_params = self._router.extract_params(text)
+        if not new_params:
+            # Devolver el plan al estante (con TTL renovado) para reintentar.
+            with self._edits_lock:
+                self._pending_edits[ctx.user_id] = _PendingEdit(
+                    intent=edit.intent, base_params=edit.base_params
+                )
+            return Reply(
+                text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
+                'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
+                "«cancelar» para descartar el plan."
+            )
+        merged = {**edit.base_params, **new_params}
         logger.info(
             "plan modificado por user=%s: base=%s cambio=%s",
-            ctx.user_id, edit.base_params, routed.params,
+            ctx.user_id, edit.base_params, new_params,
         )
         handler = self._intent_handlers()[edit.intent]
         return handler(ctx, merged)
@@ -653,3 +714,64 @@ class BecarioService:
             "\n¿Lo corro de todas formas? Confirmá para correrlo igual, o "
             "tocá ✏️ Modificar para usar este plan de base y cambiar algo."
         )
+
+    # ------------------------------------------------------------------
+    # Resultados de corridas previas (parámetros de red, energía)
+    # ------------------------------------------------------------------
+    def _query_results(self, ctx: _Ctx, params: dict) -> Reply:
+        if self._calc_runs is None:
+            return Reply(text="⚠️ La consulta de resultados no está configurada en este bot.")
+
+        formula = params.get("formula") or params.get("formula_quimica")
+        prefix = f"{str(formula).strip()}_" if formula else ""
+        rows = self._calc_runs.find_recent(ctx.user_id, prefix)
+        if not rows:
+            de = f" de {formula}" if formula else ""
+            return Reply(
+                text=f"📭 No encontré corridas tuyas{de} registradas. "
+                "Pedime el cálculo y lo corremos."
+            )
+        # Los parámetros de red relajados salen de una relajación; si no
+        # hay, se usa la corrida más reciente que haya (celda de entrada).
+        row = next(
+            (r for r in rows if CalcKind.RELAX.value in str(r.get("job_name", ""))),
+            rows[0],
+        )
+        run_dir = str(row.get("run_dir", "")).rstrip("/")
+        if not run_dir:
+            return Reply(text="⚠️ La corrida registrada no tiene directorio asociado.")
+
+        cell_text = ctx.cluster.read_file(f"{run_dir}/CONTCAR")
+        source = "CONTCAR (celda relajada)"
+        if not (cell_text and cell_text.strip()):
+            cell_text = ctx.cluster.read_file(f"{run_dir}/POSCAR")
+            source = "POSCAR (celda de entrada, sin relajar)"
+        if not (cell_text and cell_text.strip()):
+            # Barrido: los inputs viven en los subdirectorios encut_*.
+            for name in sorted(ctx.cluster.list_dir(run_dir) or []):
+                if name.startswith("encut_"):
+                    cell_text = ctx.cluster.read_file(f"{run_dir}/{name}/POSCAR")
+                    if cell_text:
+                        source = f"{name}/POSCAR (celda de entrada, sin relajar)"
+                        break
+        cell = _parse_poscar_cell(cell_text)
+        if cell is None:
+            return Reply(
+                text=f"⚠️ No pude leer la celda de la corrida "
+                f"{row.get('job_name', '?')} (job {row.get('job_id', '?')}) en:\n"
+                f"📂 {run_dir}\n¿Sigue existiendo en el cluster?"
+            )
+
+        a, b, c, alpha, beta, gamma = cell
+        lines = [
+            f"📐 Parámetros de red — {row.get('job_name', '?')} "
+            f"(job {row.get('job_id', '?')}, {row.get('fecha', '?')}):",
+            f"a = {a:.4f} Å,  b = {b:.4f} Å,  c = {c:.4f} Å",
+            f"α = {alpha:.2f}°,  β = {beta:.2f}°,  γ = {gamma:.2f}°",
+            f"(fuente: {source})",
+        ]
+        energy = _parse_last_e0(ctx.cluster.read_file(f"{run_dir}/OSZICAR"))
+        if energy is not None:
+            lines.append(f"E0 = {energy:.6f} eV")
+        lines.append(f"📂 {run_dir}")
+        return Reply(text="\n".join(lines))

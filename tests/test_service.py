@@ -51,6 +51,9 @@ class FakeRouter:
     def route(self, user_text: str) -> RoutedRequest:
         return self.next
 
+    def extract_params(self, user_text: str) -> dict:
+        return dict(self.next.params)
+
 
 class FakeUserRegistry:
     def __init__(self, identities: Optional[list[ClusterIdentity]] = None):
@@ -74,6 +77,8 @@ class FakeCluster:
         self.concatenated: list[tuple[tuple[str, ...], str]] = []
         # POTCARs "presentes" en la biblioteca del cluster de mentira:
         self.existing_files: set[str] = {"/potcars/Zr_sv/POTCAR", "/potcars/W/POTCAR"}
+        # Archivos remotos legibles (para consultas de resultados):
+        self.remote_files: dict[str, str] = {}
 
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
         self.submitted.append(req)
@@ -102,10 +107,14 @@ class FakeCluster:
         return remote_path in self.existing_files
 
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
-        return None
+        names = [
+            p[len(remote_dir) + 1:].split("/")[0]
+            for p in self.remote_files if p.startswith(remote_dir + "/")
+        ]
+        return sorted(set(names)) or None
 
     def read_file(self, remote_path: str) -> Optional[str]:
-        return None
+        return self.remote_files.get(remote_path)
 
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
         self.concatenated.append((tuple(sources), dest))
@@ -178,6 +187,14 @@ class FakeCalcRuns:
         found = [
             r for r in reversed(self.rows)
             if r["owner_id"] == owner_id and r["job_name"] == job_name
+        ]
+        return found[:limit]
+
+    def find_recent(self, owner_id, job_name_prefix="", limit=5) -> list[dict]:
+        found = [
+            r for r in reversed(self.rows)
+            if r["owner_id"] == owner_id
+            and r["job_name"].startswith(job_name_prefix)
         ]
         return found[:limit]
 
@@ -677,15 +694,34 @@ class TestPlanModification:
         reply = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
         assert "no admite" in reply.text
 
-    def test_unintelligible_change_drops_the_plan(self, env):
-        service, router, factory, *_ = env
+    def test_unintelligible_change_keeps_the_plan_for_retry(self, env):
+        """El plan NO se descarta solo: se reintenta hasta que salga o el
+        usuario cancele explícitamente."""
+        service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
         service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
 
         router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ehh")
         assert "No entendí" in reply.text
-        # El modo edición quedó descartado: el próximo mensaje rutea normal.
+        assert "cancelar" in reply.text  # explica cómo salir
+
+        # Segundo intento, ahora entendible: el plan seguía vivo.
+        router.next = RoutedRequest(intent=Intent.UNKNOWN, params={"nodos": 2})
+        reply2 = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="2 nodos")
+        assert reply2.needs_confirmation
+        assert service._calc_inputs.requests[-1].nodes == 2
+        # Y conservó el resto del plan original:
+        assert service._calc_inputs.requests[-1].encut_values == [250, 300, 350, 400]
+
+    def test_explicit_cancel_discards_the_plan(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.SCAN)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelalo")
+        assert "descartado" in reply.text
+        # El modo edición terminó: el próximo mensaje rutea normal.
         router.next = RoutedRequest(intent=Intent.CHECK_STATUS, params={})
         reply2 = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="estado")
         assert "Estado" in reply2.text
@@ -694,6 +730,90 @@ class TestPlanModification:
         service, *_ = env
         reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id)
         assert "expiró" in reply.text
+
+
+_CONTCAR_ZR = (
+    "Zr relajado\n"
+    "1.0\n"
+    "3.2300000 0.0000000 0.0000000\n"
+    "-1.6150000 2.7972620 0.0000000\n"
+    "0.0000000 0.0000000 5.1453900\n"
+    "Zr\n"
+    "2\n"
+    "Direct\n"
+    "0 0 0\n"
+    "0.333 0.667 0.5\n"
+)
+
+
+class TestQueryResults:
+    """'dame los parámetros de red del Zr' lee la celda de la corrida
+    previa (CONTCAR si hubo relajación) en vez de contestar el historial."""
+
+    RUN_DIR = "/data/runs/zr_relax"
+
+    def _setup_run(self, service, factory, job_name="Zr_relajacion", with_contcar=True):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "9", job_name, "{}", self.RUN_DIR
+        )
+        cluster = factory.for_identity(ALICE)
+        if with_contcar:
+            cluster.remote_files[f"{self.RUN_DIR}/CONTCAR"] = _CONTCAR_ZR
+            cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"] = (
+                "   1 F= -.17046660E+02 E0= -.17046660E+02  d E =0.0\n"
+            )
+        return cluster
+
+    def _ask(self, service, router, params=None):
+        router.next = RoutedRequest(
+            intent=Intent.QUERY_RESULTS, params=params or {"formula": "Zr"}
+        )
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+    def test_lattice_parameters_from_contcar(self, env):
+        service, router, factory, *_ = env
+        self._setup_run(service, factory)
+        reply = self._ask(service, router)
+        assert "a = 3.2300" in reply.text
+        assert "c = 5.1454" in reply.text
+        assert "γ = 120.00°" in reply.text
+        assert "E0 = -17.046660 eV" in reply.text
+        assert "CONTCAR" in reply.text
+
+    def test_prefers_relaxation_over_more_recent_scan(self, env):
+        service, router, factory, *_ = env
+        self._setup_run(service, factory)  # relajación (más vieja)
+        service._calc_runs.add(  # barrido más reciente del mismo material
+            ALICE.telegram_user_id, "10", "Zr_convergencia_encut", "{}", "/data/runs/zr_scan"
+        )
+        reply = self._ask(service, router)
+        assert "Zr_relajacion" in reply.text
+
+    def test_falls_back_to_poscar_when_no_contcar(self, env):
+        service, router, factory, *_ = env
+        cluster = self._setup_run(service, factory, with_contcar=False)
+        cluster.remote_files[f"{self.RUN_DIR}/POSCAR"] = _CONTCAR_ZR
+        reply = self._ask(service, router)
+        assert "sin relajar" in reply.text
+        assert "a = 3.2300" in reply.text
+
+    def test_no_previous_runs(self, env):
+        service, router, *_ = env
+        reply = self._ask(service, router)
+        assert "No encontré corridas" in reply.text
+
+    def test_unreadable_cell_warns_with_run_dir(self, env):
+        service, router, factory, *_ = env
+        self._setup_run(service, factory, with_contcar=False)  # sin archivos
+        reply = self._ask(service, router)
+        assert "No pude leer la celda" in reply.text
+        assert self.RUN_DIR in reply.text
+
+    def test_other_users_runs_are_invisible(self, env):
+        service, router, factory, *_ = env
+        service._calc_runs.add(BOB.telegram_user_id, "9", "Zr_relajacion", "{}", self.RUN_DIR)
+        reply = self._ask(service, router)
+        assert "No encontré corridas" in reply.text
 
 
 class TestJobTracking:

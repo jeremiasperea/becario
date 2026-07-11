@@ -85,11 +85,19 @@ _SYSTEM_PROMPT = (
     "parámetros de red), 'estatico' (energía de un punto), o "
     "'convergencia_encut' (curva/barrido/convergencia de ENCUT o del cutoff)\n"
     "- 'enviar_slurm': lanzar un script de cálculo que YA existe en el cluster\n"
-    "- 'consultar_db': buscar en el historial de cálculos\n"
+    "- 'consultar_db': historial/lista de trabajos pasados (fechas, nombres "
+    "y estados)\n"
+    "- 'consultar_resultados': resultados FÍSICOS de un cálculo ya hecho: "
+    "parámetros de red, celda relajada, energía\n"
     "- 'revisar_estado': estado de trabajos en cola (squeue/sacct)\n"
     "- 'cancelar_calculo': cancelar un trabajo\n"
     "- 'error': si el pedido no encaja en ninguna\n"
     "Ejemplos:\n"
+    "'dame los parámetros de red del cálculo del zirconio bulk' -> "
+    "consultar_resultados, formula=Zr\n"
+    "'qué energía dio la relajación del W' -> consultar_resultados, "
+    "formula=W\n"
+    "'mostrá el historial de cálculos' -> consultar_db\n"
     "'minimizá los parámetros de red del bulk de W' -> preparar_calculo, "
     "tipo_calculo=relajacion, formula=W\n"
     "'curva de convergencia de ENCUT para Zr hcp de 250 a 450' -> "
@@ -99,7 +107,22 @@ _SYSTEM_PROMPT = (
     "script_remoto=/home/ana/run.sh\n"
     "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
-    "No inventes valores."
+    "No inventes valores. En 'formula' usá siempre el símbolo químico "
+    "(zirconio->Zr, tungsteno/wolframio->W, silicio->Si)."
+)
+
+
+_EDIT_PROMPT = (
+    "Sos el extractor de cambios de B.E.C.A.R.I.O., un asistente HPC. El "
+    "usuario ya tiene un cálculo armado y este mensaje describe UN CAMBIO "
+    "sobre ese plan. Extraé únicamente los parámetros que el mensaje "
+    "menciona (nodos, particion, tiempo_limite, encut, encut_min, "
+    "encut_max, encut_paso, puntos_k, supercelda, formula, red_cristalina, "
+    "parametro_red…). No inventes valores ni completes los que no menciona.\n"
+    "Ejemplos:\n"
+    "'cambiá a 2 nodos' -> nodos=2\n"
+    "'subí el ENCUT máximo a 600' -> encut_max=600\n"
+    "'usá la partición gpu y 4 horas' -> particion=gpu, tiempo_limite=04:00:00"
 )
 
 
@@ -116,30 +139,48 @@ class OllamaRouter:
         self._model = model
         self._timeout = timeout
         self._schema = RouterDecision.model_json_schema()
+        self._params_schema = RouterParams.model_json_schema()
 
-    def route(self, user_text: str) -> RoutedRequest:
+    def _chat(self, system_prompt: str, user_text: str, schema: dict) -> Optional[str]:
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",
                 json={
                     "model": self._model,
                     "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_text},
                     ],
                     "stream": False,
-                    "format": self._schema,  # <- structured output
+                    "format": schema,  # <- structured output
                     "options": {"temperature": 0.0},
                 },
                 timeout=self._timeout,
             )
             response.raise_for_status()
-            raw = response.json().get("message", {}).get("content", "")
+            return response.json().get("message", {}).get("content", "")
         except (httpx.HTTPError, ValueError) as exc:
             logger.error("Ollama no disponible: %s", exc)
-            return RoutedRequest(intent=Intent.UNKNOWN, params={"motivo": str(exc)})
+            return None
 
+    def route(self, user_text: str) -> RoutedRequest:
+        raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
+        if raw is None:
+            return RoutedRequest(intent=Intent.UNKNOWN, params={})
         return self.parse_llm_output(raw)
+
+    def extract_params(self, user_text: str) -> dict:
+        """Solo parámetros (sin acción): para mensajes que modifican un
+        plan ya armado."""
+        raw = self._chat(_EDIT_PROMPT, user_text, self._params_schema)
+        if raw is None:
+            return {}
+        try:
+            params = RouterParams.model_validate_json(raw or "")
+        except ValidationError:
+            logger.warning("Extracción de cambio fuera de schema: %r", (raw or "")[:200])
+            return {}
+        return params.model_dump(exclude_none=True)
 
     @staticmethod
     def parse_llm_output(raw: str) -> RoutedRequest:
