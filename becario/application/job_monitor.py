@@ -92,7 +92,10 @@ class JobMonitorService:
             if job.script_path:
                 # El directorio del script es donde quedaron los resultados
                 # (los scripts de cálculo hacen cd a su propio directorio).
-                text += f"\n📂 Corrida en: {posixpath.dirname(job.script_path)}"
+                run_dir = posixpath.dirname(job.script_path)
+                text += f"\n📂 Corrida en: {run_dir}"
+                if new_status in (JobStatus.FAILED, JobStatus.TIMEOUT):
+                    text += self._failure_diagnostics(cluster, run_dir, job.job_id)
             self._history.add(
                 owner_id=job.owner_id, job_id=job.job_id,
                 nombre_trabajo=job.job_name, estado=new_status.label_es,
@@ -120,6 +123,46 @@ class JobMonitorService:
                     )
 
         return notifications
+
+    # ------------------------------------------------------------------
+    # Diagnóstico de fallos: leer los logs remotos de la corrida
+    # ------------------------------------------------------------------
+    def _failure_diagnostics(
+        self, cluster: ClusterGateway, run_dir: str, job_id: str
+    ) -> str:
+        """Colas de los logs de la corrida para que el aviso de fallo diga
+        POR QUÉ falló, no solo que falló."""
+        sections: list[str] = []
+
+        slurm_out = cluster.read_file(f"{run_dir}/slurm-{job_id}.out")
+        if slurm_out and slurm_out.strip():
+            sections.append(f"— slurm-{job_id}.out:\n{_tail(slurm_out)}")
+
+        # vasp.out de la raíz (cálculo simple) o del último punto que llegó
+        # a correr (barrido).
+        vasp_out = cluster.read_file(f"{run_dir}/vasp.out")
+        vasp_label = "vasp.out"
+        if vasp_out is None:
+            entries = cluster.list_dir(run_dir) or []
+            for name in sorted(
+                (e for e in entries if _ENCUT_DIR_RE.match(e)),
+                key=lambda e: int(e.split("_")[1]),
+                reverse=True,
+            ):
+                vasp_out = cluster.read_file(f"{run_dir}/{name}/vasp.out")
+                if vasp_out is not None:
+                    vasp_label = f"{name}/vasp.out"
+                    break
+        if vasp_out and vasp_out.strip():
+            sections.append(f"— {vasp_label}:\n{_tail(vasp_out)}")
+
+        if not sections:
+            sections.append(
+                "No encontré archivos de salida en la corrida: lo más "
+                "probable es que el script nunca llegara a ejecutarse en el "
+                "nodo (¿el directorio es visible desde los nodos de cómputo?)."
+            )
+        return "\n🔍 Diagnóstico:\n" + "\n".join(sections)
 
     # ------------------------------------------------------------------
     # Cosecha del barrido de ENCUT (sin estado local: relee el cluster)
@@ -207,6 +250,15 @@ class JobMonitorService:
                 f"conviene extender el barrido por encima de {rows[-1][0]} eV."
             )
         return Notification(chat_id=0, text="\n".join(lines), monospace=True)
+
+
+def _tail(text: str, n_lines: int = 10, max_chars: int = 700) -> str:
+    """Últimas líneas de un log, acotadas para caber en un mensaje."""
+    lines = [ln.rstrip() for ln in text.strip().splitlines()]
+    clipped = "\n".join(lines[-n_lines:])
+    if len(clipped) > max_chars:
+        clipped = "…" + clipped[-max_chars:]
+    return clipped
 
 
 def _parse_last_e0(oszicar: Optional[str]) -> Optional[float]:

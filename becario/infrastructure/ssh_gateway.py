@@ -97,9 +97,15 @@ class SSHClusterGateway:
         # pidió partición: se omite la directiva y decide la default del cluster.
         if req.partition != "default":
             lines.append(f"#SBATCH --partition={req.partition}")
+        # El cwd del job es el directorio del script: ahí quedan los
+        # resultados Y el slurm-%j.out — que es lo que el monitor lee para
+        # diagnosticar un fallo. script_path ya está validado (sin espacios
+        # ni metacaracteres), puede ir directo en la directiva.
+        run_dir = str(PurePosixPath(req.script_path).parent)
         lines += [
             f"#SBATCH --nodes={req.nodes}",
             f"#SBATCH --time={req.time_limit}",
+            f"#SBATCH --chdir={run_dir}",
             f"bash {shlex.quote(req.script_path)}",
         ]
         script = "\n".join(lines)

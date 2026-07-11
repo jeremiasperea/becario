@@ -253,6 +253,67 @@ class TestJobMonitorService:
         assert len(notes) == 2
         assert "No pude leer" in notes[1].text
 
+    def test_failed_job_without_remote_logs_explains_probable_cause(self):
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, script_path="/root/runs/x/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=FakeClusterFactory("FAILED"),
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert "🔍 Diagnóstico" in notes[0].text
+        assert "nunca llegara a ejecutarse" in notes[0].text
+
+    def test_failed_job_includes_log_tails(self):
+        factory = FakeClusterFactory("FAILED")
+        factory.cluster.remote_files["/data/runs/x/slurm-1.out"] = (
+            "bash: error de sintaxis\ncp: cannot stat 'POTCAR'\n"
+        )
+        factory.cluster.remote_files["/data/runs/x/vasp.out"] = (
+            "LAPACK: Routine ZPOTRF failed!\n"
+        )
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, script_path="/data/runs/x/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        text = notes[0].text
+        assert "cp: cannot stat 'POTCAR'" in text
+        assert "ZPOTRF" in text
+
+    def test_failed_scan_shows_vasp_out_of_last_started_point(self):
+        factory = _scan_cluster({300: -16.90})  # solo el primer punto corrió
+        factory.cluster.state = "FAILED"
+        factory.cluster.remote_files["/data/runs/zr/encut_300/vasp.out"] = (
+            "internal error in SETUP_DEG_CLUSTERS\n"
+        )
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert "encut_300/vasp.out" in notes[0].text
+        assert "SETUP_DEG_CLUSTERS" in notes[0].text
+
+    def test_completed_job_has_no_diagnostics(self):
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, script_path="/data/runs/x/run.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=FakeClusterFactory("COMPLETED"),
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert "Diagnóstico" not in notes[0].text
+
     def test_plain_job_never_harvests(self):
         tracker = FakeTracker([_job(status=JobStatus.RUNNING,
                                     script_path="/data/runs/x/calc.sh")])

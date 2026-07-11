@@ -161,6 +161,8 @@ class TestSSHCommandConstruction:
         assert "sbatch <<'BECARIO_EOF'" in cmd
         assert "#SBATCH --job-name=grafeno" in cmd
         assert "#SBATCH --nodes=2" in cmd
+        # cwd del job = dir del script: ahí caen slurm-%j.out y resultados.
+        assert "#SBATCH --chdir=/opt" in cmd
         assert "bash /opt/calc.sh" in cmd
 
     def test_submit_parses_job_id_from_sbatch_output(self, monkeypatch):
