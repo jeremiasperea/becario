@@ -526,6 +526,12 @@ class PendingAction:
 
     `requester_id` (telegram_user_id) es quien la pidió: solo esa persona
     puede confirmarla o rechazarla, aunque el chat fuera compartido.
+
+    `request_intent`/`request_params` conservan el pedido ORIGINAL (el que
+    interpretó el LLM), para poder "modificar el plan": se mezclan con lo
+    nuevo que diga el usuario y se rearma la confirmación. Si
+    `request_intent` es None, la acción no admite modificación (p. ej.
+    cancelar un job).
     """
 
     chat_id: int
@@ -533,6 +539,8 @@ class PendingAction:
     intent: Intent
     description: str
     payload: dict
+    request_intent: Optional[Intent] = None
+    request_params: dict = field(default_factory=dict)
     token: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     created_at: float = field(default_factory=time.time)
 

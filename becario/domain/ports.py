@@ -133,6 +133,24 @@ class JobTracker(Protocol):
     def mark_notified(self, job_id: str, owner_id: int) -> None: ...
 
 
+class CalcRunRepository(Protocol):
+    """Corridas VASP ya enviadas por cada persona, con una huella de sus
+    parámetros: permite avisar cuando algo idéntico o muy similar ya se
+    corrió antes de volver a gastarle horas al cluster."""
+
+    def add(
+        self, owner_id: int, job_id: str, job_name: str,
+        fingerprint: str, run_dir: str,
+    ) -> None: ...
+
+    def find_by_name(
+        self, owner_id: int, job_name: str, limit: int = 3
+    ) -> list[dict]:
+        """Corridas previas del MISMO dueño con el mismo job_name
+        (material + tipo de cálculo), más recientes primero."""
+        ...
+
+
 class ConfirmationStore(Protocol):
     """Guarda acciones destructivas pendientes de confirmación."""
 

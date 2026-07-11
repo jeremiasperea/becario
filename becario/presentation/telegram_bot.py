@@ -25,21 +25,20 @@ from telegram.ext import (
 )
 
 from ..application.job_monitor import JobMonitorService
-from ..application.services import BecarioService, Reply
+from ..application.services import FOREIGN_CONFIRMATION_TEXT, BecarioService, Reply
 from ..domain.ports import Transcriber
 
 logger = logging.getLogger(__name__)
 
 
-def _keyboard(token: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("✅ Confirmar", callback_data=f"confirm:{token}"),
-                InlineKeyboardButton("❌ Cancelar", callback_data=f"cancel:{token}"),
-            ]
-        ]
-    )
+def _keyboard(token: str, allow_modify: bool = False) -> InlineKeyboardMarkup:
+    row = [
+        InlineKeyboardButton("✅ Confirmar", callback_data=f"confirm:{token}"),
+        InlineKeyboardButton("❌ Cancelar", callback_data=f"cancel:{token}"),
+    ]
+    if allow_modify:
+        row.append(InlineKeyboardButton("✏️ Modificar", callback_data=f"modify:{token}"))
+    return InlineKeyboardMarkup([row])
 
 
 class TelegramBot:
@@ -77,7 +76,7 @@ class TelegramBot:
     # ------------------------------------------------------------------
     async def _send_reply(self, update: Update, reply: Reply) -> None:
         markup = (
-            _keyboard(reply.confirmation_token)
+            _keyboard(reply.confirmation_token, reply.allow_modify)
             if reply.needs_confirmation and reply.confirmation_token
             else None
         )
@@ -139,8 +138,15 @@ class TelegramBot:
             reply = self._service.confirm(token, requester_id=query.from_user.id)
         elif action == "cancel":
             reply = self._service.reject(token, requester_id=query.from_user.id)
+        elif action == "modify":
+            reply = self._service.start_modification(token, requester_id=query.from_user.id)
         else:
             reply = Reply(text="⚠️ Acción desconocida.")
+        if reply.text == FOREIGN_CONFIRMATION_TEXT:
+            # Toque ajeno: avisar solo a quien tocó, sin ensuciar el chat ni
+            # sacarle los botones a quien sí puede decidir.
+            await query.answer(reply.text, show_alert=True)
+            return
         await query.answer()
         # El mensaje original (con las condiciones del envío) se conserva
         # para poder revisarlo después: solo se quitan los botones, y el

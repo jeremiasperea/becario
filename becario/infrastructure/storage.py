@@ -69,6 +69,59 @@ class SQLiteHistoryRepository:
         return [dict(row) for row in rows]
 
 
+class SQLiteCalcRunRepository:
+    """Corridas VASP enviadas (implementa CalcRunRepository). La huella
+    (`fingerprint`) es el JSON canónico de los parámetros del cálculo:
+    huellas iguales = pedido idéntico; mismo job_name = muy similar."""
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS corridas_vasp (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL,
+                    job_id TEXT,
+                    job_name TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    run_dir TEXT NOT NULL,
+                    fecha TEXT DEFAULT (datetime('now'))
+                )
+                """
+            )
+
+    def add(
+        self, owner_id: int, job_id: str, job_name: str,
+        fingerprint: str, run_dir: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO corridas_vasp (owner_id, job_id, job_name, fingerprint, run_dir) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (owner_id, job_id, job_name, fingerprint, run_dir),
+            )
+
+    def find_by_name(
+        self, owner_id: int, job_name: str, limit: int = 3
+    ) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM corridas_vasp WHERE owner_id = ? AND job_name = ? "
+                "ORDER BY fecha DESC, id DESC LIMIT ?",
+                (owner_id, job_name, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
 class InMemoryConfirmationStore:
     """Acciones pendientes con TTL. Thread-safe (PTB usa asyncio pero los
     handlers pueden intercalarse; el lock es barato y elimina la duda)."""

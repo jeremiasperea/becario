@@ -12,8 +12,11 @@ Slurm/el sistema operativo del cluster, no lógica de la aplicación.
 """
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 from typing import Optional
 
 from pydantic import ValidationError
@@ -34,6 +37,7 @@ from ..domain.models import (
 )
 from ..domain.ports import (
     CalcInputGenerator,
+    CalcRunRepository,
     ClusterGateway,
     ClusterGatewayFactory,
     ConfirmationStore,
@@ -74,6 +78,18 @@ class Reply:
     confirmation_token: Optional[str] = None
     # Pide fuente de ancho fijo (tablas): cada canal decide cómo lograrlo.
     monospace: bool = False
+    # La acción pendiente admite "modificar el plan" (tercer botón).
+    allow_modify: bool = False
+
+
+@dataclass
+class _PendingEdit:
+    """El usuario tocó ✏️ Modificar: su próximo mensaje describe el cambio,
+    que se mezcla con los parámetros del pedido original."""
+
+    intent: Intent
+    base_params: dict
+    created_at: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
@@ -84,6 +100,16 @@ class _Ctx:
     user_id: int
     identity: ClusterIdentity
     cluster: ClusterGateway
+
+
+def _calc_fingerprint(req: VaspCalcRequest) -> str:
+    """JSON canónico de un pedido de cálculo: dos pedidos con la misma
+    huella son EL MISMO cálculo (el rango default del barrido se resuelve
+    para que 'sin rango' y 'con el rango default' den la misma huella)."""
+    data = req.model_dump()
+    if req.calc_kind is CalcKind.ENCUT_SCAN:
+        data["encut_values"] = req.scan_values()
+    return json.dumps(data, sort_keys=True, default=str)
 
 
 def _format_history_table(rows: list[dict]) -> str:
@@ -123,6 +149,8 @@ class BecarioService:
         calc_inputs: Optional[CalcInputGenerator] = None,
         potcar_dir: str = "",
         remote_base: str = "becario_runs",
+        calc_runs: Optional[CalcRunRepository] = None,
+        edit_ttl_seconds: float = 600.0,
     ) -> None:
         self._router = router
         self._registry = registry
@@ -134,6 +162,12 @@ class BecarioService:
         self._calc_inputs = calc_inputs
         self._potcar_dir = potcar_dir.rstrip("/")
         self._remote_base = remote_base.rstrip("/")
+        self._calc_runs = calc_runs
+        # Modificaciones pendientes por usuario (en memoria, con TTL: si se
+        # reinicia el bot simplemente se vuelve a pedir el cálculo).
+        self._edit_ttl = edit_ttl_seconds
+        self._pending_edits: dict[int, _PendingEdit] = {}
+        self._edits_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Entrada principal: texto del usuario
@@ -151,13 +185,24 @@ class BecarioService:
             cluster=self._cluster_factory.for_identity(identity),
         )
 
+        # ¿Está describiendo un cambio a un plan que pidió modificar?
+        edit = self._pop_pending_edit(user_id)
+        if edit is not None:
+            return self._apply_edit(ctx, edit, text)
+
         routed = self._router.route(text)
         logger.info(
             "routed intent=%s params=%s ssh_user=%s",
             routed.intent, routed.params, identity.ssh_user,
         )
 
-        handlers = {
+        handler = self._intent_handlers().get(routed.intent)
+        if handler is None:
+            return Reply(text=HELP_TEXT)
+        return handler(ctx, routed.params)
+
+    def _intent_handlers(self) -> dict:
+        return {
             Intent.SUBMIT_SLURM: self._prepare_submit,
             Intent.CANCEL_JOB: self._prepare_cancel,
             Intent.CHECK_STATUS: self._check_status,
@@ -165,10 +210,55 @@ class BecarioService:
             Intent.MODIFY_STRUCTURE: self._modify_structure,
             Intent.PREPARE_CALC: self._prepare_calc,
         }
-        handler = handlers.get(routed.intent)
-        if handler is None:
-            return Reply(text=HELP_TEXT)
-        return handler(ctx, routed.params)
+
+    # ------------------------------------------------------------------
+    # Modificación de un plan pendiente
+    # ------------------------------------------------------------------
+    def _pop_pending_edit(self, user_id: int) -> Optional[_PendingEdit]:
+        with self._edits_lock:
+            edit = self._pending_edits.pop(user_id, None)
+        if edit is None or (time.time() - edit.created_at) > self._edit_ttl:
+            return None
+        return edit
+
+    def _apply_edit(self, ctx: _Ctx, edit: _PendingEdit, text: str) -> Reply:
+        """El mensaje describe el cambio: el LLM extrae solo los parámetros
+        nuevos y se mezclan sobre el pedido original (lo nuevo gana)."""
+        routed = self._router.route(text)
+        if not routed.params:
+            return Reply(
+                text="⚠️ No entendí qué querés cambiar, así que descarté el "
+                "plan anterior. Pedime el cálculo de nuevo, completo."
+            )
+        merged = {**edit.base_params, **routed.params}
+        logger.info(
+            "plan modificado por user=%s: base=%s cambio=%s",
+            ctx.user_id, edit.base_params, routed.params,
+        )
+        handler = self._intent_handlers()[edit.intent]
+        return handler(ctx, merged)
+
+    def start_modification(self, token: str, requester_id: int) -> Reply:
+        """Botón ✏️ Modificar: descarta la acción pendiente y espera que el
+        próximo mensaje del usuario describa el cambio."""
+        action = self._confirmations.peek(token)
+        if action is None:
+            return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+        if action.requester_id != requester_id:
+            return Reply(text=FOREIGN_CONFIRMATION_TEXT)
+        if action.request_intent is None:
+            return Reply(text="⚠️ Esta acción no admite modificación.")
+        self._confirmations.pop(token)
+        with self._edits_lock:
+            self._pending_edits[requester_id] = _PendingEdit(
+                intent=action.request_intent,
+                base_params=dict(action.request_params),
+            )
+        return Reply(
+            text="✏️ Dale, decime qué querés cambiar (p. ej. «subí el ENCUT "
+            "máximo a 600», «usá la partición gpu», «supercelda 2x2x2»). "
+            "Las demás condiciones del plan se mantienen."
+        )
 
     # ------------------------------------------------------------------
     # Confirmaciones
@@ -209,6 +299,16 @@ class BecarioService:
                     owner_id=requester_id, job_id=result.job_id,
                     nombre_trabajo=req.job_name, estado="enviado",
                 )
+                # Cálculos VASP: registrar la huella para poder avisar si
+                # se vuelve a pedir lo mismo (o algo muy similar).
+                if self._calc_runs is not None and action.payload.get("calc_fingerprint"):
+                    self._calc_runs.add(
+                        owner_id=requester_id,
+                        job_id=result.job_id,
+                        job_name=req.job_name,
+                        fingerprint=action.payload["calc_fingerprint"],
+                        run_dir=action.payload.get("run_dir", ""),
+                    )
                 text = (
                     f"✅ 🚀 Trabajo enviado al cluster.\n"
                     f"• Job: {result.job_id}\n"
@@ -273,12 +373,15 @@ class BecarioService:
             intent=Intent.SUBMIT_SLURM,
             description=f"🚀 Enviar job Slurm (cuenta {ctx.identity.ssh_user}):\n{req.describe()}",
             payload=req.model_dump(),
+            request_intent=Intent.SUBMIT_SLURM,
+            request_params=dict(params),
         )
         token = self._confirmations.put(action)
         return Reply(
             text=f"⚠️ ¿Confirmás esta acción?\n\n{action.description}",
             needs_confirmation=True,
             confirmation_token=token,
+            allow_modify=True,
         )
 
     def _prepare_cancel(self, ctx: _Ctx, params: dict) -> Reply:
@@ -492,9 +595,14 @@ class BecarioService:
         except (ValidationError, ValueError) as exc:
             return Reply(text=f"⚠️ Parámetros inválidos para el envío:\n{exc}")
 
+        fingerprint = _calc_fingerprint(req)
+        duplicate_note = self._duplicate_note(ctx.user_id, slurm_req.job_name, fingerprint)
+
         workflow = "encut_scan" if calc_kind is CalcKind.ENCUT_SCAN else ""
         payload = slurm_req.model_dump()
         payload["workflow"] = workflow
+        payload["calc_fingerprint"] = fingerprint
+        payload["run_dir"] = remote_run_dir
         action = PendingAction(
             chat_id=ctx.chat_id,
             requester_id=ctx.user_id,
@@ -505,13 +613,43 @@ class BecarioService:
                 f"📂 {remote_run_dir}\n{slurm_req.describe()}"
             ),
             payload=payload,
+            request_intent=Intent.PREPARE_CALC,
+            request_params=dict(params),
         )
         token = self._confirmations.put(action)
         return Reply(
             text=(
                 f"✅ Inputs generados y subidos al cluster.\n\n"
-                f"⚠️ ¿Confirmás el envío?\n\n{action.description}"
+                f"⚠️ ¿Confirmás el envío?\n\n{action.description}{duplicate_note}"
             ),
             needs_confirmation=True,
             confirmation_token=token,
+            allow_modify=True,
+        )
+
+    def _duplicate_note(self, owner_id: int, job_name: str, fingerprint: str) -> str:
+        """Aviso si esto (o algo muy similar) ya se corrió: mismo job_name =
+        mismo material y tipo de cálculo; misma huella = pedido idéntico."""
+        if self._calc_runs is None:
+            return ""
+        rows = self._calc_runs.find_by_name(owner_id, job_name)
+        if not rows:
+            return ""
+        exact = next((r for r in rows if r.get("fingerprint") == fingerprint), None)
+        if exact is not None:
+            header = (
+                f"\n\n🔁 Ojo: ESTO YA SE CORRIÓ, con exactamente las mismas "
+                f"condiciones, el {exact.get('fecha', '?')} "
+                f"(job {exact.get('job_id', '?')}):\n📂 {exact.get('run_dir', '?')}"
+            )
+        else:
+            prev = rows[0]
+            header = (
+                f"\n\n🔁 Ojo: ya corriste algo muy similar (mismo material y "
+                f"tipo de cálculo) el {prev.get('fecha', '?')} "
+                f"(job {prev.get('job_id', '?')}):\n📂 {prev.get('run_dir', '?')}"
+            )
+        return header + (
+            "\n¿Lo corro de todas formas? Confirmá para correrlo igual, o "
+            "tocá ✏️ Modificar para usar este plan de base y cambiar algo."
         )

@@ -163,6 +163,25 @@ class FakeCalcInputGenerator:
         )
 
 
+class FakeCalcRuns:
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    def add(self, owner_id, job_id, job_name, fingerprint, run_dir) -> None:
+        self.rows.append({
+            "owner_id": owner_id, "job_id": job_id, "job_name": job_name,
+            "fingerprint": fingerprint, "run_dir": run_dir,
+            "fecha": "2026-07-11 10:00",
+        })
+
+    def find_by_name(self, owner_id, job_name, limit=3) -> list[dict]:
+        found = [
+            r for r in reversed(self.rows)
+            if r["owner_id"] == owner_id and r["job_name"] == job_name
+        ]
+        return found[:limit]
+
+
 class FakeJobTracker:
     def __init__(self):
         self.tracked: list[TrackedJob] = []
@@ -222,6 +241,7 @@ def env():
         calc_inputs=FakeCalcInputGenerator(),
         potcar_dir="/potcars",
         remote_base="becario_runs",
+        calc_runs=FakeCalcRuns(),
     )
     return service, router, cluster_factory, history, confirmations, structures, job_tracker
 
@@ -554,6 +574,126 @@ class TestPrepareCalc:
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
         assert not reply.needs_confirmation
         assert factory.gateways["alice"].uploaded_dirs == []
+
+
+class TestDuplicateDetection:
+    """Aviso de "esto ya se corrió" (idéntico o muy similar), integrado a
+    la confirmación: Confirmar = correr igual, Modificar = usar de base."""
+
+    W_RELAX = {"formula": "W", "tipo_calculo": "relajacion"}
+
+    def _prepare(self, service, router, params) -> "Reply":
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params=dict(params))
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+    def test_first_run_has_no_warning(self, env):
+        service, router, *_ = env
+        reply = self._prepare(service, router, self.W_RELAX)
+        assert "🔁" not in reply.text
+        assert reply.allow_modify
+
+    def test_unconfirmed_run_is_not_recorded(self, env):
+        service, router, *_ = env
+        self._prepare(service, router, self.W_RELAX)  # queda sin confirmar
+        reply = self._prepare(service, router, self.W_RELAX)
+        assert "🔁" not in reply.text
+
+    def test_identical_rerun_warns_exact(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.W_RELAX)
+        service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        reply = self._prepare(service, router, self.W_RELAX)
+        assert "ESTO YA SE CORRIÓ" in reply.text
+        assert "4242" in reply.text  # el job de la corrida previa
+        assert reply.needs_confirmation  # igual se puede correr de nuevo
+
+    def test_similar_rerun_warns_similar(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.W_RELAX)
+        service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        reply = self._prepare(service, router, {**self.W_RELAX, "encut": 600})
+        assert "muy similar" in reply.text
+        assert "ESTO YA SE CORRIÓ" not in reply.text
+
+    def test_other_users_runs_do_not_warn(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.W_RELAX)
+        service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params=dict(self.W_RELAX))
+        reply = service.handle_text(chat_id=2, user_id=BOB.telegram_user_id, text="x")
+        assert "🔁" not in reply.text
+
+
+class TestPlanModification:
+    """Botón ✏️ Modificar: el próximo mensaje describe el cambio y se
+    mezcla con el plan original."""
+
+    SCAN = {
+        "formula": "Zr", "tipo_calculo": "convergencia_encut",
+        "encut_min": 250, "encut_max": 400,
+    }
+
+    def _prepare(self, service, router, params) -> "Reply":
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params=dict(params))
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+    def test_modify_then_message_merges_params(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.SCAN)
+        ask = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert "qué querés cambiar" in ask.text
+
+        # El próximo mensaje solo trae el cambio; el resto se mantiene.
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"encut_max": 500})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="subilo a 500")
+        assert reply.needs_confirmation
+        req = service._calc_inputs.requests[-1]
+        assert req.encut_values == [250, 300, 350, 400, 450, 500]
+        assert req.formula == "Zr"
+
+    def test_modify_consumes_the_pending_action(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.SCAN)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        reply = service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert "expiró" in reply.text
+
+    def test_foreign_modification_is_blocked(self, env):
+        service, router, *_ = env
+        prep = self._prepare(service, router, self.SCAN)
+        reply = service.start_modification(prep.confirmation_token, requester_id=BOB.telegram_user_id)
+        assert "no te pertenece" in reply.text.lower()
+        # La acción de Alice sigue viva:
+        assert service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+    def test_cancel_action_is_not_modifiable(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.CANCEL_JOB, params={"job_id": "777"})
+        prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777")
+        assert not prep.allow_modify
+        reply = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert "no admite" in reply.text
+
+    def test_unintelligible_change_drops_the_plan(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare(service, router, self.SCAN)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ehh")
+        assert "No entendí" in reply.text
+        # El modo edición quedó descartado: el próximo mensaje rutea normal.
+        router.next = RoutedRequest(intent=Intent.CHECK_STATUS, params={})
+        reply2 = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="estado")
+        assert "Estado" in reply2.text
+
+    def test_expired_token_cannot_start_modification(self, env):
+        service, *_ = env
+        reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id)
+        assert "expiró" in reply.text
 
 
 class TestJobTracking:

@@ -176,6 +176,14 @@ máximo del barrido):
 ✅ ENCUT recomendado: 300 eV (ΔE < 1 meV/át respecto de 450 eV)
 ```
 
+La confirmación ofrece tres botones: **✅ Confirmar**, **❌ Cancelar** y
+**✏️ Modificar** — este último descarta el envío y espera un mensaje con
+el cambio ("subí el ENCUT máximo a 600"); el resto del plan se mantiene y
+se rearma la confirmación. Además, cada envío queda registrado con una
+huella de sus parámetros: si pedís algo idéntico o muy similar a una
+corrida previa, la confirmación te lo avisa (con fecha, job y directorio)
+y podés correrlo igual o usarlo de base con ✏️ Modificar.
+
 Requiere configurar en el `.env`: `BECARIO_POTCAR_DIR` (biblioteca en el
 cluster), `BECARIO_VASP_CMD` y opcionalmente `BECARIO_VASP_PRELUDE` y
 `BECARIO_REMOTE_BASE` (ver `.env.example`).

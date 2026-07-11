@@ -403,6 +403,19 @@ class TestSQLiteJobTracker:
         tracker.track(job)
         assert tracker.active_jobs()[0].workflow == "encut_scan"
 
+    def test_calc_run_repository_roundtrip_and_scoping(self, tmp_path):
+        from becario.infrastructure.storage import SQLiteCalcRunRepository
+
+        repo = SQLiteCalcRunRepository(str(tmp_path / "runs.db"))
+        repo.add(111, "1", "Zr_convergencia_encut", '{"encut": 400}', "/data/runs/a")
+        repo.add(111, "2", "Zr_convergencia_encut", '{"encut": 500}', "/data/runs/b")
+        repo.add(222, "3", "Zr_convergencia_encut", '{"encut": 400}', "/data/runs/c")
+
+        rows = repo.find_by_name(111, "Zr_convergencia_encut")
+        assert [r["job_id"] for r in rows] == ["2", "1"]  # más reciente primero
+        assert all(r["owner_id"] == 111 for r in rows)  # nunca ve las de otro
+        assert repo.find_by_name(111, "W_relajacion") == []
+
     def test_workflow_column_soft_migration(self, tmp_path):
         """Una base creada antes de la columna `workflow` se migra sola."""
         import sqlite3

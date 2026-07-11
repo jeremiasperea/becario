@@ -28,6 +28,7 @@ from becario.infrastructure.ollama_router import OllamaRouter
 from becario.infrastructure.ssh_gateway import SSHClusterGatewayFactory
 from becario.infrastructure.storage import (
     InMemoryConfirmationStore,
+    SQLiteCalcRunRepository,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
 )
@@ -65,6 +66,7 @@ def build_bot(settings: Settings) -> TelegramBot:
     history = SQLiteHistoryRepository(settings.db_path)
     history.ensure_schema()
     job_tracker = SQLiteJobTracker(settings.db_path)
+    calc_runs = SQLiteCalcRunRepository(settings.db_path)
     confirmations = InMemoryConfirmationStore(
         ttl_seconds=settings.confirmation_ttl_seconds
     )
@@ -79,6 +81,8 @@ def build_bot(settings: Settings) -> TelegramBot:
         calc_inputs=calc_inputs,
         potcar_dir=settings.potcar_dir,
         remote_base=settings.remote_base,
+        calc_runs=calc_runs,
+        edit_ttl_seconds=settings.confirmation_ttl_seconds,
     )
     job_monitor = JobMonitorService(
         registry=registry,
