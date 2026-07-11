@@ -30,6 +30,7 @@ class Intent(str, Enum):
     QUERY_RESULTS = "consultar_resultados"
     CHECK_STATUS = "revisar_estado"
     CANCEL_JOB = "cancelar_calculo"
+    CREATE_DIR = "crear_directorio"
     UNKNOWN = "error"
 
     @classmethod
@@ -51,6 +52,15 @@ _TIME_RE = re.compile(r"\A(\d{1,3}-)?\d{1,3}:\d{2}:\d{2}\Z")  # [D-]HH:MM:SS
 _SCRIPT_PATH_RE = re.compile(r"\A/[A-Za-z0-9_\-./]+\Z")
 _FORMULA_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9]{0,15}\Z")  # Si, NaCl, H2O, TiO2
 _UNIX_USER_RE = re.compile(r"\A[a-z_][a-z0-9_-]{0,31}\Z")
+
+
+def _validate_remote_dir_path(v: str) -> str:
+    """Política única para directorios remotos: ruta absoluta, sin
+    metacaracteres de shell y sin '..'. La comparten `RemoteDirRequest`
+    y `StructureRequest.remote_dest_dir` para que no diverjan."""
+    if not _SCRIPT_PATH_RE.match(v) or ".." in v:
+        raise ValueError(f"directorio remoto inválido: {v!r}")
+    return v
 
 
 class SlurmJobRequest(BaseModel):
@@ -118,6 +128,21 @@ class JobId(BaseModel):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.value
+
+
+class RemoteDirRequest(BaseModel):
+    """Directorio remoto validado a crear en el cluster.
+
+    Misma política de rutas que `remote_dest_dir` en `StructureRequest`:
+    absoluta, sin metacaracteres de shell y sin '..'.
+    """
+
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def _v_path(cls, v: str) -> str:
+        return _validate_remote_dir_path(v.strip())
 
 
 class HistoryFilter(BaseModel):
@@ -245,9 +270,7 @@ class StructureRequest(BaseModel):
     def _v_remote(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return None
-        if not _SCRIPT_PATH_RE.match(v) or ".." in v:
-            raise ValueError(f"directorio remoto inválido: {v!r}")
-        return v
+        return _validate_remote_dir_path(v)
 
 
 @dataclass(frozen=True)

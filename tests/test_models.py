@@ -12,6 +12,7 @@ from becario.domain.models import (
     Intent,
     JobId,
     PendingAction,
+    RemoteDirRequest,
     SlurmJobRequest,
 )
 
@@ -101,6 +102,32 @@ class TestJobId:
         # valida estricto. El resultado nunca contiene el newline.
         assert JobId(value="12345\n").value == "12345"
         assert JobId(value="  12345  ").value == "12345"
+
+
+class TestRemoteDirRequest:
+    @pytest.mark.parametrize("good", ["/home/ana/pruebas", "/scratch/runs/Zr_hcp"])
+    def test_valid(self, good):
+        assert RemoteDirRequest(path=good).path == good
+
+    def test_surrounding_whitespace_is_normalized(self):
+        assert RemoteDirRequest(path="  /home/ana/pruebas  ").path == "/home/ana/pruebas"
+
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "relativa/pruebas",
+            "/tmp/../etc",
+            "/tmp/x; rm -rf /",
+            "/tmp/$(whoami)",
+            "/tmp/`id`",
+            "/tmp/x\nscancel -u root",
+            "/tmp/x'",
+            "",
+        ],
+    )
+    def test_injection_rejected(self, evil):
+        with pytest.raises(ValidationError):
+            RemoteDirRequest(path=evil)
 
 
 class TestHistoryFilter:

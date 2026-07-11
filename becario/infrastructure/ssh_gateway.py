@@ -145,6 +145,14 @@ class SSHClusterGateway:
             return None
         return result.stdout.strip().splitlines()[0].strip() or None
 
+    def make_directory(self, path: str) -> CommandResult:
+        result = self._run(f"mkdir -p {shlex.quote(path)}")
+        if result.ok and not result.stdout.strip():
+            # mkdir -p es silencioso al tener éxito: darle algo al usuario.
+            # "listo" y no "creado": si ya existía, mkdir -p no crea nada.
+            return CommandResult(ok=True, stdout=f"Directorio listo: {path}")
+        return result
+
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:
         """Sube un archivo por SFTP (reutiliza la conexión paramiko)."""
         try:

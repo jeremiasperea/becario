@@ -31,6 +31,7 @@ from ..domain.models import (
     JobId,
     OutputFormat,
     PendingAction,
+    RemoteDirRequest,
     SlurmJobRequest,
     StructureKind,
     StructureRequest,
@@ -61,7 +62,8 @@ HELP_TEXT = (
     '• "Mostrá el estado de mis trabajos"\n'
     '• "Cancelá el trabajo 12345"\n'
     '• "Consultá el historial"\n'
-    '• "Generá un POSCAR de Si diamond 2x2x2"'
+    '• "Generá un POSCAR de Si diamond 2x2x2"\n'
+    '• "Creame la carpeta /home/usuario/pruebas"'
 )
 
 NOT_REGISTERED_TEXT = (
@@ -258,6 +260,7 @@ class BecarioService:
             Intent.MODIFY_STRUCTURE: self._modify_structure,
             Intent.PREPARE_CALC: self._prepare_calc,
             Intent.QUERY_RESULTS: self._query_results,
+            Intent.CREATE_DIR: self._create_directory,
         }
 
     # ------------------------------------------------------------------
@@ -481,6 +484,27 @@ class BecarioService:
                 return Reply(text=f"⚠️ job_id inválido: {raw!r}")
         result = ctx.cluster.job_status(jid)
         return Reply(text=f"📊 Estado trabajos ({ctx.identity.ssh_user}):\n{result.message}")
+
+    def _create_directory(self, ctx: _Ctx, params: dict) -> Reply:
+        raw = params.get("destino_remoto")
+        if not raw:
+            return Reply(
+                text="⚠️ Decime la ruta de la carpeta que querés crear, "
+                'p. ej.: "creame la carpeta /home/usuario/pruebas".'
+            )
+        try:
+            req = RemoteDirRequest(path=str(raw))
+        except (ValidationError, ValueError):
+            return Reply(
+                text=f"⚠️ Ruta inválida: {raw!r}. Tiene que ser una ruta "
+                "absoluta (empezar con /), sin caracteres especiales ni '..'."
+            )
+        result = ctx.cluster.make_directory(req.path)
+        if not result.ok:
+            # Sin esto, un mkdir fallido (permisos, cuota) solo se ve en el chat.
+            logger.warning("mkdir remoto falló para %s: %s", req.path, result.message)
+        status = "✅" if result.ok else "❌"
+        return Reply(text=f"{status} 📁 {result.message}")
 
     def _query_history(self, ctx: _Ctx, params: dict) -> Reply:
         try:

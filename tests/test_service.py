@@ -72,6 +72,9 @@ class FakeCluster:
         self.submitted: list[SlurmJobRequest] = []
         self.cancelled: list[JobId] = []
         self.status_calls: list[Optional[JobId]] = []
+        self.made_dirs: list[str] = []
+        # Si se define, make_directory devuelve esto (para simular fallos):
+        self.make_directory_result: CommandResult | None = None
         self.uploads: list[tuple[str, str]] = []
         self.uploaded_dirs: list[tuple[str, str]] = []
         self.concatenated: list[tuple[tuple[str, ...], str]] = []
@@ -91,6 +94,12 @@ class FakeCluster:
     def job_status(self, job_id: Optional[JobId]) -> CommandResult:
         self.status_calls.append(job_id)
         return CommandResult(ok=True, stdout="JOBID  NAME  STATE")
+
+    def make_directory(self, path: str) -> CommandResult:
+        self.made_dirs.append(path)
+        if self.make_directory_result is not None:
+            return self.make_directory_result
+        return CommandResult(ok=True, stdout=f"Directorio listo: {path}")
 
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:
         self.uploads.append((local_path, remote_path))
@@ -454,6 +463,60 @@ class TestReadOnlyActions:
         router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="asdf")
         assert reply.text == HELP_TEXT
+
+
+class TestCreateDirectory:
+    """`crear_directorio` es no destructivo (mkdir -p): ejecuta directo,
+    sin confirmación, pero la ruta pasa igual por el dominio."""
+
+    def test_creates_directory_on_requesters_own_account(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.CREATE_DIR, params={"destino_remoto": "/home/alice/pruebas"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="creame la carpeta pruebas"
+        )
+        assert not reply.needs_confirmation
+        assert "Directorio listo" in reply.text
+        assert factory.gateways["alice"].made_dirs == ["/home/alice/pruebas"]
+        assert "bob" not in factory.gateways
+
+    @pytest.mark.parametrize(
+        "evil",
+        ["/tmp/../etc", "relativa/pruebas", "/tmp/x; rm -rf /", "/tmp/$(id)"],
+    )
+    def test_invalid_path_never_reaches_the_gateway(self, env, evil):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.CREATE_DIR, params={"destino_remoto": evil})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="crea la carpeta")
+        assert "Ruta inválida" in reply.text
+        assert factory.gateways["alice"].made_dirs == []
+
+    def test_missing_path_asks_for_it(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.CREATE_DIR, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="crea una carpeta")
+        assert "ruta" in reply.text.lower()
+        assert factory.gateways["alice"].made_dirs == []
+
+    def test_gateway_failure_is_reported_to_the_user(self, env):
+        service, router, factory, *_ = env
+        # Pre-sembramos el gateway cacheado de alice con un mkdir que falla.
+        gateway = FakeCluster("alice")
+        gateway.make_directory_result = CommandResult(
+            ok=False, stderr="mkdir: permiso denegado"
+        )
+        factory.gateways["alice"] = gateway
+        router.next = RoutedRequest(
+            intent=Intent.CREATE_DIR, params={"destino_remoto": "/home/alice/pruebas"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="creame la carpeta pruebas"
+        )
+        assert reply.text.startswith("❌")
+        assert "permiso denegado" in reply.text
+        assert gateway.made_dirs == ["/home/alice/pruebas"]
 
 
 class TestStructureGeneration:

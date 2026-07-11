@@ -68,6 +68,11 @@ class ClusterGateway(Protocol):
         usuario. None si no se pudo determinar."""
         ...
 
+    def make_directory(self, path: str) -> CommandResult:
+        """Crea un directorio remoto (mkdir -p: idempotente, con padres).
+        La ruta ya viene validada por el dominio (`RemoteDirRequest`)."""
+        ...
+
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult: ...
 
     def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:

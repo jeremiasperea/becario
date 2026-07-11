@@ -24,6 +24,7 @@ class TestParseLLMOutput:
             ("consultar_resultados", Intent.QUERY_RESULTS),
             ("revisar_estado", Intent.CHECK_STATUS),
             ("cancelar_calculo", Intent.CANCEL_JOB),
+            ("crear_directorio", Intent.CREATE_DIR),
         ]:
             routed = parse(f'{{"action": "{raw}", "parametros": {{}}}}')
             assert routed.intent is expected
@@ -77,6 +78,7 @@ class TestSchema:
         enum_values = schema["$defs"]["Intent"]["enum"]
         assert "enviar_slurm" in enum_values
         assert "cancelar_calculo" in enum_values
+        assert "crear_directorio" in enum_values
 
     def test_schema_has_structure_params(self):
         schema = RouterParams.model_json_schema()

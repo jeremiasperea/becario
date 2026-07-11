@@ -235,6 +235,27 @@ class TestSSHCommandConstruction:
         gw.job_status(JobId(value="99"))
         assert "sacct -j 99" in gw.commands[0]
 
+    def test_make_directory_quotes_path(self):
+        gw = RecordingGateway()
+        gw.make_directory("/home/user/calc dir")
+        assert gw.commands[0] == "mkdir -p '/home/user/calc dir'"
+
+    def test_make_directory_synthesizes_message_on_silent_success(self, monkeypatch):
+        # mkdir -p exitoso no imprime nada: el gateway fabrica el mensaje.
+        gw = RecordingGateway()
+        monkeypatch.setattr(gw, "_run", lambda cmd: CommandResult(ok=True, stdout=""))
+        result = gw.make_directory("/home/user/pruebas")
+        assert result.ok
+        assert result.stdout == "Directorio listo: /home/user/pruebas"
+
+    def test_make_directory_failure_passes_through(self, monkeypatch):
+        gw = RecordingGateway()
+        failure = CommandResult(ok=False, stderr="mkdir: permiso denegado")
+        monkeypatch.setattr(gw, "_run", lambda cmd: failure)
+        result = gw.make_directory("/root/prohibido")
+        # El fallo llega intacto: la rama del mensaje fabricado no se activa.
+        assert result is failure
+
     def test_upload_creates_remote_dir_quoted(self, monkeypatch):
         gw = RecordingGateway()
         # Interceptamos SFTP: solo nos interesa el mkdir -p generado.
