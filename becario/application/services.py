@@ -19,6 +19,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from ..domain.models import (
+    CalcKind,
     ClusterIdentity,
     HistoryFilter,
     Intent,
@@ -29,8 +30,10 @@ from ..domain.models import (
     StructureKind,
     StructureRequest,
     TrackedJob,
+    VaspCalcRequest,
 )
 from ..domain.ports import (
+    CalcInputGenerator,
     ClusterGateway,
     ClusterGatewayFactory,
     ConfirmationStore,
@@ -45,11 +48,12 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "❓ No pude interpretar tu pedido. Probá con:\n"
-    '• "Corré un cálculo DFT para grafeno"\n'
+    '• "Relajá los parámetros de red del bulk de W"\n'
+    '• "Hacé la curva de convergencia de ENCUT para Zr hcp"\n'
     '• "Mostrá el estado de mis trabajos"\n'
     '• "Cancelá el trabajo 12345"\n'
     '• "Consultá el historial"\n'
-    '• "Modificá la estructura de la celda"'
+    '• "Generá un POSCAR de Si diamond 2x2x2"'
 )
 
 NOT_REGISTERED_TEXT = (
@@ -116,6 +120,9 @@ class BecarioService:
         confirmations: ConfirmationStore,
         structures: StructureBuilder,
         job_tracker: JobTracker,
+        calc_inputs: Optional[CalcInputGenerator] = None,
+        potcar_dir: str = "",
+        remote_base: str = "becario_runs",
     ) -> None:
         self._router = router
         self._registry = registry
@@ -124,6 +131,9 @@ class BecarioService:
         self._confirmations = confirmations
         self._structures = structures
         self._job_tracker = job_tracker
+        self._calc_inputs = calc_inputs
+        self._potcar_dir = potcar_dir.rstrip("/")
+        self._remote_base = remote_base.rstrip("/")
 
     # ------------------------------------------------------------------
     # Entrada principal: texto del usuario
@@ -153,6 +163,7 @@ class BecarioService:
             Intent.CHECK_STATUS: self._check_status,
             Intent.QUERY_DB: self._query_history,
             Intent.MODIFY_STRUCTURE: self._modify_structure,
+            Intent.PREPARE_CALC: self._prepare_calc,
         }
         handler = handlers.get(routed.intent)
         if handler is None:
@@ -180,6 +191,8 @@ class BecarioService:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
 
         if action.intent is Intent.SUBMIT_SLURM:
+            # `workflow` viaja junto a los campos del job pero no es parte de
+            # SlurmJobRequest (Pydantic ignora las claves extra del payload).
             req = SlurmJobRequest(**action.payload)
             result = cluster.submit_job(req)
             if result.ok and result.job_id:
@@ -190,6 +203,7 @@ class BecarioService:
                     ssh_user=identity.ssh_user,
                     job_name=req.job_name,
                     script_path=req.script_path,
+                    workflow=action.payload.get("workflow", ""),
                 ))
                 self._history.add(
                     owner_id=requester_id, job_id=result.job_id,
@@ -361,3 +375,140 @@ class BecarioService:
             )
 
         return Reply(text=f"🔬 Estructura generada:\n{result.describe()}{uploaded_note}")
+
+    # ------------------------------------------------------------------
+    # Cálculo VASP completo: genera inputs, sube y deja el sbatch listo
+    # ------------------------------------------------------------------
+
+    # Orden de búsqueda del pseudopotencial de cada elemento en la
+    # biblioteca del cluster (variantes semi-core primero, como recomienda
+    # VASP para la mayoría de los metales de transición).
+    _POTCAR_VARIANTS = ("_sv", "_pv", "")
+
+    def _prepare_calc(self, ctx: _Ctx, params: dict) -> Reply:
+        if self._calc_inputs is None:
+            return Reply(
+                text="⚠️ La preparación de cálculos VASP no está configurada en este bot."
+            )
+        formula = params.get("formula") or params.get("formula_quimica")
+        if not formula:
+            return Reply(
+                text="⚠️ Decime qué material querés calcular, p. ej.: "
+                '"relajá los parámetros de red del bulk de W".'
+            )
+        if not self._potcar_dir or not self._potcar_dir.startswith("/"):
+            return Reply(
+                text="⚠️ Falta configurar la biblioteca de POTCAR del cluster "
+                "(BECARIO_POTCAR_DIR, ruta absoluta) para preparar cálculos VASP."
+            )
+
+        kind_raw = str(params.get("tipo_calculo") or "").strip().lower()
+        calc_kind = (
+            CalcKind(kind_raw)
+            if kind_raw in CalcKind._value2member_map_
+            else CalcKind.STATIC
+        )
+
+        # Barrido de ENCUT explícito (si el usuario dio rango); si no, el
+        # modelo de dominio usa su default.
+        encut_values = None
+        lo, hi = params.get("encut_min"), params.get("encut_max")
+        if calc_kind is CalcKind.ENCUT_SCAN and lo and hi:
+            step = int(params.get("encut_paso") or 50)
+            if step <= 0:
+                return Reply(text="⚠️ El paso del barrido de ENCUT debe ser positivo.")
+            encut_values = list(range(int(lo), int(hi) + 1, step))
+
+        try:
+            sc = params.get("supercelda") or [1, 1, 1]
+            kp = params.get("puntos_k")
+            req = VaspCalcRequest(
+                formula=str(formula),
+                crystal=params.get("red_cristalina"),
+                lattice_a=params.get("parametro_red"),
+                supercell=tuple(int(x) for x in sc),
+                calc_kind=calc_kind,
+                encut=int(params.get("encut") or 520),
+                kpoints=tuple(int(x) for x in kp) if kp else None,
+                encut_values=encut_values,
+                partition=params.get("particion") or "default",
+                nodes=int(params.get("nodos") or 1),
+                time_limit=params.get("tiempo_limite") or "01:00:00",
+            )
+        except (ValidationError, ValueError, TypeError) as exc:
+            return Reply(text=f"⚠️ Parámetros de cálculo inválidos:\n{exc}")
+
+        try:
+            result = self._calc_inputs.generate(req)
+        except Exception as exc:  # StructureBuildError y afines
+            return Reply(text=f"⚠️ No pude generar los inputs:\n{exc}")
+
+        # POTCAR: una variante por elemento, en el orden de especies del POSCAR.
+        potcar_sources: list[str] = []
+        for element in result.elements:
+            candidates = [
+                f"{self._potcar_dir}/{element}{suffix}/POTCAR"
+                for suffix in self._POTCAR_VARIANTS
+            ]
+            found = next((c for c in candidates if ctx.cluster.file_exists(c)), None)
+            if found is None:
+                tried = ", ".join(f"{element}{s}" for s in self._POTCAR_VARIANTS)
+                return Reply(
+                    text=f"⚠️ No encontré POTCAR para {element} en "
+                    f"{self._potcar_dir} (busqué {tried})."
+                )
+            potcar_sources.append(found)
+
+        base = self._remote_base
+        if not base.startswith("/"):
+            home = ctx.cluster.home_dir()
+            if not home:
+                return Reply(
+                    text="⚠️ No pude resolver el home remoto para ubicar la corrida. "
+                    "Revisá la conexión al cluster."
+                )
+            base = f"{home}/{base}"
+        remote_run_dir = f"{base}/{result.run_name}"
+
+        up = ctx.cluster.upload_dir(result.local_dir, remote_run_dir)
+        if not up.ok:
+            return Reply(text=f"⚠️ Falló la subida de los inputs: {up.message}")
+
+        cat = ctx.cluster.concat_files(potcar_sources, f"{remote_run_dir}/POTCAR")
+        if not cat.ok:
+            return Reply(text=f"⚠️ No pude armar el POTCAR en el cluster: {cat.message}")
+
+        try:
+            slurm_req = SlurmJobRequest(
+                job_name=f"{req.formula}_{calc_kind.value}",
+                partition=req.partition,
+                nodes=req.nodes,
+                time_limit=req.time_limit,
+                script_path=f"{remote_run_dir}/run_vasp.sh",
+            )
+        except (ValidationError, ValueError) as exc:
+            return Reply(text=f"⚠️ Parámetros inválidos para el envío:\n{exc}")
+
+        workflow = "encut_scan" if calc_kind is CalcKind.ENCUT_SCAN else ""
+        payload = slurm_req.model_dump()
+        payload["workflow"] = workflow
+        action = PendingAction(
+            chat_id=ctx.chat_id,
+            requester_id=ctx.user_id,
+            intent=Intent.SUBMIT_SLURM,
+            description=(
+                f"🧪 Enviar cálculo VASP ({calc_kind.value}, cuenta "
+                f"{ctx.identity.ssh_user}):\n{result.describe()}\n"
+                f"📂 {remote_run_dir}\n{slurm_req.describe()}"
+            ),
+            payload=payload,
+        )
+        token = self._confirmations.put(action)
+        return Reply(
+            text=(
+                f"✅ Inputs generados y subidos al cluster.\n\n"
+                f"⚠️ ¿Confirmás el envío?\n\n{action.description}"
+            ),
+            needs_confirmation=True,
+            confirmation_token=token,
+        )

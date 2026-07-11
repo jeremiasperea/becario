@@ -95,6 +95,15 @@ class Settings:
     structures_dir: str = "./structures"
     confirmation_ttl_seconds: float = 600.0
     monitor_interval_seconds: float = 60.0
+    # Cálculos VASP: biblioteca de POTCAR en el cluster (ruta absoluta,
+    # con un subdirectorio por elemento: Zr_sv/POTCAR, W/POTCAR…),
+    # comando de ejecución y prelude del script de corrida.
+    potcar_dir: str = ""
+    vasp_cmd: str = "vasp_std"
+    vasp_prelude: str = ""
+    # Dónde viven las corridas en el cluster (relativa al home remoto
+    # salvo que empiece con /).
+    remote_base: str = "becario_runs"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -111,4 +120,9 @@ class Settings:
             structures_dir=os.environ.get("BECARIO_STRUCTURES_DIR", "./structures"),
             confirmation_ttl_seconds=_float_env("BECARIO_CONFIRM_TTL", "600"),
             monitor_interval_seconds=_float_env("BECARIO_MONITOR_INTERVAL", "60"),
+            potcar_dir=os.environ.get("BECARIO_POTCAR_DIR", "").strip(),
+            vasp_cmd=os.environ.get("BECARIO_VASP_CMD", "vasp_std").strip() or "vasp_std",
+            vasp_prelude=os.environ.get("BECARIO_VASP_PRELUDE", "").strip(),
+            remote_base=os.environ.get("BECARIO_REMOTE_BASE", "becario_runs").strip()
+            or "becario_runs",
         )

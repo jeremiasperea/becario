@@ -15,6 +15,8 @@ from becario.application.services import (
     HELP_TEXT,
 )
 from becario.domain.models import (
+    CalcDirResult,
+    CalcKind,
     ClusterIdentity,
     CommandResult,
     HistoryFilter,
@@ -26,6 +28,7 @@ from becario.domain.models import (
     StructureRequest,
     StructureResult,
     TrackedJob,
+    VaspCalcRequest,
 )
 from becario.infrastructure.storage import InMemoryConfirmationStore
 
@@ -67,6 +70,10 @@ class FakeCluster:
         self.cancelled: list[JobId] = []
         self.status_calls: list[Optional[JobId]] = []
         self.uploads: list[tuple[str, str]] = []
+        self.uploaded_dirs: list[tuple[str, str]] = []
+        self.concatenated: list[tuple[tuple[str, ...], str]] = []
+        # POTCARs "presentes" en la biblioteca del cluster de mentira:
+        self.existing_files: set[str] = {"/potcars/Zr_sv/POTCAR", "/potcars/W/POTCAR"}
 
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
         self.submitted.append(req)
@@ -83,6 +90,26 @@ class FakeCluster:
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:
         self.uploads.append((local_path, remote_path))
         return CommandResult(ok=True, stdout=f"Archivo subido a {remote_path}")
+
+    def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:
+        self.uploaded_dirs.append((local_dir, remote_dir))
+        return CommandResult(ok=True, stdout=f"Directorio subido a {remote_dir}")
+
+    def home_dir(self) -> Optional[str]:
+        return f"/home/{self.ssh_user}"
+
+    def file_exists(self, remote_path: str) -> bool:
+        return remote_path in self.existing_files
+
+    def list_dir(self, remote_dir: str) -> Optional[list[str]]:
+        return None
+
+    def read_file(self, remote_path: str) -> Optional[str]:
+        return None
+
+    def concat_files(self, sources: list[str], dest: str) -> CommandResult:
+        self.concatenated.append((tuple(sources), dest))
+        return CommandResult(ok=True)
 
     def job_state(self, job_id: JobId) -> str:
         return "RUNNING"
@@ -110,6 +137,29 @@ class FakeStructureBuilder:
             chemical_formula=req.formula,
             n_atoms=2,
             cell_summary="a=5.430 Å, b=5.430 Å, c=5.430 Å",
+        )
+
+
+class FakeCalcInputGenerator:
+    def __init__(self):
+        self.requests: list[VaspCalcRequest] = []
+
+    def generate(self, req: VaspCalcRequest) -> CalcDirResult:
+        self.requests.append(req)
+        encut_values = (
+            req.scan_values() if req.calc_kind is CalcKind.ENCUT_SCAN else [req.encut]
+        )
+        return CalcDirResult(
+            local_dir="/tmp/runs/fake_run",
+            run_name=f"{req.formula}_{req.calc_kind.value}_x",
+            files=["INCAR", "KPOINTS", "POSCAR", "run_vasp.sh"],
+            elements=[req.formula],
+            chemical_formula=req.formula,
+            n_atoms=2,
+            cell_summary="a=3.230 Å, b=3.230 Å, c=5.170 Å",
+            kpoints=(9, 9, 6),
+            calc_kind=req.calc_kind,
+            encut_values=encut_values,
         )
 
 
@@ -169,6 +219,9 @@ def env():
         confirmations=confirmations,
         structures=structures,
         job_tracker=job_tracker,
+        calc_inputs=FakeCalcInputGenerator(),
+        potcar_dir="/potcars",
+        remote_base="becario_runs",
     )
     return service, router, cluster_factory, history, confirmations, structures, job_tracker
 
@@ -377,6 +430,118 @@ class TestStructureGeneration:
         assert "Estructura generada" in reply.text
         assert len(factory.gateways["alice"].uploads) == 1
         assert "bob" not in factory.gateways
+
+
+class TestPrepareCalc:
+    """Cálculo VASP completo: generar inputs, subir, armar POTCAR y
+    dejar el sbatch esperando confirmación."""
+
+    def test_full_flow_generates_uploads_and_asks_confirmation(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={"formula": "W", "tipo_calculo": "relajacion"},
+        )
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá W")
+        assert reply.needs_confirmation
+        cluster = factory.gateways["alice"]
+        # Se subió el directorio a la base remota resuelta contra el home:
+        assert cluster.uploaded_dirs == [
+            ("/tmp/runs/fake_run", "/home/alice/becario_runs/W_relajacion_x")
+        ]
+        # El POTCAR se armó con la variante disponible (W, sin sufijo):
+        assert cluster.concatenated == [
+            (("/potcars/W/POTCAR",), "/home/alice/becario_runs/W_relajacion_x/POTCAR")
+        ]
+        # Pero nada se envió todavía:
+        assert cluster.submitted == []
+
+    def test_potcar_variant_lookup_prefers_sv(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"formula": "Zr", "red_cristalina": "hcp"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        sources, _ = factory.gateways["alice"].concatenated[0]
+        assert sources == ("/potcars/Zr_sv/POTCAR",)
+
+    def test_missing_potcar_aborts_before_upload(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"formula": "Si"})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert not reply.needs_confirmation
+        assert "POTCAR" in reply.text
+        assert factory.gateways["alice"].uploaded_dirs == []
+
+    def test_confirm_submits_and_tracks_workflow(self, env):
+        service, router, factory, *_, tracker = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={
+                "formula": "Zr",
+                "tipo_calculo": "convergencia_encut",
+                "encut_min": 250,
+                "encut_max": 400,
+                "encut_paso": 50,
+            },
+        )
+        prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        cluster = factory.gateways["alice"]
+        assert len(cluster.submitted) == 1
+        submitted = cluster.submitted[0]
+        assert submitted.script_path.endswith("/run_vasp.sh")
+        assert tracker.tracked[0].workflow == "encut_scan"
+
+    def test_encut_range_reaches_generator(self, env):
+        service, router, *_ = env
+        generator = service._calc_inputs
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={
+                "formula": "Zr",
+                "tipo_calculo": "convergencia_encut",
+                "encut_min": 250,
+                "encut_max": 400,
+            },
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert generator.requests[0].encut_values == [250, 300, 350, 400]
+
+    def test_single_calc_does_not_tag_workflow(self, env):
+        service, router, factory, *_, tracker = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={"formula": "W", "tipo_calculo": "relajacion"},
+        )
+        prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert tracker.tracked[0].workflow == ""
+
+    def test_missing_formula_asks_for_it(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert not reply.needs_confirmation
+        assert "material" in reply.text
+
+    def test_unconfigured_potcar_dir_warns(self, env):
+        service, router, *_ = env
+        service._potcar_dir = ""
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"formula": "W"})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert "BECARIO_POTCAR_DIR" in reply.text
+
+    def test_evil_params_rejected(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={"formula": "W", "particion": "cpu; rm -rf /"},
+        )
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert not reply.needs_confirmation
+        assert factory.gateways["alice"].uploaded_dirs == []
 
 
 class TestJobTracking:

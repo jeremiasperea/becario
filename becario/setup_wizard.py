@@ -85,6 +85,24 @@ def run_setup_wizard(env_path: Path = ENV_PATH) -> None:
         "BECARIO_OLLAMA_URL": ollama_url,
         "BECARIO_OLLAMA_MODEL": ollama_model,
     }
+
+    print("\n4) Cálculos VASP (opcional: podés configurarlo después en el .env)")
+    print("   Para que el bot prepare cálculos completos necesita saber dónde")
+    print("   está la biblioteca de POTCAR en el cluster (un subdirectorio por")
+    print("   elemento, p. ej. /data/potcars/Zr_sv/POTCAR) y cómo correr VASP.")
+    potcar_dir = input(
+        "   Ruta de la biblioteca de POTCAR (Enter para saltear): "
+    ).strip()
+    if potcar_dir:
+        values["BECARIO_POTCAR_DIR"] = potcar_dir
+        values["BECARIO_VASP_CMD"] = _ask(
+            "   Comando para correr VASP", "mpirun vasp_std"
+        )
+        vasp_prelude = input(
+            "   Línea previa del script (módulos/exports, Enter para ninguna): "
+        ).strip()
+        if vasp_prelude:
+            values["BECARIO_VASP_PRELUDE"] = vasp_prelude
     _write_env(env_path, values)
 
     # Dejar la config disponible en este mismo proceso.

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional, Protocol
 
 from .models import (
+    CalcDirResult,
     ClusterIdentity,
     CommandResult,
     HistoryFilter,
@@ -20,6 +21,7 @@ from .models import (
     StructureRequest,
     StructureResult,
     TrackedJob,
+    VaspCalcRequest,
 )
 
 
@@ -34,6 +36,13 @@ class StructureBuilder(Protocol):
     (POSCAR/CIF/XYZ) localmente. Implementado con ASE."""
 
     def build(self, req: StructureRequest) -> StructureResult: ...
+
+
+class CalcInputGenerator(Protocol):
+    """Genera localmente el directorio completo de una corrida VASP
+    (POSCAR/INCAR/KPOINTS/script), listo para subir al cluster."""
+
+    def generate(self, req: VaspCalcRequest) -> CalcDirResult: ...
 
 
 class ClusterGateway(Protocol):
@@ -54,6 +63,30 @@ class ClusterGateway(Protocol):
         ...
 
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult: ...
+
+    def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:
+        """Sube un directorio completo (recursivo) por SFTP."""
+        ...
+
+    def home_dir(self) -> Optional[str]:
+        """Home remoto de la cuenta, para resolver rutas absolutas."""
+        ...
+
+    def file_exists(self, remote_path: str) -> bool: ...
+
+    def list_dir(self, remote_dir: str) -> Optional[list[str]]:
+        """Nombres dentro de un directorio remoto; None si no se pudo leer."""
+        ...
+
+    def read_file(self, remote_path: str) -> Optional[str]:
+        """Contenido de un archivo remoto chico (OSZICAR, POSCAR…);
+        None si no existe o no se pudo leer."""
+        ...
+
+    def concat_files(self, sources: list[str], dest: str) -> CommandResult:
+        """`cat` remoto de varios archivos en uno (armar POTCAR desde la
+        biblioteca del cluster). Rutas ya validadas por el dominio."""
+        ...
 
 
 class ClusterGatewayFactory(Protocol):

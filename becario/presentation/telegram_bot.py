@@ -153,6 +153,13 @@ class TelegramBot:
             return
         for note in self._job_monitor.poll_and_notify():
             try:
-                await context.bot.send_message(chat_id=note.chat_id, text=note.text)
+                if note.monospace:
+                    await context.bot.send_message(
+                        chat_id=note.chat_id,
+                        text=f"<pre>{html.escape(note.text)}</pre>",
+                        parse_mode="HTML",
+                    )
+                else:
+                    await context.bot.send_message(chat_id=note.chat_id, text=note.text)
             except Exception as exc:
                 logger.error("No pude notificar a chat_id=%s: %s", note.chat_id, exc)

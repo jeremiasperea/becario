@@ -32,6 +32,7 @@ from becario.infrastructure.storage import (
     SQLiteJobTracker,
 )
 from becario.infrastructure.user_registry import JSONUserRegistry
+from becario.infrastructure.vasp_inputs import VaspInputGenerator
 from becario.presentation.telegram_bot import TelegramBot
 from becario.setup_wizard import run_setup_wizard
 
@@ -56,6 +57,11 @@ def build_bot(settings: Settings) -> TelegramBot:
         default_host=settings.ssh_host, default_port=settings.ssh_port
     )
     structures = ASEStructureBuilder(workdir=settings.structures_dir)
+    calc_inputs = VaspInputGenerator(
+        workdir=settings.structures_dir,
+        vasp_cmd=settings.vasp_cmd,
+        vasp_prelude=settings.vasp_prelude,
+    )
     history = SQLiteHistoryRepository(settings.db_path)
     history.ensure_schema()
     job_tracker = SQLiteJobTracker(settings.db_path)
@@ -70,6 +76,9 @@ def build_bot(settings: Settings) -> TelegramBot:
         confirmations=confirmations,
         structures=structures,
         job_tracker=job_tracker,
+        calc_inputs=calc_inputs,
+        potcar_dir=settings.potcar_dir,
+        remote_base=settings.remote_base,
     )
     job_monitor = JobMonitorService(
         registry=registry,

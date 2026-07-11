@@ -146,6 +146,40 @@ Soporta: bulk de elementos (estructura de referencia de ASE) y compuestos
 (indicando red + parámetro), moléculas de la base G2, superceldas hasta
 10×10×10, vacío, y salida VASP/CIF/XYZ.
 
+## Cálculos VASP completos (`preparar_calculo`)
+
+Además de estructuras sueltas, el bot sabe preparar y lanzar un cálculo
+VASP completo: genera **localmente** POSCAR + INCAR + KPOINTS + script de
+corrida, sube todo por SFTP, arma el POTCAR concatenando los de la
+biblioteca del cluster (`BECARIO_POTCAR_DIR`, con búsqueda de variantes
+`X_sv` → `X_pv` → `X`), y deja el `sbatch` esperando tu confirmación.
+Ejemplos de pedidos:
+
+- "Relajá los parámetros de red del bulk de W" → relajación con `ISIF=3`
+- "Energía estática de Zr hcp con ENCUT 450"
+- "Hacé la curva de convergencia de ENCUT para Zr hcp de 250 a 450"
+
+El barrido de ENCUT corre como **un solo job secuencial** (un
+subdirectorio `encut_NNN/` por punto). Cuando el monitor detecta que
+terminó, **cosecha las energías** de los `OSZICAR` remotos y te manda la
+tabla E(ENCUT) con el ENCUT recomendado (menor valor a <1 meV/átomo del
+máximo del barrido):
+
+```
+📈 Convergencia de ENCUT (Zr_convergencia_encut):
+
+ ENCUT          E (eV)   ΔE (meV/át)
+------------------------------------
+   250      -16.893412         28.29
+   300      -16.948113          0.94
+   ...
+✅ ENCUT recomendado: 300 eV (ΔE < 1 meV/át respecto de 450 eV)
+```
+
+Requiere configurar en el `.env`: `BECARIO_POTCAR_DIR` (biblioteca en el
+cluster), `BECARIO_VASP_CMD` y opcionalmente `BECARIO_VASP_PRELUDE` y
+`BECARIO_REMOTE_BASE` (ver `.env.example`).
+
 ## Cierre del loop: seguimiento de trabajos (ver ADR-0005)
 
 Enviar un cálculo activa su seguimiento automáticamente. Un monitor de

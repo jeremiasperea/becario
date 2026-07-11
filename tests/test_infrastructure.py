@@ -393,3 +393,41 @@ class TestSQLiteJobTracker:
         SQLiteJobTracker(path).track(_tracked_job("1"))
         reopened = SQLiteJobTracker(path)
         assert len(reopened.active_jobs()) == 1
+
+    def test_workflow_roundtrip(self, tmp_path):
+        tracker = SQLiteJobTracker(str(tmp_path / "jobs.db"))
+        job = _tracked_job("1")
+        job.workflow = "encut_scan"
+        tracker.track(job)
+        assert tracker.active_jobs()[0].workflow == "encut_scan"
+
+    def test_workflow_column_soft_migration(self, tmp_path):
+        """Una base creada antes de la columna `workflow` se migra sola."""
+        import sqlite3
+
+        path = str(tmp_path / "jobs.db")
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE trabajos_monitoreados (
+                    job_id TEXT NOT NULL,
+                    owner_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    ssh_user TEXT NOT NULL,
+                    job_name TEXT NOT NULL,
+                    script_path TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    notified INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (job_id, owner_id)
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO trabajos_monitoreados (job_id, owner_id, chat_id, ssh_user, job_name) "
+                "VALUES ('1', 111, 999, 'alice', 'viejo')"
+            )
+        tracker = SQLiteJobTracker(path)
+        jobs = tracker.active_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].workflow == ""  # default para registros previos

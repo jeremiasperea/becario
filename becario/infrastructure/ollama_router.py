@@ -54,6 +54,17 @@ class RouterParams(BaseModel):
     destino_remoto: Optional[str] = Field(
         default=None, description="directorio absoluto en el cluster"
     )
+    # cálculo VASP completo:
+    tipo_calculo: Optional[str] = Field(
+        default=None, description="relajacion, estatico o convergencia_encut"
+    )
+    encut: Optional[int] = Field(default=None, description="ENCUT en eV")
+    encut_min: Optional[int] = Field(default=None, description="inicio del barrido de ENCUT, en eV")
+    encut_max: Optional[int] = Field(default=None, description="fin del barrido de ENCUT, en eV")
+    encut_paso: Optional[int] = Field(default=None, description="paso del barrido de ENCUT, en eV")
+    puntos_k: Optional[list[int]] = Field(
+        default=None, description="grilla de k-points [kx, ky, kz]"
+    )
 
 
 class RouterDecision(BaseModel):
@@ -67,13 +78,26 @@ _SYSTEM_PROMPT = (
     "Sos el enrutador de B.E.C.A.R.I.O., un asistente HPC para simulación "
     "computacional de materiales. Analizá el mensaje del usuario y decidí "
     "la acción:\n"
-    "- 'modificar_estructura': crear/generar estructuras atómicas "
-    "(bulk, moléculas, superceldas, POSCAR para VASP)\n"
-    "- 'enviar_slurm': lanzar/correr un cálculo en el cluster\n"
+    "- 'modificar_estructura': solo crear/generar archivos de estructuras "
+    "atómicas (bulk, moléculas, superceldas, POSCAR para VASP)\n"
+    "- 'preparar_calculo': preparar y correr un cálculo DFT/VASP completo. "
+    "tipo_calculo: 'relajacion' (relajar/optimizar/minimizar estructura o "
+    "parámetros de red), 'estatico' (energía de un punto), o "
+    "'convergencia_encut' (curva/barrido/convergencia de ENCUT o del cutoff)\n"
+    "- 'enviar_slurm': lanzar un script de cálculo que YA existe en el cluster\n"
     "- 'consultar_db': buscar en el historial de cálculos\n"
     "- 'revisar_estado': estado de trabajos en cola (squeue/sacct)\n"
     "- 'cancelar_calculo': cancelar un trabajo\n"
     "- 'error': si el pedido no encaja en ninguna\n"
+    "Ejemplos:\n"
+    "'minimizá los parámetros de red del bulk de W' -> preparar_calculo, "
+    "tipo_calculo=relajacion, formula=W\n"
+    "'curva de convergencia de ENCUT para Zr hcp de 250 a 450' -> "
+    "preparar_calculo, tipo_calculo=convergencia_encut, formula=Zr, "
+    "red_cristalina=hcp, encut_min=250, encut_max=450\n"
+    "'corré el script /home/ana/run.sh' -> enviar_slurm, "
+    "script_remoto=/home/ana/run.sh\n"
+    "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
     "No inventes valores."
 )

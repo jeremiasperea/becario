@@ -35,6 +35,32 @@ _EXTENSIONS = {
 }
 
 
+def make_bulk_atoms(
+    formula: str,
+    crystal: str | None = None,
+    lattice_a: float | None = None,
+) -> Atoms:
+    """Bulk cristalino vía `ase.build.bulk`, con error apto para el usuario.
+
+    Compartida entre el constructor de estructuras y el generador de inputs
+    VASP: ASE conoce la estructura de referencia de los elementos, y para
+    compuestos exige red cristalina + parámetro de red.
+    """
+    kwargs: dict = {}
+    if crystal:
+        kwargs["crystalstructure"] = crystal
+    if lattice_a:
+        kwargs["a"] = lattice_a
+    try:
+        return bulk(formula, **kwargs)
+    except Exception as exc:
+        raise StructureBuildError(
+            f"No pude construir bulk de {formula!r}: {exc}. "
+            "Para compuestos indicá red cristalina y parámetro de red "
+            "(p. ej. NaCl rocksalt a=5.64)."
+        ) from exc
+
+
 class ASEStructureBuilder:
     def __init__(self, workdir: str = "./structures") -> None:
         self._workdir = Path(workdir)
@@ -75,21 +101,7 @@ class ASEStructureBuilder:
             atoms.pbc = True
             return atoms
 
-        # bulk: ASE conoce la estructura de referencia de los elementos,
-        # y para compuestos exige red cristalina + parámetro de red.
-        kwargs: dict = {}
-        if req.crystal:
-            kwargs["crystalstructure"] = req.crystal
-        if req.lattice_a:
-            kwargs["a"] = req.lattice_a
-        try:
-            return bulk(req.formula, **kwargs)
-        except Exception as exc:
-            raise StructureBuildError(
-                f"No pude construir bulk de {req.formula!r}: {exc}. "
-                "Para compuestos indicá red cristalina y parámetro de red "
-                "(p. ej. NaCl rocksalt a=5.64)."
-            ) from exc
+        return make_bulk_atoms(req.formula, req.crystal, req.lattice_a)
 
     # ------------------------------------------------------------------
     def _write(self, atoms: Atoms, req: StructureRequest) -> Path:

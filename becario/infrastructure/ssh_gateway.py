@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import shlex
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import paramiko
@@ -41,6 +41,7 @@ class SSHClusterGateway:
         self._connect_timeout = connect_timeout
         self._command_timeout = command_timeout
         self._client: Optional[paramiko.SSHClient] = None
+        self._home_dir: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Conexión (perezosa y reutilizable)
@@ -154,6 +155,85 @@ class SSHClusterGateway:
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SFTP: %s", exc)
             return CommandResult(ok=False, stderr=f"Error subiendo archivo: {exc}")
+
+    def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:
+        """Sube un directorio completo por SFTP (recursivo)."""
+        base = Path(local_dir)
+        try:
+            client = self._connection()
+            sftp = client.open_sftp()
+            try:
+                for path in sorted(base.rglob("*")):
+                    rel = path.relative_to(base).as_posix()
+                    remote_path = f"{remote_dir.rstrip('/')}/{rel}"
+                    if path.is_dir():
+                        self._run(f"mkdir -p {shlex.quote(remote_path)}")
+                    else:
+                        self._run(f"mkdir -p {shlex.quote(str(PurePosixPath(remote_path).parent))}")
+                        sftp.put(str(path), remote_path)
+            finally:
+                sftp.close()
+            return CommandResult(ok=True, stdout=f"Directorio subido a {remote_dir}")
+        except (paramiko.SSHException, OSError) as exc:
+            logger.error("Fallo SFTP subiendo directorio: %s", exc)
+            return CommandResult(ok=False, stderr=f"Error subiendo directorio: {exc}")
+
+    def home_dir(self) -> Optional[str]:
+        """Home remoto de la cuenta (cacheado): sirve para volver absolutas
+        las rutas de corrida cuando la base configurada es relativa."""
+        if self._home_dir is None:
+            result = self._run('printf "%s" "$HOME"')
+            if result.ok and result.stdout.strip().startswith("/"):
+                self._home_dir = result.stdout.strip()
+        return self._home_dir
+
+    def file_exists(self, remote_path: str) -> bool:
+        try:
+            client = self._connection()
+            sftp = client.open_sftp()
+            try:
+                sftp.stat(remote_path)
+                return True
+            finally:
+                sftp.close()
+        except FileNotFoundError:
+            return False
+        except (paramiko.SSHException, OSError) as exc:
+            logger.error("Fallo SFTP (stat %s): %s", remote_path, exc)
+            return False
+
+    def list_dir(self, remote_dir: str) -> Optional[list[str]]:
+        try:
+            client = self._connection()
+            sftp = client.open_sftp()
+            try:
+                return sorted(sftp.listdir(remote_dir))
+            finally:
+                sftp.close()
+        except (paramiko.SSHException, OSError) as exc:
+            logger.error("Fallo SFTP (listdir %s): %s", remote_dir, exc)
+            return None
+
+    def read_file(self, remote_path: str) -> Optional[str]:
+        try:
+            client = self._connection()
+            sftp = client.open_sftp()
+            try:
+                with sftp.open(remote_path, "r") as handle:
+                    return handle.read().decode(errors="replace")
+            finally:
+                sftp.close()
+        except (paramiko.SSHException, OSError) as exc:
+            logger.error("Fallo SFTP (read %s): %s", remote_path, exc)
+            return None
+
+    def concat_files(self, sources: list[str], dest: str) -> CommandResult:
+        """`cat` remoto: arma el POTCAR concatenando los de la biblioteca.
+        Las rutas ya vienen validadas por el dominio; acá solo se quotean."""
+        if not sources:
+            return CommandResult(ok=False, stderr="No hay archivos para concatenar.")
+        quoted = " ".join(shlex.quote(s) for s in sources)
+        return self._run(f"cat {quoted} > {shlex.quote(dest)}")
 
 
 class SSHClusterGatewayFactory:

@@ -24,10 +24,19 @@ class FakeCluster:
     def __init__(self, state: Optional[str]):
         self.state = state
         self.queried: list[str] = []
+        # Sistema de archivos remoto de mentira para la cosecha:
+        self.remote_dirs: dict[str, list[str]] = {}
+        self.remote_files: dict[str, str] = {}
 
     def job_state(self, job_id: JobId) -> Optional[str]:
         self.queried.append(job_id.value)
         return self.state
+
+    def list_dir(self, remote_dir: str) -> Optional[list[str]]:
+        return self.remote_dirs.get(remote_dir)
+
+    def read_file(self, remote_path: str) -> Optional[str]:
+        return self.remote_files.get(remote_path)
 
 
 class FakeClusterFactory:
@@ -77,11 +86,38 @@ class FakeHistory:
         return self.added
 
 
-def _job(job_id="1", status=JobStatus.PENDING) -> TrackedJob:
+def _job(job_id="1", status=JobStatus.PENDING, workflow="", script_path="") -> TrackedJob:
     return TrackedJob(
         job_id=job_id, owner_id=ALICE.telegram_user_id, chat_id=999,
         ssh_user="alice", job_name="grafeno_dft", status=status,
+        workflow=workflow, script_path=script_path,
     )
+
+
+def _oszicar(energy: float) -> str:
+    return (
+        "       N       E                     dE\n"
+        f"DAV:   1    {energy:.8E}    -0.1E-06\n"
+        f"   1 F= {energy:.8E} E0= {energy:.8E}  d E =0.0\n"
+    )
+
+
+_POSCAR_ZR = "Zr2\n1.0\n3.23 0 0\n-1.6 2.8 0\n0 0 5.17\nZr\n2\nDirect\n0 0 0\n0.33 0.66 0.5\n"
+
+
+def _scan_cluster(energies: dict[int, float]) -> "FakeClusterFactory":
+    """Cluster con una corrida encut_scan terminada en /data/runs/zr."""
+    factory = FakeClusterFactory("COMPLETED")
+    cluster = factory.cluster
+    run_dir = "/data/runs/zr"
+    cluster.remote_dirs[run_dir] = ["run_vasp.sh", "POTCAR"] + [
+        f"encut_{e}" for e in energies
+    ]
+    first = min(energies)
+    cluster.remote_files[f"{run_dir}/encut_{first}/POSCAR"] = _POSCAR_ZR
+    for encut, energy in energies.items():
+        cluster.remote_files[f"{run_dir}/encut_{encut}/OSZICAR"] = _oszicar(energy)
+    return factory
 
 
 class TestJobMonitorService:
@@ -155,6 +191,77 @@ class TestJobMonitorService:
         notes = monitor.poll_and_notify()
         assert notes == []  # nadie a quien avisarle
         assert tracker.active_jobs() == []  # pero se deja de rastrear igual
+
+    def test_completed_encut_scan_adds_curve_notification(self):
+        # 300 lejos, 350 a 0.4 meV/át del máximo (converge), 400 = referencia.
+        factory = _scan_cluster({300: -16.9000, 350: -16.94920, 400: -16.9500})
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert len(notes) == 2  # aviso de fin + curva
+        curve = notes[1]
+        assert curve.chat_id == 999
+        assert curve.monospace
+        assert "Convergencia de ENCUT" in curve.text
+        assert "300" in curve.text and "400" in curve.text
+        assert "ENCUT recomendado: 350 eV" in curve.text
+
+    def test_scan_without_converged_point_warns(self):
+        factory = _scan_cluster({300: -16.60, 350: -16.80, 400: -16.9500})
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert "extender el barrido" in notes[1].text
+
+    def test_failed_scan_does_not_harvest(self):
+        factory = _scan_cluster({300: -16.90, 400: -16.95})
+        factory.cluster.state = "FAILED"
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert len(notes) == 1  # solo el aviso de que falló
+
+    def test_scan_with_unreadable_run_dir_warns(self):
+        factory = FakeClusterFactory("COMPLETED")  # sin remote_dirs
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert len(notes) == 2
+        assert "No pude leer" in notes[1].text
+
+    def test_plain_job_never_harvests(self):
+        tracker = FakeTracker([_job(status=JobStatus.RUNNING,
+                                    script_path="/data/runs/x/calc.sh")])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=FakeClusterFactory("COMPLETED"),
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert len(notes) == 1
 
     def test_multiple_active_jobs_are_all_checked(self):
         tracker = FakeTracker([

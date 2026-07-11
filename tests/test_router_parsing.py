@@ -18,6 +18,7 @@ class TestParseLLMOutput:
     def test_all_known_actions(self):
         for raw, expected in [
             ("modificar_estructura", Intent.MODIFY_STRUCTURE),
+            ("preparar_calculo", Intent.PREPARE_CALC),
             ("enviar_slurm", Intent.SUBMIT_SLURM),
             ("consultar_db", Intent.QUERY_DB),
             ("revisar_estado", Intent.CHECK_STATUS),
@@ -35,6 +36,19 @@ class TestParseLLMOutput:
         assert routed.intent is Intent.MODIFY_STRUCTURE
         assert routed.params["formula"] == "Si"
         assert routed.params["supercelda"] == [2, 2, 2]
+
+    def test_calc_params_roundtrip(self):
+        raw = (
+            '{"action": "preparar_calculo", "parametros": '
+            '{"formula": "Zr", "red_cristalina": "hcp", '
+            '"tipo_calculo": "convergencia_encut", '
+            '"encut_min": 250, "encut_max": 450, "encut_paso": 50}}'
+        )
+        routed = parse(raw)
+        assert routed.intent is Intent.PREPARE_CALC
+        assert routed.params["tipo_calculo"] == "convergencia_encut"
+        assert routed.params["encut_min"] == 250
+        assert routed.params["encut_max"] == 450
 
     def test_none_params_are_excluded(self):
         routed = parse('{"action": "revisar_estado", "parametros": {"job_id": null}}')
@@ -66,4 +80,10 @@ class TestSchema:
     def test_schema_has_structure_params(self):
         schema = RouterParams.model_json_schema()
         for key in ("formula", "supercelda", "red_cristalina", "parametro_red"):
+            assert key in schema["properties"]
+
+    def test_schema_has_calc_params(self):
+        schema = RouterParams.model_json_schema()
+        for key in ("tipo_calculo", "encut", "encut_min", "encut_max",
+                    "encut_paso", "puntos_k"):
             assert key in schema["properties"]

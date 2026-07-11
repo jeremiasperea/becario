@@ -24,6 +24,7 @@ class Intent(str, Enum):
     """Acciones que el enrutador LLM puede decidir."""
 
     MODIFY_STRUCTURE = "modificar_estructura"
+    PREPARE_CALC = "preparar_calculo"
     SUBMIT_SLURM = "enviar_slurm"
     QUERY_DB = "consultar_db"
     CHECK_STATUS = "revisar_estado"
@@ -187,6 +188,14 @@ class StructureKind(str, Enum):
     MOLECULE = "molecule"
 
 
+class CalcKind(str, Enum):
+    """Tipos de cálculo VASP que BECARIO sabe preparar."""
+
+    RELAX = "relajacion"  # ISIF=3: relaja también los parámetros de red
+    STATIC = "estatico"
+    ENCUT_SCAN = "convergencia_encut"
+
+
 class OutputFormat(str, Enum):
     VASP = "vasp"  # POSCAR
     CIF = "cif"
@@ -264,6 +273,137 @@ class StructureResult:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Cálculos VASP (inputs completos + workflows)
+# ---------------------------------------------------------------------------
+
+
+class VaspCalcRequest(BaseModel):
+    """Pedido validado de un cálculo VASP completo (inputs + job).
+
+    La parte estructural replica los campos de bulk de `StructureRequest`;
+    la parte de job replica los defaults de `SlurmJobRequest`. El POTCAR no
+    se describe acá: lo arma el servicio contra la biblioteca del cluster.
+    """
+
+    formula: str
+    crystal: Optional[str] = None
+    lattice_a: Optional[float] = Field(default=None, gt=0.5, lt=50.0)  # Å
+    supercell: tuple[int, int, int] = (1, 1, 1)
+    calc_kind: CalcKind = CalcKind.STATIC
+    encut: int = Field(default=520, ge=100, le=1500)  # eV
+    kpoints: Optional[tuple[int, int, int]] = None  # None => grilla automática
+    encut_values: Optional[list[int]] = None  # solo para ENCUT_SCAN
+    partition: str = Field(default="default")
+    nodes: int = Field(default=1, ge=1, le=64)
+    time_limit: str = Field(default="01:00:00")
+
+    @field_validator("formula")
+    @classmethod
+    def _v_formula(cls, v: str) -> str:
+        v = v.strip()
+        if not _FORMULA_RE.match(v):
+            raise ValueError(f"fórmula inválida: {v!r}")
+        return v
+
+    @field_validator("crystal")
+    @classmethod
+    def _v_crystal(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not re.fullmatch(r"[a-z]{2,20}", v):
+            raise ValueError(f"red cristalina inválida: {v!r}")
+        return v
+
+    @field_validator("supercell")
+    @classmethod
+    def _v_supercell(cls, v: tuple[int, int, int]) -> tuple[int, int, int]:
+        if len(v) != 3 or any(not (1 <= n <= 10) for n in v):
+            raise ValueError(f"supercelda inválida: {v!r} (cada dimensión entre 1 y 10)")
+        return v
+
+    @field_validator("partition")
+    @classmethod
+    def _v_partition(cls, v: str) -> str:
+        if not _PARTITION_RE.match(v):
+            raise ValueError(f"partition inválida: {v!r}")
+        return v
+
+    @field_validator("time_limit")
+    @classmethod
+    def _v_time(cls, v: str) -> str:
+        if not _TIME_RE.match(v):
+            raise ValueError(f"time_limit inválido: {v!r} (formato HH:MM:SS o D-HH:MM:SS)")
+        return v
+
+    @field_validator("kpoints")
+    @classmethod
+    def _v_kpoints(cls, v: Optional[tuple[int, int, int]]) -> Optional[tuple[int, int, int]]:
+        if v is None:
+            return None
+        if len(v) != 3 or any(not (1 <= n <= 40) for n in v):
+            raise ValueError(f"puntos k inválidos: {v!r} (cada dimensión entre 1 y 40)")
+        return v
+
+    @field_validator("encut_values")
+    @classmethod
+    def _v_encut_values(cls, v: Optional[list[int]]) -> Optional[list[int]]:
+        if v is None:
+            return None
+        values = sorted(set(int(x) for x in v))
+        if not (2 <= len(values) <= 15):
+            raise ValueError("el barrido de ENCUT necesita entre 2 y 15 valores distintos")
+        if any(not (100 <= x <= 1500) for x in values):
+            raise ValueError("cada ENCUT del barrido debe estar entre 100 y 1500 eV")
+        return values
+
+    @staticmethod
+    def default_encut_values() -> list[int]:
+        """Barrido razonable si el usuario no especifica rango."""
+        return list(range(300, 651, 50))
+
+    def scan_values(self) -> list[int]:
+        return self.encut_values or self.default_encut_values()
+
+
+@dataclass(frozen=True)
+class CalcDirResult:
+    """Directorio de corrida generado localmente, listo para subir.
+
+    `elements` preserva el orden de especies del POSCAR: es el orden en el
+    que hay que concatenar los POTCAR."""
+
+    local_dir: str
+    run_name: str
+    files: list[str]  # rutas relativas a local_dir
+    elements: list[str]
+    chemical_formula: str
+    n_atoms: int
+    cell_summary: str
+    kpoints: tuple[int, int, int]
+    calc_kind: CalcKind
+    encut_values: list[int]  # un solo valor si no es barrido
+
+    def describe(self) -> str:
+        encut_txt = (
+            f"barrido ENCUT: {self.encut_values[0]}–{self.encut_values[-1]} eV "
+            f"({len(self.encut_values)} puntos)"
+            if self.calc_kind is CalcKind.ENCUT_SCAN
+            else f"ENCUT: {self.encut_values[0]} eV"
+        )
+        kx, ky, kz = self.kpoints
+        return "\n".join(
+            [
+                f"fórmula: {self.chemical_formula}",
+                f"átomos: {self.n_atoms}",
+                f"celda: {self.cell_summary}",
+                encut_txt,
+                f"k-points: {kx}×{ky}×{kz} (Γ-centrado)",
+            ]
+        )
 
 
 @dataclass(frozen=True)
@@ -369,6 +509,7 @@ class TrackedJob:
     ssh_user: str
     job_name: str
     script_path: str = ""  # ruta remota del script: su directorio es la corrida
+    workflow: str = ""  # "" = job suelto; "encut_scan" = cosecha al terminar
     status: JobStatus = JobStatus.PENDING
     notified: bool = False
     created_at: float = field(default_factory=time.time)
