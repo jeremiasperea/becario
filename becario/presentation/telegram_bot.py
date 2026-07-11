@@ -142,8 +142,15 @@ class TelegramBot:
         else:
             reply = Reply(text="⚠️ Acción desconocida.")
         await query.answer()
-        # Editar el mensaje original saca los botones y deja constancia.
-        await query.edit_message_text(reply.text)
+        # El mensaje original (con las condiciones del envío) se conserva
+        # para poder revisarlo después: solo se quitan los botones, y el
+        # resultado llega como mensaje aparte.
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # p. ej. mensaje demasiado viejo para editar
+            logger.warning("No pude quitar los botones del mensaje original.")
+        if query.message is not None:
+            await query.message.chat.send_message(reply.text)
 
     # ------------------------------------------------------------------
     # Cierre del loop: aviso proactivo cuando un trabajo termina
