@@ -403,16 +403,19 @@ class BecarioService:
             )
 
         kind_raw = str(params.get("tipo_calculo") or "").strip().lower()
-        calc_kind = (
-            CalcKind(kind_raw)
-            if kind_raw in CalcKind._value2member_map_
-            else CalcKind.STATIC
-        )
+        lo, hi = params.get("encut_min"), params.get("encut_max")
+        if kind_raw in CalcKind._value2member_map_:
+            calc_kind = CalcKind(kind_raw)
+        elif lo and hi:
+            # El LLM a veces extrae el rango pero omite tipo_calculo: un
+            # rango de ENCUT solo tiene sentido como barrido.
+            calc_kind = CalcKind.ENCUT_SCAN
+        else:
+            calc_kind = CalcKind.STATIC
 
         # Barrido de ENCUT explícito (si el usuario dio rango); si no, el
         # modelo de dominio usa su default.
         encut_values = None
-        lo, hi = params.get("encut_min"), params.get("encut_max")
         if calc_kind is CalcKind.ENCUT_SCAN and lo and hi:
             step = int(params.get("encut_paso") or 50)
             if step <= 0:

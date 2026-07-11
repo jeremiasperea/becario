@@ -509,6 +509,18 @@ class TestPrepareCalc:
         service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
         assert generator.requests[0].encut_values == [250, 300, 350, 400]
 
+    def test_encut_range_without_tipo_infers_scan(self, env):
+        """gemma3:4b a veces extrae el rango pero omite tipo_calculo."""
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={"formula": "Zr", "encut_min": 250, "encut_max": 400},
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        req = service._calc_inputs.requests[0]
+        assert req.calc_kind is CalcKind.ENCUT_SCAN
+        assert req.encut_values == [250, 300, 350, 400]
+
     def test_single_calc_does_not_tag_workflow(self, env):
         service, router, factory, *_, tracker = env
         router.next = RoutedRequest(
