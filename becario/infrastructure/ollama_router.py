@@ -14,7 +14,7 @@ from typing import Optional
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from ..domain.models import Intent, RoutedRequest
+from ..domain.models import Intent, Plan, PlanStep
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +67,31 @@ class RouterParams(BaseModel):
     )
 
 
-class RouterDecision(BaseModel):
-    """Lo único que el LLM puede responder."""
+# Docstrings de RouterStep/RouterDecision se mantienen cortos a propósito:
+# Pydantic los vuelca como "description" en el JSON Schema que se le manda
+# al LLM, y ese schema tiene presupuesto de tamaño (ver ADR-0006 y el gate
+# de tarea 3.1/3.2 en tests/test_router_parsing.py). La explicación larga
+# vive acá, en comentarios normales, no en el docstring.
+#
+# RouterStep: un paso del plan tal como lo emite el LLM. Distinto del
+# `PlanStep` de dominio: acá `parametros` es `RouterParams` (la superficie
+# de extracción cruda), no el `dict` que ya validó/limpió el dominio.
+# `parse_llm_output` convierte uno en el otro.
+class RouterStep(BaseModel):
+    """Un paso del plan (contrato del LLM)."""
 
     action: Intent
     parametros: RouterParams = Field(default_factory=RouterParams)
+
+
+# RouterDecision: lo único que el LLM puede responder, un plan de 1 a 5
+# pasos. `RouterParams` se referencia una sola vez vía `$ref` (JSON-Schema
+# `$defs`) y la reutiliza cada paso — no se duplica el schema de
+# parámetros por paso.
+class RouterDecision(BaseModel):
+    """Plan de 1 a 5 pasos."""
+
+    steps: list[RouterStep] = Field(min_length=1, max_length=5)
 
 
 _SYSTEM_PROMPT = (
@@ -115,6 +135,15 @@ _SYSTEM_PROMPT = (
     "'mostrame la estructura de archivos del cluster' -> listar_archivos\n"
     "'qué archivos hay en /data/becario_runs' -> listar_archivos, "
     "destino_remoto=/data/becario_runs\n"
+    "Si el mensaje pide más de una acción, emitilas en 'steps', en el "
+    "mismo orden en que las pidió el usuario, cada paso con su propia "
+    "'action' y 'parametros':\n"
+    "'creá la carpeta /home/ana/x y después listá /home/ana/y' -> "
+    "paso 1: crear_directorio, destino_remoto=/home/ana/x; "
+    "paso 2: listar_archivos, destino_remoto=/home/ana/y\n"
+    "'generá el POSCAR de Si y creá la carpeta /home/ana/run' -> "
+    "paso 1: modificar_estructura, formula=Si; "
+    "paso 2: crear_directorio, destino_remoto=/home/ana/run\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
     "No inventes valores. En 'formula' usá siempre el símbolo químico "
     "(zirconio->Zr, tungsteno/wolframio->W, silicio->Si)."
@@ -172,10 +201,10 @@ class OllamaRouter:
             logger.error("Ollama no disponible: %s", exc)
             return None
 
-    def route(self, user_text: str) -> RoutedRequest:
+    def route(self, user_text: str) -> Plan:
         raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
         if raw is None:
-            return RoutedRequest(intent=Intent.UNKNOWN, params={})
+            return Plan(steps=[PlanStep(action=Intent.UNKNOWN)])
         return self.parse_llm_output(raw)
 
     def extract_params(self, user_text: str) -> dict:
@@ -192,13 +221,25 @@ class OllamaRouter:
         return params.model_dump(exclude_none=True)
 
     @staticmethod
-    def parse_llm_output(raw: str) -> RoutedRequest:
-        """Validación final con Pydantic. Con structured outputs esto casi
-        nunca falla, pero seguimos siendo defensivos (público para testear)."""
+    def parse_llm_output(raw: str) -> Plan:
+        """Validación final con Pydantic, fail-closed (R1-003 del diseño).
+
+        Con structured outputs el JSON casi nunca sale mal formado, pero
+        seguimos siendo defensivos (público para testear). Cualquier
+        violación — JSON fuera de schema O forma de plan inválida
+        (más de un paso destructivo, destructivo no al final, fuera del
+        rango 1-5 pasos) — rechaza el plan ENTERO: nunca se trunca,
+        reordena ni se ejecuta parcialmente."""
         try:
             decision = RouterDecision.model_validate_json(raw or "")
+            steps = [
+                PlanStep(
+                    action=step.action,
+                    parametros=step.parametros.model_dump(exclude_none=True),
+                )
+                for step in decision.steps
+            ]
+            return Plan(steps=steps)
         except ValidationError:
             logger.warning("LLM devolvió JSON fuera de schema: %r", (raw or "")[:200])
-            return RoutedRequest(intent=Intent.UNKNOWN, params={"raw": raw})
-        params = decision.parametros.model_dump(exclude_none=True)
-        return RoutedRequest(intent=decision.action, params=params)
+            return Plan(steps=[PlanStep(action=Intent.UNKNOWN, parametros={"raw": raw})])

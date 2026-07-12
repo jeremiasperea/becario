@@ -20,10 +20,16 @@ _ROUTER_DECISION_SCHEMA_BUDGET_FACTOR = 1.15
 
 
 class TestParseLLMOutput:
+    """`parse_llm_output` ahora devuelve un `Plan` (uno o más pasos). Un
+    pedido de una sola acción sigue siendo un plan de un solo paso —
+    `plan.single_step` expone ese paso sin cambiar el comportamiento de
+    antes (SR1: paridad de regresión de un solo paso)."""
+
     def test_valid_action_with_params(self):
-        routed = parse('{"action": "enviar_slurm", "parametros": {"nodos": 2}}')
-        assert routed.intent is Intent.SUBMIT_SLURM
-        assert routed.params == {"nodos": 2}
+        plan = parse('{"steps": [{"action": "enviar_slurm", "parametros": {"nodos": 2}}]}')
+        assert plan.is_single
+        assert plan.single_step.action is Intent.SUBMIT_SLURM
+        assert plan.single_step.parametros == {"nodos": 2}
 
     def test_all_known_actions(self):
         for raw, expected in [
@@ -37,50 +43,113 @@ class TestParseLLMOutput:
             ("crear_directorio", Intent.CREATE_DIR),
             ("listar_archivos", Intent.LIST_FILES),
         ]:
-            routed = parse(f'{{"action": "{raw}", "parametros": {{}}}}')
-            assert routed.intent is expected
+            plan = parse(f'{{"steps": [{{"action": "{raw}", "parametros": {{}}}}]}}')
+            assert plan.single_step.action is expected
 
     def test_structure_params_roundtrip(self):
         raw = (
-            '{"action": "modificar_estructura", "parametros": '
-            '{"formula": "Si", "supercelda": [2, 2, 2], "red_cristalina": "diamond"}}'
+            '{"steps": [{"action": "modificar_estructura", "parametros": '
+            '{"formula": "Si", "supercelda": [2, 2, 2], "red_cristalina": "diamond"}}]}'
         )
-        routed = parse(raw)
-        assert routed.intent is Intent.MODIFY_STRUCTURE
-        assert routed.params["formula"] == "Si"
-        assert routed.params["supercelda"] == [2, 2, 2]
+        plan = parse(raw)
+        assert plan.single_step.action is Intent.MODIFY_STRUCTURE
+        assert plan.single_step.parametros["formula"] == "Si"
+        assert plan.single_step.parametros["supercelda"] == [2, 2, 2]
 
     def test_calc_params_roundtrip(self):
         raw = (
-            '{"action": "preparar_calculo", "parametros": '
+            '{"steps": [{"action": "preparar_calculo", "parametros": '
             '{"formula": "Zr", "red_cristalina": "hcp", '
             '"tipo_calculo": "convergencia_encut", '
-            '"encut_min": 250, "encut_max": 450, "encut_paso": 50}}'
+            '"encut_min": 250, "encut_max": 450, "encut_paso": 50}}]}'
         )
-        routed = parse(raw)
-        assert routed.intent is Intent.PREPARE_CALC
-        assert routed.params["tipo_calculo"] == "convergencia_encut"
-        assert routed.params["encut_min"] == 250
-        assert routed.params["encut_max"] == 450
+        plan = parse(raw)
+        assert plan.single_step.action is Intent.PREPARE_CALC
+        assert plan.single_step.parametros["tipo_calculo"] == "convergencia_encut"
+        assert plan.single_step.parametros["encut_min"] == 250
+        assert plan.single_step.parametros["encut_max"] == 450
 
     def test_none_params_are_excluded(self):
-        routed = parse('{"action": "revisar_estado", "parametros": {"job_id": null}}')
-        assert routed.params == {}
+        plan = parse('{"steps": [{"action": "revisar_estado", "parametros": {"job_id": null}}]}')
+        assert plan.single_step.parametros == {}
 
     def test_malformed_json(self):
-        assert parse("no soy json {").intent is Intent.UNKNOWN
+        plan = parse("no soy json {")
+        assert plan.is_single
+        assert plan.single_step.action is Intent.UNKNOWN
 
     def test_empty_and_none(self):
-        assert parse("").intent is Intent.UNKNOWN
-        assert parse(None).intent is Intent.UNKNOWN
+        assert parse("").single_step.action is Intent.UNKNOWN
+        assert parse(None).single_step.action is Intent.UNKNOWN
 
     def test_unknown_action_rejected_by_schema(self):
-        assert parse('{"action": "borrar_todo", "parametros": {}}').intent is Intent.UNKNOWN
+        plan = parse('{"steps": [{"action": "borrar_todo", "parametros": {}}]}')
+        assert plan.single_step.action is Intent.UNKNOWN
 
     def test_missing_parametros_defaults_empty(self):
-        routed = parse('{"action": "revisar_estado"}')
-        assert routed.intent is Intent.CHECK_STATUS
-        assert routed.params == {}
+        plan = parse('{"steps": [{"action": "revisar_estado"}]}')
+        assert plan.single_step.action is Intent.CHECK_STATUS
+        assert plan.single_step.parametros == {}
+
+
+class TestParseLLMOutputComposition:
+    """Composición multi-paso (SR2): un pedido con varias acciones produce
+    un `Plan` con varios pasos ordenados, cada uno con sus propios
+    parámetros."""
+
+    def test_two_safe_steps(self):
+        raw = (
+            '{"steps": ['
+            '{"action": "crear_directorio", "parametros": {"destino_remoto": "/home/ana/a"}},'
+            '{"action": "listar_archivos", "parametros": {"destino_remoto": "/home/ana/b"}}'
+            ']}'
+        )
+        plan = parse(raw)
+        assert not plan.is_single
+        assert [s.action for s in plan.steps] == [Intent.CREATE_DIR, Intent.LIST_FILES]
+        assert plan.steps[0].parametros == {"destino_remoto": "/home/ana/a"}
+        assert plan.steps[1].parametros == {"destino_remoto": "/home/ana/b"}
+
+    def test_three_steps_with_destructive_tail(self):
+        raw = (
+            '{"steps": ['
+            '{"action": "crear_directorio", "parametros": {"destino_remoto": "/r"}},'
+            '{"action": "modificar_estructura", "parametros": {"formula": "Si"}},'
+            '{"action": "enviar_slurm", "parametros": {"script_remoto": "/r/run.sh"}}'
+            ']}'
+        )
+        plan = parse(raw)
+        assert len(plan.steps) == 3
+        assert plan.steps[-1].action is Intent.SUBMIT_SLURM
+
+    def test_plan_shape_violation_falls_back_to_unknown_single_step(self):
+        # Dos pasos destructivos: viola la regla de plan (a lo sumo uno,
+        # al final) -> el plan ENTERO se rechaza fail-closed (R1-003).
+        raw = (
+            '{"steps": ['
+            '{"action": "enviar_slurm", "parametros": {}},'
+            '{"action": "cancelar_calculo", "parametros": {"job_id": "1"}}'
+            ']}'
+        )
+        plan = parse(raw)
+        assert plan.is_single
+        assert plan.single_step.action is Intent.UNKNOWN
+
+    def test_destructive_step_not_last_falls_back_to_unknown(self):
+        raw = (
+            '{"steps": ['
+            '{"action": "enviar_slurm", "parametros": {}},'
+            '{"action": "listar_archivos", "parametros": {}}'
+            ']}'
+        )
+        plan = parse(raw)
+        assert plan.single_step.action is Intent.UNKNOWN
+
+    def test_too_many_steps_falls_back_to_unknown(self):
+        step = '{"action": "listar_archivos", "parametros": {}}'
+        raw = '{"steps": [' + ",".join([step] * 6) + "]}"
+        plan = parse(raw)
+        assert plan.single_step.action is Intent.UNKNOWN
 
 
 class TestSchema:
@@ -114,3 +183,14 @@ class TestSchema:
             f"schema de RouterDecision creció a {size} bytes, "
             f"supera el presupuesto de {budget:.0f} bytes (1.15x baseline)"
         )
+
+    def test_schema_steps_reuse_router_params_via_ref(self):
+        # RouterParams NO debe duplicarse por paso: cada paso referencia
+        # el mismo $def vía $ref (ver diseño §2.1).
+        schema = RouterDecision.model_json_schema()
+        assert "steps" in schema["properties"]
+        assert schema["properties"]["steps"]["minItems"] == 1
+        assert schema["properties"]["steps"]["maxItems"] == 5
+        raw = json.dumps(schema)
+        # RouterParams aparece definido una sola vez en $defs.
+        assert raw.count('"RouterParams":') <= 1

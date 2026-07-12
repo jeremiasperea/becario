@@ -16,7 +16,7 @@ from .models import (
     JobId,
     JobStatus,
     PendingPlan,
-    RoutedRequest,
+    Plan,
     SlurmJobRequest,
     StructureRequest,
     StructureResult,
@@ -26,9 +26,10 @@ from .models import (
 
 
 class IntentRouter(Protocol):
-    """Traduce texto libre del usuario a una intención estructurada."""
+    """Traduce texto libre del usuario a un plan estructurado (1 a 5
+    pasos; un pedido de una sola acción es un plan de un solo paso)."""
 
-    def route(self, user_text: str) -> RoutedRequest: ...
+    def route(self, user_text: str) -> Plan: ...
 
     def extract_params(self, user_text: str) -> dict:
         """Solo parámetros, sin decidir acción: para mensajes que describen
