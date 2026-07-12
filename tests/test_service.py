@@ -25,6 +25,7 @@ from becario.domain.models import (
     Intent,
     JobId,
     JobStatus,
+    PendingPlan,
     RoutedRequest,
     SlurmJobRequest,
     StructureRequest,
@@ -410,6 +411,56 @@ class TestConfirmationFlow:
         prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777")
         reply = service.reject(prep.confirmation_token, requester_id=BOB.telegram_user_id)
         assert "no te pertenece" in reply.text.lower()
+
+
+class TestPendingPlanShape:
+    """El `ConfirmationStore` guarda `PendingPlan` (no `PendingAction`
+    suelto): los tres sitios que arman una confirmación (`_prepare_submit`,
+    `_prepare_cancel`, `_prepare_calc`) tienen que envolver su acción en un
+    plan de un solo paso. Un plan de un paso se comporta byte-a-byte igual
+    que antes (HC2), pero la FORMA que queda guardada en el store cambia."""
+
+    def test_prepare_submit_stores_a_one_step_plan(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
+        )
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="x"
+        ).confirmation_token
+
+        pending = service._confirmations.peek(token)
+        assert isinstance(pending, PendingPlan)
+        assert pending.requester_id == ALICE.telegram_user_id
+        assert len(pending.steps) == 1
+        assert pending.steps[0].intent == Intent.SUBMIT_SLURM
+
+    def test_prepare_cancel_stores_a_one_step_plan(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.CANCEL_JOB, params={"job_id": "777"})
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777"
+        ).confirmation_token
+
+        pending = service._confirmations.peek(token)
+        assert isinstance(pending, PendingPlan)
+        assert len(pending.steps) == 1
+        assert pending.steps[0].intent == Intent.CANCEL_JOB
+
+    def test_prepare_calc_stores_a_one_step_plan(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC,
+            params={"formula": "W", "tipo_calculo": "relajacion"},
+        )
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá W"
+        ).confirmation_token
+
+        pending = service._confirmations.peek(token)
+        assert isinstance(pending, PendingPlan)
+        assert len(pending.steps) == 1
+        assert pending.steps[0].intent == Intent.SUBMIT_SLURM  # PREPARE_CALC deja un SUBMIT pendiente
 
 
 class TestDestructiveInputValidation:

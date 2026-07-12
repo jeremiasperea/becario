@@ -32,6 +32,7 @@ from ..domain.models import (
     ListFilesRequest,
     OutputFormat,
     PendingAction,
+    PendingPlan,
     RemoteDirRequest,
     SlurmJobRequest,
     StructureKind,
@@ -321,14 +322,17 @@ class BecarioService:
         return handler(ctx, merged)
 
     def start_modification(self, token: str, requester_id: int) -> Reply:
-        """Botón ✏️ Modificar: descarta la acción pendiente y espera que el
+        """Botón ✏️ Modificar: descarta el plan pendiente y espera que el
         próximo mensaje del usuario describa el cambio."""
-        action = self._confirmations.peek(token)
-        if action is None:
+        plan = self._confirmations.peek(token)
+        if plan is None:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
-        if action.requester_id != requester_id:
+        if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
-        if action.request_intent is None:
+        # Hoy todo plan tiene a lo sumo un paso editable (el que conserva
+        # el pedido original); la extensión a targeting multi-paso es 5.1.
+        action = next((s for s in plan.steps if s.request_intent is not None), None)
+        if action is None:
             return Reply(text="⚠️ Esta acción no admite modificación.")
         self._confirmations.pop(token)
         with self._edits_lock:
@@ -345,11 +349,83 @@ class BecarioService:
     # ------------------------------------------------------------------
     # Confirmaciones
     # ------------------------------------------------------------------
+    def _step_executors(self):
+        """Ejecutores de la COLA destructiva de un plan (a lo sumo un
+        paso, siempre el último — invariante de `Plan._v_destructive_last`).
+        Mirror de `_intent_handlers()`, pero para la operación irreversible
+        que se dispara recién al confirmar, no al construir el plan."""
+        return {
+            Intent.SUBMIT_SLURM: self._execute_submit,
+            Intent.CANCEL_JOB: self._execute_cancel,
+        }
+
+    def _execute_submit(self, ctx: _Ctx, action: PendingAction) -> tuple[bool, str]:
+        # `workflow` viaja junto a los campos del job pero no es parte de
+        # SlurmJobRequest (Pydantic ignora las claves extra del payload).
+        req = SlurmJobRequest(**action.payload)
+        result = ctx.cluster.submit_job(req)
+        if result.ok and result.job_id:
+            self._job_tracker.track(TrackedJob(
+                job_id=result.job_id,
+                owner_id=ctx.user_id,
+                chat_id=action.chat_id,
+                ssh_user=ctx.identity.ssh_user,
+                job_name=req.job_name,
+                script_path=req.script_path,
+                workflow=action.payload.get("workflow", ""),
+            ))
+            self._history.add(
+                owner_id=ctx.user_id, job_id=result.job_id,
+                nombre_trabajo=req.job_name, estado="enviado",
+            )
+            # Cálculos VASP: registrar la huella para poder avisar si
+            # se vuelve a pedir lo mismo (o algo muy similar).
+            if self._calc_runs is not None and action.payload.get("calc_fingerprint"):
+                self._calc_runs.add(
+                    owner_id=ctx.user_id,
+                    job_id=result.job_id,
+                    job_name=req.job_name,
+                    fingerprint=action.payload["calc_fingerprint"],
+                    run_dir=action.payload.get("run_dir", ""),
+                )
+            text = (
+                f"✅ 🚀 Trabajo enviado al cluster.\n"
+                f"• Job: {result.job_id}\n"
+                f"• Nombre: {req.job_name}\n"
+                f"• Partición: {req.partition if req.partition != 'default' else 'la default del cluster'}\n"
+                f"📌 Seguimiento activado para el job {result.job_id}: te aviso cuando termine."
+            )
+            return True, text
+        elif result.ok:
+            # sbatch aceptó el trabajo pero no pudimos leer el número de job.
+            text = (
+                f"✅ 🚀 {result.message}\n"
+                "⚠️ No pude leer el número de job, así que no voy a poder avisarte "
+                "cuando termine. Consultalo con «estado de mis trabajos»."
+            )
+            return True, text
+        return False, f"❌ 🚀 {result.message}"
+
+    def _execute_cancel(self, ctx: _Ctx, action: PendingAction) -> tuple[bool, str]:
+        jid = JobId(value=action.payload["job_id"])
+        result = ctx.cluster.cancel_job(jid)
+        if result.ok:
+            # Ya lo sabe (lo canceló él mismo): evita el aviso duplicado
+            # del monitor cuando vea el estado CANCELLED más tarde. Como el
+            # monitor tampoco lo va a registrar, queda asentado acá.
+            self._job_tracker.mark_notified(jid.value, ctx.user_id)
+            self._history.add(
+                owner_id=ctx.user_id, job_id=jid.value,
+                nombre_trabajo="", estado="cancelado",
+            )
+        status = "✅" if result.ok else "❌"
+        return result.ok, f"{status} 🛑 {result.message}"
+
     def confirm(self, token: str, requester_id: int) -> Reply:
-        action = self._confirmations.peek(token)
-        if action is None:
+        plan = self._confirmations.peek(token)
+        if plan is None:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
-        if action.requester_id != requester_id:
+        if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
 
         identity = self._registry.get_identity(requester_id)
@@ -358,78 +434,26 @@ class BecarioService:
             return Reply(text=NOT_REGISTERED_TEXT)
         cluster = self._cluster_factory.for_identity(identity)
 
-        action = self._confirmations.pop(token)  # recién ahora se consume
-        if action is None:
+        plan = self._confirmations.pop(token)  # recién ahora se consume
+        if plan is None:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
 
-        if action.intent is Intent.SUBMIT_SLURM:
-            # `workflow` viaja junto a los campos del job pero no es parte de
-            # SlurmJobRequest (Pydantic ignora las claves extra del payload).
-            req = SlurmJobRequest(**action.payload)
-            result = cluster.submit_job(req)
-            if result.ok and result.job_id:
-                self._job_tracker.track(TrackedJob(
-                    job_id=result.job_id,
-                    owner_id=requester_id,
-                    chat_id=action.chat_id,
-                    ssh_user=identity.ssh_user,
-                    job_name=req.job_name,
-                    script_path=req.script_path,
-                    workflow=action.payload.get("workflow", ""),
-                ))
-                self._history.add(
-                    owner_id=requester_id, job_id=result.job_id,
-                    nombre_trabajo=req.job_name, estado="enviado",
-                )
-                # Cálculos VASP: registrar la huella para poder avisar si
-                # se vuelve a pedir lo mismo (o algo muy similar).
-                if self._calc_runs is not None and action.payload.get("calc_fingerprint"):
-                    self._calc_runs.add(
-                        owner_id=requester_id,
-                        job_id=result.job_id,
-                        job_name=req.job_name,
-                        fingerprint=action.payload["calc_fingerprint"],
-                        run_dir=action.payload.get("run_dir", ""),
-                    )
-                text = (
-                    f"✅ 🚀 Trabajo enviado al cluster.\n"
-                    f"• Job: {result.job_id}\n"
-                    f"• Nombre: {req.job_name}\n"
-                    f"• Partición: {req.partition if req.partition != 'default' else 'la default del cluster'}\n"
-                    f"📌 Seguimiento activado para el job {result.job_id}: te aviso cuando termine."
-                )
-            elif result.ok:
-                # sbatch aceptó el trabajo pero no pudimos leer el número de job.
-                text = (
-                    f"✅ 🚀 {result.message}\n"
-                    "⚠️ No pude leer el número de job, así que no voy a poder avisarte "
-                    "cuando termine. Consultalo con «estado de mis trabajos»."
-                )
-            else:
-                text = f"❌ 🚀 {result.message}"
-            return Reply(text=text)
-        elif action.intent is Intent.CANCEL_JOB:
-            jid = JobId(value=action.payload["job_id"])
-            result = cluster.cancel_job(jid)
-            if result.ok:
-                # Ya lo sabe (lo canceló él mismo): evita el aviso duplicado
-                # del monitor cuando vea el estado CANCELLED más tarde. Como el
-                # monitor tampoco lo va a registrar, queda asentado acá.
-                self._job_tracker.mark_notified(jid.value, requester_id)
-                self._history.add(
-                    owner_id=requester_id, job_id=jid.value,
-                    nombre_trabajo="", estado="cancelado",
-                )
-            status = "✅" if result.ok else "❌"
-            return Reply(text=f"{status} 🛑 {result.message}")
-        else:  # pragma: no cover - defensivo
+        # El paso destructivo (si existe) es siempre el último del plan
+        # (`Plan._v_destructive_last`); en un plan de un solo paso es
+        # indistinguible de la `PendingAction` que confirmaba antes.
+        action = plan.steps[-1]
+        ctx = _Ctx(chat_id=action.chat_id, user_id=requester_id, identity=identity, cluster=cluster)
+        executor = self._step_executors().get(action.intent)
+        if executor is None:  # pragma: no cover - defensivo
             return Reply(text="⚠️ Acción pendiente desconocida.")
+        _ok, text = executor(ctx, action)
+        return Reply(text=text)
 
     def reject(self, token: str, requester_id: int) -> Reply:
-        action = self._confirmations.peek(token)
-        if action is None:
+        plan = self._confirmations.peek(token)
+        if plan is None:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
-        if action.requester_id != requester_id:
+        if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         self._confirmations.pop(token)
         return Reply(text="❌ Operación cancelada.")
@@ -458,7 +482,8 @@ class BecarioService:
             request_intent=Intent.SUBMIT_SLURM,
             request_params=dict(params),
         )
-        token = self._confirmations.put(action)
+        plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[action])
+        token = self._confirmations.put(plan)
         return Reply(
             text=f"⚠️ ¿Confirmás esta acción?\n\n{action.description}",
             needs_confirmation=True,
@@ -482,7 +507,8 @@ class BecarioService:
             description=f"🛑 Cancelar el trabajo {jid} (cuenta {ctx.identity.ssh_user})",
             payload={"job_id": jid.value},
         )
-        token = self._confirmations.put(action)
+        plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[action])
+        token = self._confirmations.put(plan)
         return Reply(
             text=f"⚠️ ¿Confirmás esta acción?\n\n{action.description}",
             needs_confirmation=True,
@@ -751,7 +777,8 @@ class BecarioService:
             request_intent=Intent.PREPARE_CALC,
             request_params=dict(params),
         )
-        token = self._confirmations.put(action)
+        plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[action])
+        token = self._confirmations.put(plan)
         # El aviso de duplicado va PRIMERO: al final de un mensaje largo
         # pasa desapercibido.
         warning_block = f"{duplicate_note}\n\n" if duplicate_note else ""
