@@ -89,6 +89,8 @@ class Settings:
     ssh_port: int = 22
     users_file: str = "users.json"
     ollama_url: str = "http://localhost:11434"
+    # El default apunta a la máquina de producción del bot; en desarrollo
+    # se pisa con BECARIO_OLLAMA_MODEL en .env (p. ej. gemma3:4b en CPU).
     ollama_model: str = "gemma4:12b"
     ollama_timeout_seconds: float = 120.0
     db_path: str = "becario.db"
