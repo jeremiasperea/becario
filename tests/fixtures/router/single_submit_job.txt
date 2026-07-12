@@ -1,0 +1,3 @@
+# SR8 — regresión de un solo paso, acción destructiva.
+prompt: corré el script /home/ana/run.sh
+steps: enviar_slurm

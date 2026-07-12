@@ -1,0 +1,7 @@
+# SR6 — targeting explícito ("paso N") sobre la cola destructiva de un
+# plan de dos pasos.
+kind: edit
+plan: enviar_slurm(particion=default,nodos=1) | crear_directorio(destino_remoto=/home/ana/run)
+prompt: paso 1: usá la partición gpu
+target_index: 1
+params: particion=gpu

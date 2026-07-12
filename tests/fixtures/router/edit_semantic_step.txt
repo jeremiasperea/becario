@@ -1,0 +1,8 @@
+# SR6 — targeting semántico (sin decir "paso N"): "4 nodos" solo tiene
+# sentido para el paso que envía el trabajo, no para el que crea la
+# carpeta.
+kind: edit
+plan: crear_directorio(destino_remoto=/home/ana/run) | enviar_slurm(particion=default,nodos=1)
+prompt: usá 4 nodos
+target_index: 2
+params: nodos=4

@@ -1,0 +1,3 @@
+# SR2 — composición de dos pasos no destructivos, orden preservado.
+prompt: creá la carpeta /home/ana/x y después listá /home/ana/y
+steps: crear_directorio, listar_archivos

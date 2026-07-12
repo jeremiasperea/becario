@@ -1,0 +1,4 @@
+# SR2/SR3 — plan de dos pasos que termina en la cola destructiva
+# (Plan._v_destructive_last exige que enviar_slurm sea el último).
+prompt: creá la carpeta /home/ana/run y corré el script /home/ana/run/x.sh
+steps: crear_directorio, enviar_slurm

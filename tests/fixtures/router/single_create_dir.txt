@@ -1,0 +1,3 @@
+# SR8 — regresión de un solo paso (HC1/HC2): crear un directorio.
+prompt: creame la carpeta /home/ana/pruebas
+steps: crear_directorio
