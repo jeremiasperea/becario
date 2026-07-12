@@ -194,3 +194,38 @@ class TestSchema:
         raw = json.dumps(schema)
         # RouterParams aparece definido una sola vez en $defs.
         assert raw.count('"RouterParams":') <= 1
+
+
+class TestParseEditOutput:
+    """`extract_edit` (tarea 5.1, diseño §3.1/§3.2): un cambio sobre un
+    plan de VARIOS pasos trae, además del delta de parámetros, a qué paso
+    (1-based, `target_index`) se refiere — semántico o explícito («paso
+    N»). Fail-closed: cualquier salida fuera de schema se trata como "sin
+    confianza" (`target_index=None`, sin delta) — nunca se adivina un
+    paso."""
+
+    parse_edit = staticmethod(OllamaRouter.parse_edit_output)
+
+    def test_explicit_target_index_and_delta(self):
+        decision = self.parse_edit('{"target_index": 2, "parametros": {"nodos": 4}}')
+        assert decision.target_index == 2
+        assert decision.parametros.nodos == 4
+
+    def test_no_target_index_when_llm_is_not_confident(self):
+        decision = self.parse_edit('{"target_index": null, "parametros": {"nodos": 4}}')
+        assert decision.target_index is None
+        assert decision.parametros.nodos == 4
+
+    def test_missing_target_index_defaults_to_none(self):
+        decision = self.parse_edit('{"parametros": {"particion": "gpu"}}')
+        assert decision.target_index is None
+        assert decision.parametros.particion == "gpu"
+
+    def test_malformed_json_fails_closed(self):
+        decision = self.parse_edit("no soy json {")
+        assert decision.target_index is None
+        assert decision.parametros.model_dump(exclude_none=True) == {}
+
+    def test_empty_and_none_fail_closed(self):
+        assert self.parse_edit("").target_index is None
+        assert self.parse_edit(None).target_index is None

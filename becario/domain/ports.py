@@ -37,6 +37,14 @@ class IntentRouter(Protocol):
         a 600»). Devuelve {} si no encontró nada."""
         ...
 
+    def extract_edit(self, plan_context: str, user_text: str) -> tuple[Optional[int], dict]:
+        """Ídem `extract_params`, pero para un cambio sobre un plan de
+        VARIOS pasos: además del delta de parámetros, intenta identificar
+        a qué paso (1-based, `target_index`) se refiere el mensaje —
+        semántico o explícito («paso N»). `target_index=None` si no hay
+        confianza sobre a cuál paso se refiere; nunca se adivina."""
+        ...
+
 
 class StructureBuilder(Protocol):
     """Construye estructuras atómicas y escribe archivos de entrada

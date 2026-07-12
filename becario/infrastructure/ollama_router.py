@@ -164,6 +164,41 @@ _EDIT_PROMPT = (
 )
 
 
+# EditDecision/extract_edit (tarea 5.1): a diferencia de `extract_params`
+# (un solo paso, sin ambigüedad posible), un plan de VARIOS pasos necesita
+# saber a CUÁL apunta el cambio. `target_index` es 1-based y coincide con
+# la enumeración que ya ve el usuario en la confirmación. El schema se
+# mantiene liviano: un solo entero nuevo + `RouterParams` reusado por
+# `$ref` (no se duplica) — mismo criterio que `RouterDecision` (ver
+# diseño §2.2/§3.1, ADR-0006).
+class EditDecision(BaseModel):
+    """Salida de `extract_edit`: a qué paso (1-based) apunta el cambio,
+    si el LLM tiene confianza, más el delta de parámetros."""
+
+    target_index: Optional[int] = None
+    parametros: RouterParams = Field(default_factory=RouterParams)
+
+
+_EDIT_TARGET_PROMPT_TEMPLATE = (
+    "Sos el extractor de cambios de B.E.C.A.R.I.O., un asistente HPC. El "
+    "usuario tiene un plan pendiente de VARIOS pasos y este mensaje "
+    "describe UN CAMBIO sobre UNO de ellos. El plan actual es:\n"
+    "{plan_context}\n"
+    "Decidí a qué paso (1-based, 'target_index') se aplica el cambio: si "
+    "el mensaje dice explícitamente 'paso N' usá ese N; si no, deducilo "
+    "del contenido del pedido (p. ej. mencionar una partición o nodos "
+    "apunta al paso que envía o calcula, no a uno que solo crea una "
+    "carpeta). Si NO estás seguro de a qué paso se refiere, dejá "
+    "'target_index' en null — NUNCA adivines. Extraé en 'parametros' solo "
+    "los datos que el mensaje menciona; no inventes valores.\n"
+    "Ejemplos:\n"
+    "'paso 2: usá 4 nodos' -> target_index=2, nodos=4\n"
+    "'subí el ENCUT máximo a 600' (si un solo paso calcula algo) -> "
+    "target_index del paso que calcula, encut_max=600\n"
+    "'cambiá algo' (sin pistas de a qué paso) -> target_index=null"
+)
+
+
 class OllamaRouter:
     """Router basado en structured outputs de Ollama (Gemma-compatible)."""
 
@@ -178,6 +213,7 @@ class OllamaRouter:
         self._timeout = timeout
         self._schema = RouterDecision.model_json_schema()
         self._params_schema = RouterParams.model_json_schema()
+        self._edit_decision_schema = EditDecision.model_json_schema()
 
     def _chat(self, system_prompt: str, user_text: str, schema: dict) -> Optional[str]:
         try:
@@ -219,6 +255,30 @@ class OllamaRouter:
             logger.warning("Extracción de cambio fuera de schema: %r", (raw or "")[:200])
             return {}
         return params.model_dump(exclude_none=True)
+
+    def extract_edit(self, plan_context: str, user_text: str) -> tuple[Optional[int], dict]:
+        """Cambio sobre un plan de VARIOS pasos: además del delta de
+        parámetros, intenta identificar a qué paso (1-based) se refiere
+        el mensaje, semántica o explícitamente ('paso N'). `(None, {})`
+        o `target_index=None` si no hay nada que extraer o el LLM no
+        tiene confianza — nunca se adivina un paso (ver diseño §3.2)."""
+        system_prompt = _EDIT_TARGET_PROMPT_TEMPLATE.format(plan_context=plan_context)
+        raw = self._chat(system_prompt, user_text, self._edit_decision_schema)
+        decision = self.parse_edit_output(raw)
+        return decision.target_index, decision.parametros.model_dump(exclude_none=True)
+
+    @staticmethod
+    def parse_edit_output(raw: Optional[str]) -> EditDecision:
+        """Validación final de `extract_edit`, fail-closed: cualquier
+        salida fuera de schema (o `raw is None`, p. ej. Ollama caído) se
+        trata como "sin confianza" — `EditDecision()` por defecto ya es
+        el resultado más seguro (`target_index=None`, sin delta), así
+        que el llamador nunca fusiona ni ejecuta a ciegas."""
+        try:
+            return EditDecision.model_validate_json(raw or "")
+        except ValidationError:
+            logger.warning("Extracción de edición fuera de schema: %r", (raw or "")[:200])
+            return EditDecision()
 
     @staticmethod
     def parse_llm_output(raw: str) -> Plan:

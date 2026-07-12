@@ -59,6 +59,10 @@ class FakeRouter:
     def __init__(self):
         self.next: RoutedRequest = RoutedRequest(intent=Intent.UNKNOWN, params={})
         self.next_plan: Optional[Plan] = None
+        # `extract_edit` (tarea 5.1): los tests de edición multi-paso fijan
+        # esto directamente en vez de simular el LLM real.
+        self.next_edit: tuple[Optional[int], dict] = (None, {})
+        self.extract_edit_calls: list[tuple[str, str]] = []
 
     def route(self, user_text: str) -> Plan:
         if self.next_plan is not None:
@@ -67,6 +71,10 @@ class FakeRouter:
 
     def extract_params(self, user_text: str) -> dict:
         return dict(self.next.params)
+
+    def extract_edit(self, plan_context: str, user_text: str) -> tuple[Optional[int], dict]:
+        self.extract_edit_calls.append((plan_context, user_text))
+        return self.next_edit
 
 
 class FakeUserRegistry:
@@ -993,6 +1001,106 @@ class TestPlanModification:
         service, *_ = env
         reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id)
         assert "expiró" in reply.text
+
+
+class TestMultiStepPlanModification:
+    """Generalización de ✏️ Modificar a planes de VARIOS pasos (tarea 5.1,
+    diseño §3.2/§4.6): el cambio se aplica al paso correcto (semántico o
+    explícito «paso N»), un targeting ambiguo NUNCA fusiona ni ejecuta, y
+    un cambio aceptado SIEMPRE re-arma el plan entero desde cero (nunca
+    parchea en silencio un payload ya materializado)."""
+
+    def _prepare_composite(self, service, router) -> "Reply":
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/run"}),
+            PlanStep(action=Intent.SUBMIT_SLURM, parametros={"script_remoto": "/home/alice/run/x.sh"}),
+        ])
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+    def test_semantic_targeting_updates_the_destructive_step_and_rematerializes_prefix(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert len(factory.gateways["alice"].made_dirs) == 1  # materializado al armar el plan
+
+        # El LLM identifica semánticamente el paso destructivo (2), sin
+        # que el usuario diga "paso 2".
+        router.next_edit = (2, {"nodos": 4})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="usá 4 nodos")
+        assert reply.needs_confirmation
+
+        cluster = factory.gateways["alice"]
+        assert len(cluster.made_dirs) == 2  # re-PREPARE del plan entero, no un parche puntual
+        service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert cluster.submitted[-1].nodes == 4
+
+    def test_explicit_step_targeting_edits_a_prefix_step(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next_edit = (1, {"destino_remoto": "/home/alice/other"})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 1: usá /home/alice/other",
+        )
+        assert reply.needs_confirmation
+        cluster = factory.gateways["alice"]
+        assert cluster.made_dirs[-1] == "/home/alice/other"  # el paso 1 se re-materializó
+
+    def test_ambiguous_edit_reprompts_without_changing_the_plan(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next_edit = (None, {"nodos": 4})  # el LLM no está seguro de a qué paso
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cambialo")
+        assert not reply.needs_confirmation
+        assert "paso" in reply.text.lower()
+        assert len(factory.gateways["alice"].made_dirs) == 1  # nada se re-materializó ni ejecutó
+
+        # TTL refrescado: el plan sigue vivo, un segundo intento explícito
+        # todavía puede aplicarse (no hizo falta reiniciar con ✏️).
+        router.next_edit = (2, {"nodos": 4})
+        reply2 = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: 4 nodos")
+        assert reply2.needs_confirmation
+
+    def test_out_of_range_target_index_is_ambiguous(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next_edit = (5, {"nodos": 4})  # el plan solo tiene 2 pasos
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cambialo")
+        assert not reply.needs_confirmation
+        assert len(factory.gateways["alice"].made_dirs) == 1
+
+    def test_empty_delta_with_target_index_is_ambiguous(self, env):
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next_edit = (2, {})  # target sin cambio real: nada que aplicar
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: algo")
+        assert not reply.needs_confirmation
+        assert len(factory.gateways["alice"].made_dirs) == 1
+
+    def test_edit_never_patches_payload_silently_full_reprepare(self, env):
+        """El cambio no se aplica "parchando" el `PendingAction.payload`
+        del paso destructivo: se re-arma el plan entero y se re-valida
+        contra el modelo de dominio (`SlurmJobRequest`), como una
+        preparación nueva — un valor inválido se rechaza igual que en un
+        pedido nuevo, no queda un payload corrupto a mitad de camino."""
+        service, router, factory, *_ = env
+        prep = self._prepare_composite(service, router)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        router.next_edit = (2, {"nodos": "no-es-un-numero"})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: nodos raros",
+        )
+        assert not reply.needs_confirmation
+        assert "inválidos" in reply.text.lower()
+        assert factory.gateways["alice"].submitted == []  # nunca se envió nada
 
 
 class TestCompositePlans:

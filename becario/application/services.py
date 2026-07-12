@@ -101,11 +101,15 @@ class Reply:
 
 @dataclass
 class _PendingEdit:
-    """El usuario tocó ✏️ Modificar: su próximo mensaje describe el cambio,
-    que se mezcla con los parámetros del pedido original."""
+    """El usuario tocó ✏️ Modificar: su próximo mensaje describe el
+    cambio. Guarda el pedido ORIGINAL (acción + parámetros) de cada paso
+    editable del plan, en orden — un plan de un solo paso es la lista de
+    largo 1 de siempre; un plan de varios pasos generaliza a targeting
+    (tarea 5.1, diseño §3.2/§4.6): el cambio aceptado SIEMPRE re-arma el
+    plan entero desde estos pedidos originales, nunca parchea un payload
+    ya materializado."""
 
-    intent: Intent
-    base_params: dict
+    steps: list[tuple[Intent, dict]]
     created_at: float = field(default_factory=time.time)
 
 
@@ -272,10 +276,16 @@ class BecarioService:
             [(s.action, s.parametros) for s in plan.steps], identity.ssh_user,
         )
 
+        return self._dispatch_plan(ctx, plan)
+
+    def _dispatch_plan(self, ctx: _Ctx, plan: Plan) -> Reply:
+        """Arma/ejecuta un `Plan` ya construido (por `route()` o por un
+        ✏️ Modificar re-armado, tarea 5.1 §4.6). Un solo paso es el camino
+        de hoy, sin cambios (HC1/HC2): UNA llamada al LLM (si vino de
+        `route()`) y ejecuta/confirma exactamente como antes de la
+        composición de planes — reusar este método desde el flujo de
+        edición es lo que mantiene esa paridad byte a byte."""
         if plan.is_single:
-            # Camino de hoy, sin cambios (HC1/HC2): un pedido de una sola
-            # acción hace UNA llamada al LLM y ejecuta/confirma exactamente
-            # como antes de la composición de planes.
             step = plan.single_step
             handler = self._intent_handlers().get(step.action)
             if handler is None:
@@ -378,10 +388,15 @@ class BecarioService:
             lines = prefix_report + [f"{n}. ❌ {built.text}"]
             return Reply(text="\n".join(lines))
 
+        # `request_intent`/`request_params` conservan el pedido original de
+        # CADA paso (no solo el destructivo): así ✏️ Modificar puede
+        # apuntar a un paso ya materializado (tarea 5.1) y, al aceptarse
+        # el cambio, re-armar el plan entero desde estos originales.
         prefix_actions = [
             PendingAction(
                 chat_id=ctx.chat_id, requester_id=ctx.user_id,
                 intent=s.action, description=line, payload={},
+                request_intent=s.action, request_params=dict(s.parametros),
             )
             for s, line in zip(prefix_steps, prefix_report)
         ]
@@ -409,34 +424,76 @@ class BecarioService:
             return None
         return edit
 
+    def _render_plan_context(self, steps: list[tuple[Intent, dict]]) -> str:
+        """Enumeración legible del plan pendiente: se la mandamos al LLM
+        de `extract_edit` como contexto para el targeting semántico, y
+        se la mostramos al usuario cuando el targeting sale ambiguo."""
+        lines = []
+        for i, (intent, params) in enumerate(steps, start=1):
+            resumen = ", ".join(f"{k}={v}" for k, v in params.items()) or "sin parámetros"
+            lines.append(f"{i}. {intent.value} ({resumen})")
+        return "\n".join(lines)
+
     def _apply_edit(self, ctx: _Ctx, edit: _PendingEdit, text: str) -> Reply:
-        """El mensaje describe el cambio: el LLM extrae solo los parámetros
-        nuevos y se mezclan sobre el pedido original (lo nuevo gana). El
-        plan NUNCA se descarta solo: si no se entiende el cambio se vuelve
-        a preguntar, y solo un «cancelar» explícito lo tira."""
+        """El mensaje describe el cambio. El plan NUNCA se descarta solo:
+        si no se entiende (o el targeting sale ambiguo) se vuelve a
+        preguntar, y solo un «cancelar» explícito lo tira.
+
+        - Un solo paso editable: camino de hoy, byte a byte (`extract_params`,
+          se mezcla con el pedido original, se llama al handler directo).
+        - Varios pasos: `extract_edit` targetea el paso (semántico o
+          «paso N»); un cambio aceptado re-arma el plan ENTERO desde los
+          pedidos originales vía `_dispatch_plan` — nunca parchea un
+          payload ya materializado (diseño §4.6)."""
         if _is_cancel_message(text):
             return Reply(
                 text="❌ Plan descartado. Pedime el cálculo de nuevo cuando quieras."
             )
-        new_params = self._router.extract_params(text)
-        if not new_params:
-            # Devolver el plan al estante (con TTL renovado) para reintentar.
-            with self._edits_lock:
-                self._pending_edits[ctx.user_id] = _PendingEdit(
-                    intent=edit.intent, base_params=edit.base_params
+
+        if len(edit.steps) == 1:
+            new_params = self._router.extract_params(text)
+            if not new_params:
+                # Devolver el plan al estante (con TTL renovado) para reintentar.
+                with self._edits_lock:
+                    self._pending_edits[ctx.user_id] = _PendingEdit(steps=edit.steps)
+                return Reply(
+                    text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
+                    'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
+                    "«cancelar» para descartar el plan."
                 )
-            return Reply(
-                text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
-                'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
-                "«cancelar» para descartar el plan."
+            intent, base_params = edit.steps[0]
+            merged = {**base_params, **new_params}
+            logger.info(
+                "plan modificado por user=%s: base=%s cambio=%s",
+                ctx.user_id, base_params, new_params,
             )
-        merged = {**edit.base_params, **new_params}
+            handler = self._intent_handlers()[intent]
+            return handler(ctx, merged)
+
+        plan_context = self._render_plan_context(edit.steps)
+        target_index, delta = self._router.extract_edit(plan_context, text)
+        n = len(edit.steps)
+        if target_index is None or not (1 <= target_index <= n) or not delta:
+            # Ambiguo: NUNCA se fusiona ni se ejecuta. Plan al estante, sin
+            # tocar, con TTL renovado.
+            with self._edits_lock:
+                self._pending_edits[ctx.user_id] = _PendingEdit(steps=edit.steps)
+            return Reply(
+                text="🤔 No estoy seguro a qué paso del plan te referís. "
+                "Decímelo apuntando el paso (p. ej. «paso 2: usá la "
+                "partición gpu»), o escribí «cancelar» para descartar el "
+                f"plan.\n\nPlan actual:\n{plan_context}"
+            )
+
+        new_steps = list(edit.steps)
+        intent, base_params = new_steps[target_index - 1]
+        new_steps[target_index - 1] = (intent, {**base_params, **delta})
         logger.info(
-            "plan modificado por user=%s: base=%s cambio=%s",
-            ctx.user_id, edit.base_params, new_params,
+            "plan modificado (paso %s) por user=%s: base=%s cambio=%s",
+            target_index, ctx.user_id, base_params, delta,
         )
-        handler = self._intent_handlers()[edit.intent]
-        return handler(ctx, merged)
+        plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
+        return self._dispatch_plan(ctx, plan)
 
     def start_modification(self, token: str, requester_id: int) -> Reply:
         """Botón ✏️ Modificar: descarta el plan pendiente y espera que el
@@ -446,21 +503,29 @@ class BecarioService:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
         if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
-        # Hoy todo plan tiene a lo sumo un paso editable (el que conserva
-        # el pedido original); la extensión a targeting multi-paso es 5.1.
-        action = next((s for s in plan.steps if s.request_intent is not None), None)
-        if action is None:
+        # Todo paso que conserva su pedido original (`request_intent`) es
+        # editable — en un plan de un solo paso es a lo sumo uno (camino de
+        # hoy); en un plan de varios, targeting multi-paso (tarea 5.1).
+        steps = [
+            (s.request_intent, dict(s.request_params))
+            for s in plan.steps if s.request_intent is not None
+        ]
+        if not steps:
             return Reply(text="⚠️ Esta acción no admite modificación.")
         self._confirmations.pop(token)
         with self._edits_lock:
-            self._pending_edits[requester_id] = _PendingEdit(
-                intent=action.request_intent,
-                base_params=dict(action.request_params),
+            self._pending_edits[requester_id] = _PendingEdit(steps=steps)
+        if len(steps) == 1:
+            return Reply(
+                text="✏️ Dale, decime qué querés cambiar (p. ej. «subí el ENCUT "
+                "máximo a 600», «usá la partición gpu», «supercelda 2x2x2»). "
+                "Las demás condiciones del plan se mantienen."
             )
         return Reply(
-            text="✏️ Dale, decime qué querés cambiar (p. ej. «subí el ENCUT "
-            "máximo a 600», «usá la partición gpu», «supercelda 2x2x2»). "
-            "Las demás condiciones del plan se mantienen."
+            text="✏️ Dale, decime qué querés cambiar. Podés decirlo tal cual "
+            "(«usá la partición gpu») o apuntar el paso («paso 2: 4 nodos»). "
+            f"Las demás condiciones del plan se mantienen.\n\nPlan actual:\n"
+            f"{self._render_plan_context(steps)}"
         )
 
     # ------------------------------------------------------------------
