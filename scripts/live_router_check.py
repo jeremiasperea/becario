@@ -74,9 +74,21 @@ def _parse_step_list(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def _coerce_value(value: str):
+    """Los params que extrae el router llegan tipados (Pydantic): los del
+    fixture deben compararse con el mismo tipo, no como texto."""
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
 def _parse_params(raw: str) -> dict:
     pairs = [p.strip() for p in raw.split(",") if p.strip()]
-    return dict(p.split("=", 1) for p in pairs)
+    return {k: _coerce_value(v) for k, v in (p.split("=", 1) for p in pairs)}
 
 
 def _parse_plan_context(raw: str) -> str:
@@ -148,6 +160,20 @@ def _check_edit(router: OllamaRouter, fx: EditFixture) -> Optional[str]:
     return None
 
 
+def _installed_models(url: str) -> Optional[set[str]]:
+    """Nombres de modelos disponibles en el Ollama destino, o None si no
+    se pudo consultar (en ese caso no se saltea nada: mejor intentar)."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/api/tags", timeout=10) as resp:
+            data = json.load(resp)
+        return {m.get("name", "") for m in data.get("models", [])}
+    except OSError:
+        return None
+
+
 def run(models: list[str], url: str, fixtures_dir: Path = _FIXTURES_DIR) -> bool:
     """Corre TODOS los fixtures contra CADA modelo; imprime un reporte
     legible y devuelve `True` solo si todo pasó en todos los modelos."""
@@ -155,8 +181,16 @@ def run(models: list[str], url: str, fixtures_dir: Path = _FIXTURES_DIR) -> bool
     if not fixtures:
         print(f"⚠️  No hay fixtures en {fixtures_dir}")
         return False
+    installed = _installed_models(url)
     all_ok = True
     for model in models:
+        if installed is not None and model not in installed:
+            # Un modelo ausente no es un fallo de clasificación: se salta
+            # con aviso para no reportar ❌ engañosos (p. ej. gemma4:12b
+            # solo existe en la máquina de producción).
+            print(f"\n== modelo: {model} ==")
+            print(f"⏭️  no instalado en {url} — salteado (parcial, no falla)")
+            continue
         router = OllamaRouter(base_url=url, model=model)
         print(f"\n== modelo: {model} ==")
         for fx in fixtures:

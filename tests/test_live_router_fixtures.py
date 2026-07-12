@@ -44,8 +44,15 @@ class TestParseParams:
         assert _parse_params("particion=gpu") == {"particion": "gpu"}
 
     def test_multiple_pairs_preserve_all_keys(self):
+        # Los valores numéricos se tipan: el router extrae params vía
+        # Pydantic (nodos=4 es int) y la comparación debe ser homogénea.
         assert _parse_params("nodos=4,particion=gpu") == {
-            "nodos": "4", "particion": "gpu",
+            "nodos": 4, "particion": "gpu",
+        }
+
+    def test_numeric_values_are_coerced(self):
+        assert _parse_params("encut=520,parametro_red=3.23,formula=Zr") == {
+            "encut": 520, "parametro_red": 3.23, "formula": "Zr",
         }
 
 
