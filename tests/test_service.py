@@ -26,6 +26,8 @@ from becario.domain.models import (
     JobId,
     JobStatus,
     PendingPlan,
+    Plan,
+    PlanStep,
     RoutedRequest,
     SlurmJobRequest,
     StructureRequest,
@@ -48,11 +50,20 @@ BOB = ClusterIdentity(telegram_user_id=222, ssh_user="bob", ssh_key_path="/k/b",
 
 
 class FakeRouter:
+    """`route` devuelve `Plan` (task 3.2/4.3). Los ~70 sitios de test
+    existentes siguen fijando `router.next = RoutedRequest(...)`: `route`
+    lo envuelve en un plan de un solo paso, así que el comportamiento de
+    un solo paso queda byte-idéntico sin tocar esos call sites. Los tests
+    de planes multi-paso fijan `router.next_plan` directamente."""
+
     def __init__(self):
         self.next: RoutedRequest = RoutedRequest(intent=Intent.UNKNOWN, params={})
+        self.next_plan: Optional[Plan] = None
 
-    def route(self, user_text: str) -> RoutedRequest:
-        return self.next
+    def route(self, user_text: str) -> Plan:
+        if self.next_plan is not None:
+            return self.next_plan
+        return Plan(steps=[PlanStep(action=self.next.intent, parametros=dict(self.next.params))])
 
     def extract_params(self, user_text: str) -> dict:
         return dict(self.next.params)
@@ -982,6 +993,97 @@ class TestPlanModification:
         service, *_ = env
         reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id)
         assert "expiró" in reply.text
+
+
+class TestCompositePlans:
+    """`handle_text` construye un `Plan` vía el router. Un plan de un solo
+    paso sigue el camino de hoy, byte a byte (HC1/HC2, cubierto por el
+    resto de la suite vía `FakeRouter.route`). Estos tests cubren la
+    composición de VARIOS pasos (SR2/SR5): materialización en orden en el
+    momento de construir el plan, corte en el primer fallo, y confirmación
+    reservada SOLO para la cola destructiva final."""
+
+    def test_two_safe_steps_execute_in_order_with_no_confirmation(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/a"}),
+            PlanStep(action=Intent.LIST_FILES, parametros={"destino_remoto": "/home/alice/b"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert not reply.needs_confirmation
+        cluster = factory.gateways["alice"]
+        assert cluster.made_dirs == ["/home/alice/a"]  # el paso 1 corrió
+        assert cluster.listed_dirs == ["/home/alice/b"]  # el paso 2 también
+        assert reply.text.splitlines()[0].startswith("1. ✅")
+        assert reply.text.splitlines()[1].startswith("2. ✅")
+
+    def test_middle_step_failure_reports_executed_failed_and_not_attempted(self, env):
+        """SR5: el paso 1 se reporta ejecutado, el 2 fallado con su
+        mensaje, el 3 no intentado — y el paso 1 NO se deshace."""
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/ok"}),
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/tmp/../etc"}),
+            PlanStep(action=Intent.LIST_FILES, parametros={"destino_remoto": "/home/alice/b"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert not reply.needs_confirmation
+        lines = reply.text.splitlines()
+        assert lines[0].startswith("1. ✅")
+        assert lines[1].startswith("2. ❌")
+        assert "inválid" in lines[1].lower()
+        assert lines[2] == "3. ⏸ omitido"
+
+        cluster = factory.gateways["alice"]
+        assert cluster.made_dirs == ["/home/alice/ok"]  # el paso 1 quedó hecho, no se deshizo
+        assert cluster.listed_dirs == []  # el paso 3 NUNCA se invocó
+
+    def test_composite_with_destructive_tail_materializes_prefix_then_asks_confirmation(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/run"}),
+            PlanStep(action=Intent.SUBMIT_SLURM, parametros={"script_remoto": "/home/alice/run/x.sh"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        cluster = factory.gateways["alice"]
+        assert cluster.made_dirs == ["/home/alice/run"]  # materializado al construir el plan
+        assert cluster.submitted == []  # la cola destructiva todavía NO se ejecutó
+        assert reply.needs_confirmation
+        assert reply.confirmation_token
+
+        service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert len(cluster.submitted) == 1  # recién ahora se ejecuta, una sola vez
+
+    def test_composite_prefix_failure_blocks_the_destructive_tail(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/tmp/../etc"}),
+            PlanStep(action=Intent.SUBMIT_SLURM, parametros={"script_remoto": "/home/alice/run/x.sh"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert not reply.needs_confirmation
+        cluster = factory.gateways["alice"]
+        assert cluster.submitted == []  # la cola destructiva nunca se alcanzó
+        assert reply.text.splitlines()[-1] == "2. ⏸ omitido"
+
+    def test_unsupported_composite_step_is_rejected_fail_closed(self, env):
+        """v1 no combina `preparar_calculo` dentro de un plan multi-paso
+        (necesita su propio flujo de preparación/confirmación; ver
+        apply-progress, deviations de la tarea 4.3)."""
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/run"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert reply.text == HELP_TEXT
+        assert not reply.needs_confirmation
+        assert factory.gateways["alice"].made_dirs == []  # nada se ejecutó
 
 
 _CONTCAR_ZR = (
