@@ -1,4 +1,6 @@
 """Tests del parseo de la salida del LLM con structured outputs."""
+import json
+
 from becario.domain.models import Intent
 from becario.infrastructure.ollama_router import (
     OllamaRouter,
@@ -7,6 +9,14 @@ from becario.infrastructure.ollama_router import (
 )
 
 parse = OllamaRouter.parse_llm_output
+
+# Tamaño del schema de RouterDecision ANTES de fusionar `steps` (medido en
+# la fase apply, tarea 3.1, sobre gemma3:4b como modelo peor-caso). El
+# presupuesto del gate es 1.15x: si la fusión de `steps` en la tarea 3.2
+# infla el schema por encima de eso, corresponde activar la mitigación de
+# recorte de `description` descripta en el diseño (ADR-0006).
+_ROUTER_DECISION_SCHEMA_BASELINE_BYTES = 3650
+_ROUTER_DECISION_SCHEMA_BUDGET_FACTOR = 1.15
 
 
 class TestParseLLMOutput:
@@ -92,3 +102,15 @@ class TestSchema:
         for key in ("tipo_calculo", "encut", "encut_min", "encut_max",
                     "encut_paso", "puntos_k"):
             assert key in schema["properties"]
+
+    def test_schema_size_stays_within_budget(self):
+        # Gate de tamaño (gemma3:4b es el peor caso): la fusión de `steps`
+        # en RouterDecision (tarea 3.2) no puede inflar el schema más de
+        # 1.15x el baseline medido antes del merge. Si esto falla, activar
+        # la mitigación de recorte de `description` (ver diseño §2.2).
+        size = len(json.dumps(RouterDecision.model_json_schema()))
+        budget = _ROUTER_DECISION_SCHEMA_BASELINE_BYTES * _ROUTER_DECISION_SCHEMA_BUDGET_FACTOR
+        assert size <= budget, (
+            f"schema de RouterDecision creció a {size} bytes, "
+            f"supera el presupuesto de {budget:.0f} bytes (1.15x baseline)"
+        )
