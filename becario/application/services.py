@@ -405,8 +405,11 @@ class BecarioService:
             steps=[*prefix_actions, built],
         )
         token = self._confirmations.put(plan)
-        label = built.description.splitlines()[0]
-        lines = prefix_report + [f"{n}. ⏳ {label} — confirmá para ejecutar"]
+        # ADR-0003: se confirma exactamente lo que se ejecuta — el detalle
+        # completo del paso destructivo va en el texto, no solo el rótulo.
+        head, *detail = built.description.splitlines()
+        lines = prefix_report + [f"{n}. ⏳ {head} — confirmá para ejecutar"]
+        lines += [f"    {d}" for d in detail]
         return Reply(
             text="\n".join(lines),
             needs_confirmation=True,

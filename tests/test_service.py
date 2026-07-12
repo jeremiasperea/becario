@@ -1165,6 +1165,22 @@ class TestCompositePlans:
         service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
         assert len(cluster.submitted) == 1  # recién ahora se ejecuta, una sola vez
 
+    def test_composite_confirmation_shows_the_full_destructive_detail(self, env):
+        # ADR-0003: se confirma exactamente lo que se va a ejecutar — el
+        # detalle del sbatch (script, partición, nodos, tiempo) tiene que
+        # estar visible en el texto, no solo el rótulo del paso.
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/run"}),
+            PlanStep(action=Intent.SUBMIT_SLURM, parametros={"script_remoto": "/home/alice/run/x.sh"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert reply.needs_confirmation
+        assert "script: /home/alice/run/x.sh" in reply.text
+        assert "partición:" in reply.text
+        assert "nodos:" in reply.text
+        assert "tiempo:" in reply.text
+
     def test_composite_prefix_failure_blocks_the_destructive_tail(self, env):
         service, router, factory, *_ = env
         router.next_plan = Plan(steps=[
