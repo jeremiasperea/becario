@@ -454,6 +454,56 @@ class RoutedRequest:
     params: dict
 
 
+# ---------------------------------------------------------------------------
+# Planes multi-paso (composición de intenciones)
+# ---------------------------------------------------------------------------
+
+_MAX_PLAN_STEPS = 5  # ver justificación en docs/decisions/0006-plan-then-execute.md
+
+
+class PlanStep(BaseModel):
+    """Un paso del plan: una intención + sus parámetros crudos del LLM.
+
+    `parametros` queda como `dict` (no como el `RouterParams` de
+    infraestructura) para que el dominio no dependa de la capa de
+    infraestructura — el mismo patrón que ya usa `RoutedRequest.params`.
+    La validación fuerte de cada paso ocurre después, contra su modelo de
+    request específico (`SlurmJobRequest`, `VaspCalcRequest`, etc.).
+    """
+
+    action: Intent
+    parametros: dict = Field(default_factory=dict)
+
+
+class Plan(BaseModel):
+    """Plan ordenado de pasos, fail-closed en su forma.
+
+    A lo sumo un paso destructivo (`Intent.destructive()`) y, si existe,
+    debe ser el último — así la confirmación humana sigue gatillando
+    únicamente sobre la cola irreversible del plan (ver ADR-0006).
+    """
+
+    steps: list[PlanStep] = Field(min_length=1, max_length=_MAX_PLAN_STEPS)
+
+    @field_validator("steps")
+    @classmethod
+    def _v_destructive_last(cls, steps: list[PlanStep]) -> list[PlanStep]:
+        idx = [i for i, s in enumerate(steps) if s.action in Intent.destructive()]
+        if len(idx) > 1:
+            raise ValueError("un plan admite a lo sumo un paso destructivo")
+        if idx and idx[0] != len(steps) - 1:
+            raise ValueError("el paso destructivo debe ser el último del plan")
+        return steps
+
+    @property
+    def is_single(self) -> bool:
+        return len(self.steps) == 1
+
+    @property
+    def single_step(self) -> PlanStep:
+        return self.steps[0]
+
+
 @dataclass(frozen=True)
 class CommandResult:
     """Resultado de ejecutar algo en el cluster.
@@ -586,3 +636,29 @@ class PendingAction:
 
     def expired(self, ttl_seconds: float) -> bool:
         return (time.time() - self.created_at) > ttl_seconds
+
+
+@dataclass
+class PendingPlan:
+    """Plan a la espera de confirmación: un solo token/TTL para todo el
+    plan, con sus pasos ya materializados como `PendingAction`.
+
+    Generaliza `PendingAction` a N pasos sin duplicar su semántica de
+    ownership/expiración: un plan de un solo paso destructivo es
+    indistinguible, en estos aspectos, de la `PendingAction` de hoy.
+    """
+
+    chat_id: int
+    requester_id: int
+    steps: list[PendingAction]
+    token: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    created_at: float = field(default_factory=time.time)
+
+    def expired(self, ttl_seconds: float) -> bool:
+        return (time.time() - self.created_at) > ttl_seconds
+
+    @property
+    def allow_modify(self) -> bool:
+        """El plan es editable si al menos un paso conserva el pedido
+        original (`request_intent`), igual que hoy con `PendingAction`."""
+        return any(s.request_intent is not None for s in self.steps)

@@ -13,6 +13,9 @@ from becario.domain.models import (
     JobId,
     ListFilesRequest,
     PendingAction,
+    PendingPlan,
+    Plan,
+    PlanStep,
     RemoteDirRequest,
     SlurmJobRequest,
 )
@@ -205,3 +208,109 @@ class TestIntent:
         assert Intent.CANCEL_JOB in Intent.destructive()
         assert Intent.CHECK_STATUS not in Intent.destructive()
         assert Intent.QUERY_DB not in Intent.destructive()
+
+
+class TestPlan:
+    """Suite de validación del Plan: forma fail-closed, tope de pasos y la
+    regla "a lo sumo un paso destructivo y, si existe, va al final"."""
+
+    def test_single_safe_step_is_accepted(self):
+        plan = Plan(steps=[PlanStep(action=Intent.CHECK_STATUS)])
+        assert len(plan.steps) == 1
+
+    def test_single_destructive_step_is_accepted(self):
+        plan = Plan(steps=[PlanStep(action=Intent.SUBMIT_SLURM)])
+        assert len(plan.steps) == 1
+
+    def test_safe_composition_is_accepted(self):
+        plan = Plan(
+            steps=[
+                PlanStep(action=Intent.CREATE_DIR),
+                PlanStep(action=Intent.LIST_FILES),
+            ]
+        )
+        assert [s.action for s in plan.steps] == [Intent.CREATE_DIR, Intent.LIST_FILES]
+
+    def test_destructive_step_allowed_as_last(self):
+        plan = Plan(
+            steps=[
+                PlanStep(action=Intent.CREATE_DIR),
+                PlanStep(action=Intent.SUBMIT_SLURM),
+            ]
+        )
+        assert plan.steps[-1].action == Intent.SUBMIT_SLURM
+
+    def test_destructive_step_not_last_rejected(self):
+        with pytest.raises(ValidationError):
+            Plan(
+                steps=[
+                    PlanStep(action=Intent.SUBMIT_SLURM),
+                    PlanStep(action=Intent.CREATE_DIR),
+                ]
+            )
+
+    def test_two_destructive_steps_rejected(self):
+        with pytest.raises(ValidationError):
+            Plan(
+                steps=[
+                    PlanStep(action=Intent.SUBMIT_SLURM),
+                    PlanStep(action=Intent.CANCEL_JOB),
+                ]
+            )
+
+    def test_too_many_steps_rejected(self):
+        with pytest.raises(ValidationError):
+            Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(6)])
+
+    def test_max_steps_is_accepted(self):
+        plan = Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(5)])
+        assert len(plan.steps) == 5
+
+    def test_empty_steps_rejected(self):
+        with pytest.raises(ValidationError):
+            Plan(steps=[])
+
+    def test_step_parametros_default_empty_dict(self):
+        step = PlanStep(action=Intent.LIST_FILES)
+        assert step.parametros == {}
+
+
+class TestPendingPlan:
+    """`PendingPlan` es la unidad que guarda el ConfirmationStore: un token
+    y un TTL por plan, con pasos ordenados en forma de `PendingAction`."""
+
+    def _step(self, intent: Intent = Intent.CANCEL_JOB, request_intent=None) -> PendingAction:
+        return PendingAction(
+            chat_id=1,
+            requester_id=1,
+            intent=intent,
+            description="",
+            payload={},
+            request_intent=request_intent,
+        )
+
+    def test_tokens_are_unique(self):
+        p1 = PendingPlan(chat_id=1, requester_id=1, steps=[self._step()])
+        p2 = PendingPlan(chat_id=1, requester_id=1, steps=[self._step()])
+        assert p1.token != p2.token
+
+    def test_expiry(self):
+        plan = PendingPlan(chat_id=1, requester_id=1, steps=[self._step()])
+        assert not plan.expired(ttl_seconds=60)
+        plan.created_at -= 120
+        assert plan.expired(ttl_seconds=60)
+
+    def test_allow_modify_false_when_no_step_is_modifiable(self):
+        plan = PendingPlan(chat_id=1, requester_id=1, steps=[self._step(request_intent=None)])
+        assert plan.allow_modify is False
+
+    def test_allow_modify_true_when_any_step_is_modifiable(self):
+        plan = PendingPlan(
+            chat_id=1,
+            requester_id=1,
+            steps=[
+                self._step(intent=Intent.CANCEL_JOB, request_intent=None),
+                self._step(intent=Intent.SUBMIT_SLURM, request_intent=Intent.SUBMIT_SLURM),
+            ],
+        )
+        assert plan.allow_modify is True
