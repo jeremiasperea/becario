@@ -14,6 +14,7 @@ from becario.domain.models import (
     JobId,
     JobStatus,
     PendingAction,
+    PendingPlan,
     SlurmJobRequest,
     TrackedJob,
 )
@@ -130,6 +131,33 @@ class TestConfirmationStore:
         store.put(_action())
         time.sleep(0.05)
         assert store.purge_expired() == 2
+
+
+def _plan(requester_id: int = 1) -> PendingPlan:
+    return PendingPlan(chat_id=1, requester_id=requester_id, steps=[_action(requester_id)])
+
+
+class TestConfirmationStoreWithPendingPlan:
+    """El store es duck-typed (solo usa `.token`/`.expired()`): el puerto
+    ahora declara `PendingPlan` como su unidad, pero la implementación no
+    necesita cambiar de comportamiento — mismo round-trip que con
+    `PendingAction`."""
+
+    def test_put_pop_round_trip(self):
+        store = InMemoryConfirmationStore(ttl_seconds=600)
+        plan = _plan()
+        token = store.put(plan)
+        popped = store.pop(token)
+        assert popped is plan
+        assert popped.steps[0].payload == {"job_id": "1"}
+        assert store.pop(token) is None  # segundo pop: consumido
+
+    def test_peek_does_not_consume(self):
+        store = InMemoryConfirmationStore(ttl_seconds=600)
+        token = store.put(_plan())
+        assert store.peek(token) is not None
+        assert store.pop(token) is not None
+        assert store.peek(token) is None
 
 
 # ---------------------------------------------------------------------------

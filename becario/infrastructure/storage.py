@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from typing import Optional
 
-from ..domain.models import HistoryFilter, JobStatus, PendingAction, TrackedJob
+from ..domain.models import HistoryFilter, JobStatus, PendingPlan, TrackedJob
 
 
 class SQLiteHistoryRepository:
@@ -136,32 +136,36 @@ class SQLiteCalcRunRepository:
 
 
 class InMemoryConfirmationStore:
-    """Acciones pendientes con TTL. Thread-safe (PTB usa asyncio pero los
-    handlers pueden intercalarse; el lock es barato y elimina la duda)."""
+    """Planes pendientes con TTL. Thread-safe (PTB usa asyncio pero los
+    handlers pueden intercalarse; el lock es barato y elimina la duda).
+
+    Duck-typed: solo usa `.token`/`.expired()` de lo que guarda, así que
+    aceptar `PendingPlan` (en vez del `PendingAction` de un solo paso que
+    guardaba antes) no cambió el comportamiento, solo el tipo declarado."""
 
     def __init__(self, ttl_seconds: float = 600.0) -> None:
         self._ttl = ttl_seconds
-        self._items: dict[str, PendingAction] = {}
+        self._items: dict[str, PendingPlan] = {}
         self._lock = threading.Lock()
 
-    def put(self, action: PendingAction) -> str:
+    def put(self, plan: PendingPlan) -> str:
         with self._lock:
-            self._items[action.token] = action
-        return action.token
+            self._items[plan.token] = plan
+        return plan.token
 
-    def peek(self, token: str) -> Optional[PendingAction]:
+    def peek(self, token: str) -> Optional[PendingPlan]:
         with self._lock:
-            action = self._items.get(token)
-        if action is None or action.expired(self._ttl):
+            plan = self._items.get(token)
+        if plan is None or plan.expired(self._ttl):
             return None
-        return action
+        return plan
 
-    def pop(self, token: str) -> Optional[PendingAction]:
+    def pop(self, token: str) -> Optional[PendingPlan]:
         with self._lock:
-            action = self._items.pop(token, None)
-        if action is None or action.expired(self._ttl):
+            plan = self._items.pop(token, None)
+        if plan is None or plan.expired(self._ttl):
             return None
-        return action
+        return plan
 
     def purge_expired(self) -> int:
         with self._lock:

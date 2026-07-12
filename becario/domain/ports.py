@@ -15,7 +15,7 @@ from .models import (
     HistoryFilter,
     JobId,
     JobStatus,
-    PendingAction,
+    PendingPlan,
     RoutedRequest,
     SlurmJobRequest,
     StructureRequest,
@@ -175,16 +175,16 @@ class CalcRunRepository(Protocol):
 
 
 class ConfirmationStore(Protocol):
-    """Guarda acciones destructivas pendientes de confirmación."""
+    """Guarda planes (uno o más pasos) pendientes de confirmación."""
 
-    def put(self, action: PendingAction) -> str: ...
+    def put(self, plan: PendingPlan) -> str: ...
 
-    def peek(self, token: str) -> Optional[PendingAction]:
+    def peek(self, token: str) -> Optional[PendingPlan]:
         """Consulta sin consumir — para validar quién puede confirmar antes
-        de descartar la acción pendiente."""
+        de descartar el plan pendiente."""
         ...
 
-    def pop(self, token: str) -> Optional[PendingAction]: ...
+    def pop(self, token: str) -> Optional[PendingPlan]: ...
 
     def purge_expired(self) -> int: ...
 
