@@ -606,3 +606,106 @@ class TestSQLiteChatLog:
         SQLiteChatLogRepository(path).add(chat_id=100, role="user", text="hola")
         rows = SQLiteChatLogRepository(path).recent(100)
         assert [r["text"] for r in rows] == ["hola"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrencia SQLite (WAL + busy_timeout compartidos por todos los repos)
+# ---------------------------------------------------------------------------
+
+
+class TestSQLiteConcurrency:
+    """Todos los repositorios comparten un archivo: sin WAL ni busy_timeout,
+    escritores concurrentes fallan con «database is locked». Estos tests
+    verifican la configuración y el comportamiento bajo escritura intercalada.
+
+    Determinismo: una barrera arranca los hilos a la vez y cada uno escribe
+    una cantidad fija de filas; no hay sleeps como sincronización."""
+
+    def test_connections_use_wal_and_busy_timeout(self, tmp_path):
+        import sqlite3
+
+        path = str(tmp_path / "shared.db")
+        repo = SQLiteChatLogRepository(path)
+        conn = repo._connect()
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        finally:
+            conn.close()
+        # WAL es persistente: una conexión nueva sobre el mismo archivo
+        # (p. ej. de otro repositorio) también lo hereda.
+        with sqlite3.connect(path) as raw:
+            assert raw.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+    @staticmethod
+    def _run_writers(*writers):
+        """Lanza un hilo por writer, sincronizados con una barrera, y
+        devuelve las excepciones capturadas (la lista debe quedar vacía)."""
+        import threading
+
+        barrier = threading.Barrier(len(writers))
+        errors: list[Exception] = []
+
+        def _wrap(write):
+            def _target():
+                barrier.wait()
+                try:
+                    write()
+                except Exception as exc:  # noqa: BLE001 - el test la reporta
+                    errors.append(exc)
+
+            return _target
+
+        threads = [threading.Thread(target=_wrap(w)) for w in writers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return errors
+
+    def test_two_instances_write_interleaved_without_lock_errors(self, tmp_path):
+        path = str(tmp_path / "shared.db")
+        repo_a = SQLiteChatLogRepository(path)
+        repo_b = SQLiteChatLogRepository(path)
+        n = 50
+
+        def writer(repo, role):
+            def write():
+                for i in range(n):
+                    repo.add(chat_id=1, role=role, text=f"{role}-{i}")
+
+            return write
+
+        errors = self._run_writers(writer(repo_a, "user"), writer(repo_b, "bot"))
+
+        assert errors == []
+        rows = repo_a.recent(1, limit=2 * n + 1)
+        assert len(rows) == 2 * n
+        # Ninguna escritura se perdió: están las n de cada instancia.
+        texts = {r["text"] for r in rows}
+        assert texts == {f"user-{i}" for i in range(n)} | {f"bot-{i}" for i in range(n)}
+
+    def test_distinct_repositories_share_the_file_without_lock_errors(self, tmp_path):
+        # Réplica del escenario de producción: bitácora de chat e historial
+        # escribiendo a la vez sobre el mismo archivo.
+        path = str(tmp_path / "shared.db")
+        chat = SQLiteChatLogRepository(path)
+        history = SQLiteHistoryRepository(path)
+        history.ensure_schema()
+        # 25 por hilo: HistoryFilter acota limit a 50 y acá se verifica el
+        # conteo exacto pidiendo n + 1.
+        n = 25
+
+        def write_chat():
+            for i in range(n):
+                chat.add(chat_id=1, role="user", text=f"msg-{i}")
+
+        def write_history():
+            for i in range(n):
+                history.add(owner_id=7, job_id=str(i), nombre_trabajo=f"job-{i}", estado="PENDING")
+
+        errors = self._run_writers(write_chat, write_history)
+
+        assert errors == []
+        assert len(chat.recent(1, limit=n + 1)) == n
+        assert len(history.search(HistoryFilter(owner_id=7, limit=n + 1))) == n

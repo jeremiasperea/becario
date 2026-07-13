@@ -9,6 +9,7 @@ sobre "quién puede usar el bot" (una allowlist acá y el roster allá).
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import tempfile
@@ -76,15 +77,21 @@ class TelegramBot:
         self._app.run_polling(allowed_updates=["message", "callback_query"])
 
     # ------------------------------------------------------------------
-    def _log_chat(self, chat_id: Optional[int], role: str, text: str) -> None:
+    async def _log_chat(self, chat_id: Optional[int], role: str, text: str) -> None:
         """Registra un mensaje en la bitácora de conversación.
+
+        La escritura a disco corre en un hilo aparte (`asyncio.to_thread`)
+        para no bloquear el event loop con I/O sincrónica; el `await` en
+        cada punto de llamada conserva el orden de los registros por chat.
 
         Nunca interrumpe al bot: si la persistencia falla (disco lleno,
         base bloqueada…), se loguea un warning y la conversación sigue."""
         if self._chat_log is None or chat_id is None:
             return
         try:
-            self._chat_log.add(chat_id=chat_id, role=role, text=text)
+            await asyncio.to_thread(
+                self._chat_log.add, chat_id=chat_id, role=role, text=text
+            )
         except Exception as exc:
             logger.warning(
                 "No pude registrar el mensaje en la bitácora (chat_id=%s): %s",
@@ -110,14 +117,14 @@ class TelegramBot:
             await update.effective_chat.send_message(reply.text, reply_markup=markup)
         # Se registra el texto crudo (sin el envoltorio <pre>): la bitácora
         # guarda contenido, no detalles de formato del canal.
-        self._log_chat(update.effective_chat.id, "bot", reply.text)
+        await self._log_chat(update.effective_chat.id, "bot", reply.text)
 
     # ------------------------------------------------------------------
     async def _on_text(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_user is None:
             return
         text = update.message.text or ""
-        self._log_chat(update.effective_chat.id, "user", text)
+        await self._log_chat(update.effective_chat.id, "user", text)
         reply = self._service.handle_text(
             chat_id=update.effective_chat.id,
             user_id=update.effective_user.id,
@@ -131,7 +138,7 @@ class TelegramBot:
         if self._transcriber is None:
             aviso = "🎙️ La transcripción de audio no está configurada."
             await update.effective_chat.send_message(aviso)
-            self._log_chat(update.effective_chat.id, "bot", aviso)
+            await self._log_chat(update.effective_chat.id, "bot", aviso)
             return
         voice_file = await update.message.voice.get_file()
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,16 +148,16 @@ class TelegramBot:
         if not text.strip():
             aviso = "🎙️ No pude entender el audio, probá de nuevo."
             await update.effective_chat.send_message(aviso)
-            self._log_chat(update.effective_chat.id, "bot", aviso)
+            await self._log_chat(update.effective_chat.id, "bot", aviso)
             return
         # La bitácora guarda la transcripción como mensaje del usuario:
         # es el texto que efectivamente entra al servicio.
-        self._log_chat(update.effective_chat.id, "user", text.strip())
+        await self._log_chat(update.effective_chat.id, "user", text.strip())
         # Mostrar qué se entendió ANTES de actuar: si la transcripción vino
         # mal, el usuario lo ve enseguida y puede repetir.
         entendido = f"🎙️ Entendí: «{text.strip()}»"
         await update.effective_chat.send_message(entendido)
-        self._log_chat(update.effective_chat.id, "bot", entendido)
+        await self._log_chat(update.effective_chat.id, "bot", entendido)
         reply = self._service.handle_text(
             chat_id=update.effective_chat.id,
             user_id=update.effective_user.id,
@@ -169,7 +176,7 @@ class TelegramBot:
         # guarda QUÉ se decidió, no solo la respuesta del bot.
         if query.message is not None:
             etiquetas = {"confirm": "confirmar", "cancel": "cancelar", "modify": "modificar"}
-            self._log_chat(query.message.chat.id, "user", etiquetas.get(action, data))
+            await self._log_chat(query.message.chat.id, "user", etiquetas.get(action, data))
         if action == "confirm":
             reply = self._service.confirm(token, requester_id=query.from_user.id)
         elif action == "cancel":
@@ -193,7 +200,7 @@ class TelegramBot:
             logger.warning("No pude quitar los botones del mensaje original.")
         if query.message is not None:
             await query.message.chat.send_message(reply.text)
-            self._log_chat(query.message.chat.id, "bot", reply.text)
+            await self._log_chat(query.message.chat.id, "bot", reply.text)
 
     # ------------------------------------------------------------------
     # Cierre del loop: aviso proactivo cuando un trabajo termina
@@ -211,6 +218,6 @@ class TelegramBot:
                     )
                 else:
                     await context.bot.send_message(chat_id=note.chat_id, text=note.text)
-                self._log_chat(note.chat_id, "bot", note.text)
+                await self._log_chat(note.chat_id, "bot", note.text)
             except Exception as exc:
                 logger.error("No pude notificar a chat_id=%s: %s", note.chat_id, exc)
