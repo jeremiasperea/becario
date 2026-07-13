@@ -183,6 +183,21 @@ class CalcRunRepository(Protocol):
         ...
 
 
+class ChatLogRepository(Protocol):
+    """Bitácora de la conversación de cada chat (mensajes del usuario y
+    respuestas del bot). Se guarda todo, sin límite de retención: sirve
+    como registro auditable de lo que se pidió y lo que se respondió."""
+
+    def add(self, chat_id: int, role: str, text: str) -> None:
+        """Registra un mensaje. `role` es 'user' o 'bot'."""
+        ...
+
+    def recent(self, chat_id: int, limit: int = 50) -> list[dict]:
+        """Últimos mensajes del chat, del más viejo al más nuevo (orden
+        de lectura natural del historial)."""
+        ...
+
+
 class ConfirmationStore(Protocol):
     """Guarda planes (uno o más pasos) pendientes de confirmación."""
 
