@@ -1,3 +1,6 @@
 # SR2 — composición de dos pasos no destructivos, orden preservado.
-prompt: creá la carpeta /home/ana/x y después listá /home/ana/y
+# NOTA: usar rutas realistas (no placeholders de una sola letra). gemma4:12b
+# trata paths abstractos como "/home/ana/x" como ruido y colapsa el plan a un
+# solo paso; con rutas reales compone bien. Ver AR-2 (ADR-0006).
+prompt: creá la carpeta /home/ana/simulaciones y después listá /home/ana/resultados
 steps: crear_directorio, listar_archivos

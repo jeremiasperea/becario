@@ -16,10 +16,19 @@ regresar. Si un modelo falla un fixture, el harness lo reporta y termina
 con exit code 1 — pensado para correrlo a mano antes de tocar el prompt
 o el schema del router.
 
+Cada fixture se evalúa por MAYORÍA sobre `--attempts` intentos (default
+3, impar). Motivo (AR-2 / ADR-0006): `gemma4:12b` sobre CPU es
+no-determinístico — el greedy decoding con `temperature=0` NO es
+bit-reproducible entre threads (el orden de reducción de floats varía),
+así que el 12b flakea ~1 de cada 6 en composición multi-paso aun con el
+mismo input. Un solo intento daría ❌ engañosos; la mayoría estabiliza el
+gate manual. El voto se imprime entre corchetes cuando no fue unánime
+(p. ej. `✅ multi_destructive_tail [2/3]`).
+
 Uso:
     BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py
     BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
-        --models gemma3:4b,gemma4:12b --url http://localhost:11434
+        --models gemma3:4b,gemma4:12b --url http://localhost:11434 --attempts 5
 
 Fixtures: `tests/fixtures/router/{single,multi,edit}_*.txt` — formato
 en `parse_fixture()`.
@@ -29,9 +38,10 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -160,6 +170,30 @@ def _check_edit(router: OllamaRouter, fx: EditFixture) -> Optional[str]:
     return None
 
 
+def _majority_check(
+    checker: Callable[[OllamaRouter, Fixture], Optional[str]],
+    router: OllamaRouter,
+    fx: Fixture,
+    attempts: int,
+) -> tuple[Optional[str], int]:
+    """Corre `checker` `attempts` veces y decide por MAYORÍA. Devuelve
+    `(error, passes)`: `error=None` si la mayoría pasó. Necesario porque
+    `gemma4:12b` sobre CPU es no-determinístico (ver docstring del módulo);
+    un intento único daría ❌ engañosos. Ante mayoría fallida, reporta el
+    mensaje de error más frecuente."""
+    passes = 0
+    errors: list[str] = []
+    for _ in range(attempts):
+        err = checker(router, fx)
+        if err is None:
+            passes += 1
+        else:
+            errors.append(err)
+    if passes > attempts // 2:
+        return None, passes
+    return Counter(errors).most_common(1)[0][0], passes
+
+
 def _installed_models(url: str) -> Optional[set[str]]:
     """Nombres de modelos disponibles en el Ollama destino, o None si no
     se pudo consultar (en ese caso no se saltea nada: mejor intentar)."""
@@ -174,9 +208,18 @@ def _installed_models(url: str) -> Optional[set[str]]:
         return None
 
 
-def run(models: list[str], url: str, fixtures_dir: Path = _FIXTURES_DIR) -> bool:
+def run(
+    models: list[str],
+    url: str,
+    fixtures_dir: Path = _FIXTURES_DIR,
+    attempts: int = 3,
+    timeout: float = 120.0,
+) -> bool:
     """Corre TODOS los fixtures contra CADA modelo; imprime un reporte
-    legible y devuelve `True` solo si todo pasó en todos los modelos."""
+    legible y devuelve `True` solo si todo pasó en todos los modelos.
+    Cada fixture se decide por mayoría sobre `attempts` intentos.
+    `timeout` es el tope por request al LLM (subilo en CPU: un 12b puede
+    superar los 120s por generación y dar timeouts espurios)."""
     fixtures = load_fixtures(fixtures_dir)
     if not fixtures:
         print(f"⚠️  No hay fixtures en {fixtures_dir}")
@@ -191,13 +234,17 @@ def run(models: list[str], url: str, fixtures_dir: Path = _FIXTURES_DIR) -> bool
             print(f"\n== modelo: {model} ==")
             print(f"⏭️  no instalado en {url} — salteado (parcial, no falla)")
             continue
-        router = OllamaRouter(base_url=url, model=model)
+        router = OllamaRouter(base_url=url, model=model, timeout=timeout)
         print(f"\n== modelo: {model} ==")
         for fx in fixtures:
             checker = _check_edit if isinstance(fx, EditFixture) else _check_route
-            error = checker(router, fx)
+            error, passes = _majority_check(checker, router, fx, attempts)
             status = "✅" if error is None else "❌"
-            print(f"{status} {fx.name}" + (f" — {error}" if error else ""))
+            # El voto solo se muestra si no fue unánime: hace visible el
+            # flake (p. ej. `✅ multi_destructive_tail [2/3]`) sin ruido
+            # cuando todo coincidió.
+            vote = "" if passes == attempts else f" [{passes}/{attempts}]"
+            print(f"{status} {fx.name}{vote}" + (f" — {error}" if error else ""))
             all_ok = all_ok and error is None
     return all_ok
 
@@ -213,9 +260,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", default=",".join(_DEFAULT_MODELS))
     parser.add_argument("--url", default="http://localhost:11434")
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=3,
+        help="intentos por fixture; decide por mayoría (impar recomendado)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="tope por request al LLM en segundos (subilo en CPU para 12b)",
+    )
     args = parser.parse_args()
+    if args.attempts < 1:
+        parser.error("--attempts debe ser >= 1")
+    if args.timeout <= 0:
+        parser.error("--timeout debe ser > 0")
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    ok = run(models, args.url)
+    ok = run(models, args.url, attempts=args.attempts, timeout=args.timeout)
     return 0 if ok else 1
 
 
