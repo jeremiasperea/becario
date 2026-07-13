@@ -20,6 +20,35 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Validación de arranque: server reachability + presencia del modelo
+# ---------------------------------------------------------------------------
+#
+# Estas excepciones señalan las dos formas en que el chequeo de arranque
+# puede fallar. El adaptador NUNCA imprime ni hace `SystemExit`: eso es
+# responsabilidad de `main.py` (composition root), que las captura y decide
+# el mensaje + el código de salida (ver diseño, ADR-1/ADR-2).
+
+
+class OllamaValidationError(RuntimeError):
+    """Base de los errores de validación de arranque de Ollama."""
+
+
+class OllamaUnreachableError(OllamaValidationError):
+    """El servidor de Ollama no respondió o respondió con datos inválidos."""
+
+
+class OllamaModelMissingError(OllamaValidationError):
+    """El modelo configurado no está entre los modelos disponibles."""
+
+    def __init__(self, model: str, available: list[str]) -> None:
+        self.model = model
+        self.available = available
+        super().__init__(
+            f"modelo {model!r} no encontrado; disponibles: {available!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Contrato con el LLM (define el JSON Schema de la respuesta)
 # ---------------------------------------------------------------------------
 
@@ -214,6 +243,39 @@ class OllamaRouter:
         self._schema = RouterDecision.model_json_schema()
         self._params_schema = RouterParams.model_json_schema()
         self._edit_decision_schema = EditDecision.model_json_schema()
+
+    @staticmethod
+    def _model_matches(configured: str, available: list[str]) -> bool:
+        """Regla de matching de modelo contra `GET /api/tags` (ADR-3).
+
+        `/api/tags` siempre devuelve entradas `name:tag` completas. Si
+        `configured` ya trae un tag explícito, se exige coincidencia exacta
+        (evita que `gemma4:2b` conforme a un `gemma4:12b` configurado). Si
+        `configured` NO trae tag, es la forma abreviada de Ollama para
+        `:latest`, así que solo matchea si ese tag específico está presente.
+        """
+        if ":" in configured:
+            return configured in available
+        return f"{configured}:latest" in available
+
+    def ensure_model_available(self, *, timeout: float = 10.0) -> None:
+        """Chequeo de arranque: server reachable + modelo configurado presente.
+
+        No imprime ni aborta el proceso — solo levanta las excepciones
+        tipadas de arriba; `main.py` decide el mensaje y el `SystemExit`
+        (ver diseño, ADR-1/ADR-2).
+        """
+        try:
+            response = httpx.get(f"{self._base_url}/api/tags", timeout=timeout)
+            response.raise_for_status()
+            names = [model["name"] for model in response.json()["models"]]
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise OllamaUnreachableError(
+                f"no se pudo consultar {self._base_url}/api/tags: {exc}"
+            ) from exc
+
+        if not self._model_matches(self._model, names):
+            raise OllamaModelMissingError(self._model, available=names)
 
     def _chat(self, system_prompt: str, user_text: str, schema: dict) -> Optional[str]:
         try:
