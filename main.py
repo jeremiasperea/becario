@@ -24,7 +24,11 @@ from becario.application.job_monitor import JobMonitorService
 from becario.application.services import BecarioService
 from becario.config import ConfigError, Settings, required_config_present
 from becario.infrastructure.ase_builder import ASEStructureBuilder
-from becario.infrastructure.ollama_router import OllamaRouter
+from becario.infrastructure.ollama_router import (
+    OllamaModelMissingError,
+    OllamaRouter,
+    OllamaUnreachableError,
+)
 from becario.infrastructure.ssh_gateway import SSHClusterGatewayFactory
 from becario.infrastructure.storage import (
     InMemoryConfirmationStore,
@@ -166,6 +170,36 @@ def _check_telegram_token(token: str, timeout: float = 10.0) -> None:
     raise SystemExit(1)
 
 
+def _check_ollama_model(settings: Settings, timeout: float = 10.0) -> None:
+    """Valida que Ollama esté arriba y tenga el modelo configurado ANTES de
+    arrancar el bot (mismo criterio fail-fast que `_check_telegram_token`).
+
+    El chequeo en sí (HTTP + matching de nombre) vive en el adaptador
+    (`OllamaRouter.ensure_model_available`); acá solo se traduce el
+    resultado a un mensaje claro en español y al código de salida.
+    """
+    router = OllamaRouter(base_url=settings.ollama_url, model=settings.ollama_model)
+    try:
+        router.ensure_model_available(timeout=timeout)
+    except OllamaUnreachableError:
+        print(
+            f"\n❌ No pude conectarme a Ollama en {settings.ollama_url}.\n"
+            "   Verificá que Ollama esté corriendo y que la URL sea correcta."
+        )
+        raise SystemExit(1)
+    except OllamaModelMissingError as exc:
+        if exc.available:
+            disponibles = ", ".join(exc.available)
+        else:
+            disponibles = "(el servidor no tiene ningún modelo instalado)"
+        print(
+            f"\n❌ El modelo {exc.model!r} no está instalado en Ollama.\n"
+            f"   Modelos disponibles: {disponibles}\n"
+            f"   Instalalo con: ollama pull {exc.model}"
+        )
+        raise SystemExit(1)
+
+
 def main() -> None:
     # 1) Si falta la config obligatoria, guiar al usuario para crearla.
     if not required_config_present():
@@ -190,8 +224,11 @@ def main() -> None:
     # 4) Verificar el token temprano (mensaje claro en vez de un traceback de PTB).
     _check_telegram_token(settings.telegram_token)
 
-    # 5) Arrancar el bot. El token ya fue validado; una caída de red posterior
-    #    la maneja PTB con su propio backoff.
+    # 5) Verificar que Ollama esté arriba y tenga el modelo configurado.
+    _check_ollama_model(settings)
+
+    # 6) Arrancar el bot. El token y el modelo ya fueron validados; una caída
+    #    de red posterior la maneja PTB con su propio backoff.
     build_bot(settings).run()
 
 
