@@ -136,3 +136,31 @@ de parámetros por cada paso del plan. Un test de regresión
 (`tests/test_router_parsing.py::TestSchema::test_schema_size_stays_within_budget`)
 falla si una fusión futura vuelve a inflar el schema por encima del
 1.15×.
+
+**Nota de validación en vivo (AR-2): `gemma4:12b` verificado, con dos
+hallazgos.** La paridad de fixtures sobre el modelo de producción (SR8,
+diferida en el archive como AR-2) se corrió y pasa 6/6. La corrida dejó
+dos hallazgos que condicionan cómo interpretar el harness
+(`scripts/live_router_check.py`):
+
+1. *Rutas de una sola letra colapsan el plan.* Con paths abstractos tipo
+   `/home/ana/x` y `/home/ana/y`, `gemma4:12b` descarta determinísticamente
+   el segundo paso y emite un plan de un solo paso (reproducido 5/5;
+   también con `x`/`z`, lo que descarta la colisión con la conjunción
+   "y"). Con rutas realistas compone correctamente (3/3). No es una falla
+   de composición del modelo sino sensibilidad a placeholders
+   adversariales: los fixtures usan rutas realistas y quedó anotado en
+   `multi_two_safe_steps.txt` que no se vuelva a placeholders de una
+   letra. `gemma3:4b` no exhibe esta sensibilidad.
+
+2. *Sobre CPU la inferencia no es determinística ni con
+   `temperature=0`.* El decoding greedy no es bit-reproducible entre
+   threads (el orden de reducción de floats varía), y `gemma4:12b` queda
+   cerca del borde de decisión "1 paso vs 2 pasos": flakea ~1 de cada 6
+   corridas en composición multi-paso aun con el mismo input. Además una
+   generación del 12b en CPU puede superar los 120 s del timeout por
+   defecto del router y producir ❌ espurios. Por eso el harness decide
+   cada fixture por MAYORÍA sobre `--attempts` intentos (default 3; el
+   voto se imprime solo si no fue unánime) y acepta `--timeout` para
+   subir el tope por request. Un ❌ aislado del harness en 12b/CPU no es
+   evidencia de regresión por sí solo; una mayoría fallida sí.
