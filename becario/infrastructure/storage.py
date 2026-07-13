@@ -8,6 +8,29 @@ from typing import Optional
 
 from ..domain.models import HistoryFilter, JobStatus, PendingPlan, TrackedJob
 
+# Cuánto espera un escritor a que se libere la base antes de fallar con
+# «database is locked». Con WAL las esperas reales son de milisegundos;
+# el margen amplio cubre picos de escritura (p. ej. bitácora de chat).
+_BUSY_TIMEOUT_MS = 5000
+
+
+def _connect(db_path: str) -> sqlite3.Connection:
+    """Conexión SQLite endurecida para acceso concurrente.
+
+    Todos los repositorios comparten el mismo archivo, así que la
+    configuración vive acá y no en cada clase:
+
+    - `journal_mode=WAL`: lectores y escritor no se bloquean entre sí.
+      Es persistente en el archivo, pero se aplica en cada conexión para
+      cubrir bases creadas antes de este cambio.
+    - `busy_timeout`: ante contención, esperar en vez de fallar al toque.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    return conn
+
 
 class SQLiteHistoryRepository:
     """Historial de cálculos del grupo. Todas las queries usan placeholders
@@ -21,9 +44,7 @@ class SQLiteHistoryRepository:
         self._db_path = db_path
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _connect(self._db_path)
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
@@ -80,9 +101,7 @@ class SQLiteCalcRunRepository:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _connect(self._db_path)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
@@ -146,9 +165,7 @@ class SQLiteChatLogRepository:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _connect(self._db_path)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
@@ -242,9 +259,7 @@ class SQLiteJobTracker:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _connect(self._db_path)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
