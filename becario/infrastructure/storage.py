@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..domain.models import HistoryFilter, JobStatus, PendingPlan, TrackedJob
@@ -133,6 +134,61 @@ class SQLiteCalcRunRepository:
                 (owner_id, f"{job_name_prefix}%", limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+class SQLiteChatLogRepository:
+    """Bitácora de conversación por chat (implementa ChatLogRepository).
+    Usa el mismo archivo que el resto de la persistencia, en una tabla
+    propia. Se guarda todo, sin retención: es un registro auditable."""
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'bot')),
+                    text TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_fecha "
+                "ON chat_messages (chat_id, created_at)"
+            )
+
+    def add(self, chat_id: int, role: str, text: str) -> None:
+        # ISO-8601 en UTC generado acá (y no con datetime('now') de SQLite)
+        # para que el formato quede idéntico al del resto del código Python.
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (chat_id, role, text, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (chat_id, role, text, created_at),
+            )
+
+    def recent(self, chat_id: int, limit: int = 50) -> list[dict]:
+        # Se piden los N más nuevos y se invierte el resultado: el
+        # historial se lee del más viejo al más nuevo.
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE chat_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (chat_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
 
 class InMemoryConfirmationStore:

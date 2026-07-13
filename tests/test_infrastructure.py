@@ -24,6 +24,7 @@ from becario.infrastructure.ssh_gateway import (
 )
 from becario.infrastructure.storage import (
     InMemoryConfirmationStore,
+    SQLiteChatLogRepository,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
 )
@@ -539,3 +540,69 @@ class TestSQLiteJobTracker:
         jobs = tracker.active_jobs()
         assert len(jobs) == 1
         assert jobs[0].workflow == ""  # default para registros previos
+
+
+# ---------------------------------------------------------------------------
+# ChatLog (bitácora de conversación)
+# ---------------------------------------------------------------------------
+
+
+class TestSQLiteChatLog:
+    def test_schema_creation(self, tmp_path):
+        import sqlite3
+
+        path = str(tmp_path / "chat.db")
+        SQLiteChatLogRepository(path)
+        with sqlite3.connect(path) as conn:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert "chat_messages" in names
+        assert "idx_chat_messages_chat_fecha" in names
+
+    def test_add_recent_roundtrip(self, tmp_path):
+        repo = SQLiteChatLogRepository(str(tmp_path / "chat.db"))
+        repo.add(chat_id=100, role="user", text="hola")
+        repo.add(chat_id=100, role="bot", text="¿en qué te ayudo?")
+        rows = repo.recent(100)
+        assert [(r["role"], r["text"]) for r in rows] == [
+            ("user", "hola"),
+            ("bot", "¿en qué te ayudo?"),
+        ]
+        assert all(r["chat_id"] == 100 for r in rows)
+
+    def test_created_at_is_utc_iso(self, tmp_path):
+        from datetime import datetime, timezone
+
+        repo = SQLiteChatLogRepository(str(tmp_path / "chat.db"))
+        repo.add(chat_id=100, role="user", text="hola")
+        created = datetime.fromisoformat(repo.recent(100)[0]["created_at"])
+        assert created.tzinfo is not None
+        assert created.utcoffset().total_seconds() == 0
+        assert abs((datetime.now(timezone.utc) - created).total_seconds()) < 60
+
+    def test_role_constraint(self, tmp_path):
+        import sqlite3
+
+        repo = SQLiteChatLogRepository(str(tmp_path / "chat.db"))
+        with pytest.raises(sqlite3.IntegrityError):
+            repo.add(chat_id=100, role="sistema", text="rol inválido")
+
+    def test_recent_returns_newest_last_with_limit(self, tmp_path):
+        repo = SQLiteChatLogRepository(str(tmp_path / "chat.db"))
+        for i in range(10):
+            repo.add(chat_id=100, role="user", text=f"mensaje {i}")
+        rows = repo.recent(100, limit=3)
+        # Los 3 más nuevos, del más viejo al más nuevo.
+        assert [r["text"] for r in rows] == ["mensaje 7", "mensaje 8", "mensaje 9"]
+
+    def test_chats_are_isolated(self, tmp_path):
+        repo = SQLiteChatLogRepository(str(tmp_path / "chat.db"))
+        repo.add(chat_id=100, role="user", text="del chat 100")
+        repo.add(chat_id=200, role="user", text="del chat 200")
+        assert [r["text"] for r in repo.recent(100)] == ["del chat 100"]
+        assert [r["text"] for r in repo.recent(200)] == ["del chat 200"]
+
+    def test_persists_across_instances(self, tmp_path):
+        path = str(tmp_path / "chat.db")
+        SQLiteChatLogRepository(path).add(chat_id=100, role="user", text="hola")
+        rows = SQLiteChatLogRepository(path).recent(100)
+        assert [r["text"] for r in rows] == ["hola"]

@@ -29,6 +29,7 @@ from becario.infrastructure.ssh_gateway import SSHClusterGatewayFactory
 from becario.infrastructure.storage import (
     InMemoryConfirmationStore,
     SQLiteCalcRunRepository,
+    SQLiteChatLogRepository,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
 )
@@ -67,6 +68,7 @@ def build_bot(settings: Settings) -> TelegramBot:
     history.ensure_schema()
     job_tracker = SQLiteJobTracker(settings.db_path)
     calc_runs = SQLiteCalcRunRepository(settings.db_path)
+    chat_log = SQLiteChatLogRepository(settings.db_path)
     confirmations = InMemoryConfirmationStore(
         ttl_seconds=settings.confirmation_ttl_seconds
     )
@@ -113,6 +115,7 @@ def build_bot(settings: Settings) -> TelegramBot:
         job_monitor=job_monitor,
         monitor_interval_seconds=settings.monitor_interval_seconds,
         transcriber=transcriber,
+        chat_log=chat_log,
     )
 
 
