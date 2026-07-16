@@ -54,6 +54,52 @@ _SCRIPT_PATH_RE = re.compile(r"\A/[A-Za-z0-9_\-./]+\Z")
 _FORMULA_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9]{0,15}\Z")  # Si, NaCl, H2O, TiO2
 _UNIX_USER_RE = re.compile(r"\A[a-z_][a-z0-9_-]{0,31}\Z")
 
+# Símbolos de la tabla periódica (los 118 elementos conocidos). Pura data
+# de Python: nada de dependencias pesadas (p. ej. `ase`) solo para validar
+# que una fórmula tiene sentido químico.
+_ELEMENT_SYMBOLS: frozenset[str] = frozenset({
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+    "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+    "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
+    "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
+    "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
+})
+
+# Token de fórmula: el símbolo del elemento (mayúscula + minúscula
+# opcional, capturado en el grupo 1) seguido de un subíndice numérico
+# opcional que se descarta (Zr, H2, Na -> Zr, H, Na).
+_ELEMENT_TOKEN_RE = re.compile(r"([A-Z][a-z]?)[0-9]*")
+
+
+def is_plausible_formula(formula: str) -> bool:
+    """¿`formula` parece una fórmula química real (y no, p. ej., un
+    identificador mal resuelto como 'ultimo_calculo')?
+
+    Dos filtros en cascada:
+    1. `_FORMULA_RE`: forma sintáctica básica (alfanumérico, sin '_',
+       arranca con letra, largo razonable).
+    2. Tokenización en símbolos de elemento: la fórmula completa debe
+       poder leerse como una secuencia de símbolos válidos de la tabla
+       periódica (p. ej. 'ultimocalculo' pasa el filtro 1 pero no
+       tokeniza en elementos reales).
+    """
+    if not _FORMULA_RE.match(formula):
+        return False
+    pos = 0
+    while pos < len(formula):
+        match = _ELEMENT_TOKEN_RE.match(formula, pos)
+        if not match or match.group(1) not in _ELEMENT_SYMBOLS:
+            return False
+        pos = match.end()
+    return True
+
 
 def _validate_remote_dir_path(v: str) -> str:
     """Política única para directorios remotos: ruta absoluta, sin
@@ -260,7 +306,7 @@ class StructureRequest(BaseModel):
     @classmethod
     def _v_formula(cls, v: str) -> str:
         v = v.strip()
-        if not _FORMULA_RE.match(v):
+        if not is_plausible_formula(v):
             raise ValueError(f"fórmula inválida: {v!r}")
         return v
 
@@ -344,7 +390,7 @@ class VaspCalcRequest(BaseModel):
     @classmethod
     def _v_formula(cls, v: str) -> str:
         v = v.strip()
-        if not _FORMULA_RE.match(v):
+        if not is_plausible_formula(v):
             raise ValueError(f"fórmula inválida: {v!r}")
         return v
 

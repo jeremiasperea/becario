@@ -18,6 +18,7 @@ from becario.domain.models import (
     PlanStep,
     RemoteDirRequest,
     SlurmJobRequest,
+    is_plausible_formula,
 )
 
 
@@ -314,3 +315,32 @@ class TestPendingPlan:
             ],
         )
         assert plan.allow_modify is True
+
+
+class TestIsPlausibleFormula:
+    """`is_plausible_formula` es la frontera anti-alucinación para
+    'formula': acepta símbolos/fórmulas químicas reales y rechaza
+    cualquier otra cosa que el LLM haya inventado (p. ej. una referencia
+    mal resuelta como 'ultimo_calculo')."""
+
+    @pytest.mark.parametrize(
+        "formula", ["Zr", "W", "Si", "NaCl", "TiO2", "H2O", "Au"]
+    )
+    def test_plausible_formulas(self, formula):
+        assert is_plausible_formula(formula) is True
+
+    @pytest.mark.parametrize(
+        "formula",
+        [
+            "ultimo_calculo",  # tiene '_': ni siquiera pasa el regex base
+            "ultimocalculo",  # pasa el regex pero no tokeniza en elementos
+            "",
+            "último",
+            "calc-1",
+            "Xx7",  # 'Xx' no es un símbolo real
+            "123",
+            "A_B",
+        ],
+    )
+    def test_implausible_formulas(self, formula):
+        assert is_plausible_formula(formula) is False
