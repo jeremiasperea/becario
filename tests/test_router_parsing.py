@@ -6,6 +6,7 @@ from becario.infrastructure.ollama_router import (
     OllamaRouter,
     RouterDecision,
     RouterParams,
+    compact_json_schema,
 )
 
 parse = OllamaRouter.parse_llm_output
@@ -178,12 +179,26 @@ class TestSchema:
         # en RouterDecision (tarea 3.2) no puede inflar el schema más de
         # 1.15x el baseline medido antes del merge. Si esto falla, activar
         # la mitigación de recorte de `description` (ver diseño §2.2).
-        size = len(json.dumps(RouterDecision.model_json_schema()))
+        # Se mide el schema COMO VIAJA a Ollama (compact_json_schema, sin
+        # los `title` autogenerados de Pydantic) porque eso es lo que
+        # consume el presupuesto real del modelo.
+        size = len(json.dumps(compact_json_schema(RouterDecision)))
         budget = _ROUTER_DECISION_SCHEMA_BASELINE_BYTES * _ROUTER_DECISION_SCHEMA_BUDGET_FACTOR
         assert size <= budget, (
             f"schema de RouterDecision creció a {size} bytes, "
             f"supera el presupuesto de {budget:.0f} bytes (1.15x baseline)"
         )
+
+    def test_compact_schema_has_no_titles_but_keeps_descriptions(self):
+        # `title` es ruido para el LLM (el nombre ya está en la key) y
+        # pesa contra el presupuesto; las `description` son la guía de
+        # extracción y tienen que sobrevivir a la poda.
+        schema = compact_json_schema(RouterDecision)
+        raw = json.dumps(schema)
+        assert '"title"' not in raw
+        params = schema["$defs"]["RouterParams"]["properties"]
+        assert "description" in params["destino_remoto"]
+        assert "archivo" in params["destino_remoto"]["description"]
 
     def test_schema_steps_reuse_router_params_via_ref(self):
         # RouterParams NO debe duplicarse por paso: cada paso referencia
