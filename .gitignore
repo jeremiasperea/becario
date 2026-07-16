@@ -33,3 +33,4 @@ htmlcov/
 # === Artefactos generados ===
 repomix-output.xml
 .atl/
+graphify-out/
