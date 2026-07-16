@@ -41,6 +41,7 @@ from ..domain.models import (
     StructureRequest,
     TrackedJob,
     VaspCalcRequest,
+    ViewFileRequest,
 )
 from .job_monitor import _parse_last_e0
 from .plan_executor import PlanExecutor
@@ -192,6 +193,17 @@ def _truncate_listing(text: str) -> str:
     return text[:cut].rstrip() + "\n… (listado truncado)"
 
 
+def _truncate_file_content(text: str) -> str:
+    """Recorta el contenido de un archivo largo (en un borde de línea si
+    se puede) para que la respuesta entre en un mensaje de Telegram."""
+    if len(text) <= _LISTING_MAX_CHARS:
+        return text
+    cut = text.rfind("\n", 0, _LISTING_MAX_CHARS)
+    if cut <= 0:
+        cut = _LISTING_MAX_CHARS
+    return text[:cut].rstrip() + "\n… (archivo truncado)"
+
+
 def _format_history_table(rows: list[dict]) -> str:
     """Tabla de ancho fijo con el historial. Pensada para mostrarse con
     fuente monoespaciada (ver `Reply.monospace`)."""
@@ -305,6 +317,7 @@ class BecarioService:
             Intent.QUERY_RESULTS: self._query_results,
             Intent.CREATE_DIR: self._create_directory,
             Intent.LIST_FILES: self._list_files,
+            Intent.VIEW_FILE: self._view_file,
         }
 
     # ------------------------------------------------------------------
@@ -325,6 +338,7 @@ class BecarioService:
         Intent.MODIFY_STRUCTURE,
         Intent.CREATE_DIR,
         Intent.LIST_FILES,
+        Intent.VIEW_FILE,
     })
 
     def _materialize_step_fn(self, ctx: _Ctx, step: PlanStep) -> Callable[[], tuple[bool, str]]:
@@ -790,6 +804,70 @@ class BecarioService:
             return Reply(text=f"❌ 📂 {result.message}", ok=False)
         return Reply(
             text=f"📂 {req.path}:\n{_truncate_listing(result.message)}",
+            monospace=True,
+        )
+
+    def _view_file(self, ctx: _Ctx, params: dict) -> Reply:
+        """Muestra el contenido de un archivo remoto (solo lectura).
+
+        El archivo se identifica por ruta absoluta (`destino_remoto`) o por
+        nombre suelto (`nombre_archivo`) resuelto contra el directorio de la
+        última corrida del usuario — esto último arregla el pedido real
+        "ver el CONTCAR", que antes el LLM resolvía inventando un `ls`.
+        """
+        path = params.get("destino_remoto")
+        filename = params.get("nombre_archivo")
+        if not (path or filename):
+            return Reply(
+                text="⚠️ Decime qué archivo querés ver: un nombre "
+                '(p. ej. "mostrame el CONTCAR") o una ruta absoluta.',
+                ok=False,
+            )
+        try:
+            req = ViewFileRequest(path=path, filename=filename)
+        except (ValidationError, ValueError):
+            return Reply(
+                text="⚠️ Pedido de archivo inválido: el nombre no puede tener "
+                "'/' ni '..', y una ruta tiene que ser absoluta (empezar con /).",
+                ok=False,
+            )
+        if req.path:
+            remote_path = req.path
+        else:
+            if self._calc_runs is None:
+                return Reply(
+                    text="⚠️ Ver archivos por nombre necesita el historial de "
+                    "corridas, que no está configurado en este bot. Pasame la "
+                    "ruta absoluta del archivo.",
+                    ok=False,
+                )
+            formula = params.get("formula") or params.get("formula_quimica")
+            prefix = f"{str(formula).strip()}_" if formula else ""
+            rows = self._calc_runs.find_recent(ctx.user_id, prefix)
+            if not rows:
+                de = f" de {formula}" if formula else ""
+                return Reply(
+                    text=f"📭 No encontré corridas tuyas{de} para resolver "
+                    f"{req.filename!r}. Pasame la ruta absoluta del archivo.",
+                    ok=False,
+                )
+            run_dir = str(rows[0].get("run_dir", "")).rstrip("/")
+            if not run_dir:
+                return Reply(
+                    text="⚠️ La corrida más reciente no tiene directorio asociado.",
+                    ok=False,
+                )
+            remote_path = f"{run_dir}/{req.filename}"
+        content = ctx.cluster.read_file(remote_path)
+        if content is None:
+            return Reply(
+                text=f"❌ 📄 No pude leer {remote_path}. ¿Existe en el cluster?",
+                ok=False,
+            )
+        if not content.strip():
+            return Reply(text=f"📄 {remote_path}:\n(archivo vacío)")
+        return Reply(
+            text=f"📄 {remote_path}:\n{_truncate_file_content(content)}",
             monospace=True,
         )
 

@@ -107,6 +107,8 @@ class FakeCluster:
         self.existing_files: set[str] = {"/potcars/Zr_sv/POTCAR", "/potcars/W/POTCAR"}
         # Archivos remotos legibles (para consultas de resultados):
         self.remote_files: dict[str, str] = {}
+        # Rutas pasadas a read_file (para verificar qué se intentó leer):
+        self.read_calls: list[str] = []
 
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
         self.submitted.append(req)
@@ -156,6 +158,7 @@ class FakeCluster:
         return sorted(set(names)) or None
 
     def read_file(self, remote_path: str) -> Optional[str]:
+        self.read_calls.append(remote_path)
         return self.remote_files.get(remote_path)
 
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
@@ -702,6 +705,91 @@ class TestListFiles:
         )
         assert "No pude resolver el home remoto" in reply.text
         assert gateway.listed_dirs == []
+
+
+class TestViewFile:
+    """`ver_archivo` muestra el contenido de UN archivo (solo lectura). Dos
+    formas de identificarlo: nombre suelto resuelto contra la última corrida,
+    o ruta absoluta directa. El nombre nunca puede escaparse del directorio."""
+
+    RUN_DIR = "/data/runs/zr_relax"
+
+    def _seed_run(self, service, factory, files=None):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "9", "Zr_relajacion", "{}", self.RUN_DIR
+        )
+        cluster = factory.for_identity(ALICE)
+        for name, content in (files or {}).items():
+            cluster.remote_files[f"{self.RUN_DIR}/{name}"] = content
+        return cluster
+
+    def _ask(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.VIEW_FILE, params=params)
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+    def test_by_name_resolves_against_latest_run(self, env):
+        service, router, factory, *_ = env
+        cluster = self._seed_run(service, factory, {"CONTCAR": "linea 1\nlinea 2\n"})
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert not reply.needs_confirmation
+        assert reply.monospace
+        assert "linea 1" in reply.text
+        assert f"{self.RUN_DIR}/CONTCAR" in reply.text
+        assert cluster.read_calls == [f"{self.RUN_DIR}/CONTCAR"]
+
+    def test_by_absolute_path_reads_directly(self, env):
+        service, router, factory, *_ = env
+        cluster = factory.for_identity(ALICE)
+        cluster.remote_files["/home/alice/run/OSZICAR"] = "E0 = -17.0\n"
+        reply = self._ask(service, router, {"destino_remoto": "/home/alice/run/OSZICAR"})
+        assert reply.monospace
+        assert "E0 = -17.0" in reply.text
+        assert cluster.read_calls == ["/home/alice/run/OSZICAR"]
+
+    @pytest.mark.parametrize("evil", ["..", "../secreto", "a/b", "x;id", "/etc/passwd"])
+    def test_unsafe_name_never_reaches_the_gateway(self, env, evil):
+        # Un nombre con separadores o '..' se rechaza en el dominio: nunca se
+        # construye una ruta que se escape del directorio de la corrida.
+        service, router, factory, *_ = env
+        cluster = self._seed_run(service, factory, {"CONTCAR": "x"})
+        reply = self._ask(service, router, {"nombre_archivo": evil})
+        assert "inválido" in reply.text
+        assert cluster.read_calls == []
+
+    def test_missing_both_asks_what_to_view(self, env):
+        service, router, factory, *_ = env
+        reply = self._ask(service, router, {})
+        assert "qué archivo" in reply.text
+        assert not reply.ok
+
+    def test_by_name_without_runs_is_reported(self, env):
+        service, router, factory, *_ = env
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "No encontré corridas" in reply.text
+        assert not reply.ok
+
+    def test_unreadable_file_is_reported(self, env):
+        service, router, factory, *_ = env
+        self._seed_run(service, factory, files={})  # corrida sin el archivo
+        reply = self._ask(service, router, {"nombre_archivo": "OUTCAR"})
+        assert reply.text.startswith("❌")
+        assert not reply.ok
+
+    def test_other_users_runs_are_invisible(self, env):
+        service, router, factory, *_ = env
+        service._calc_runs.add(BOB.telegram_user_id, "9", "Zr_relajacion", "{}", self.RUN_DIR)
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "No encontré corridas" in reply.text
+
+    def test_long_content_is_truncated(self, env):
+        service, router, factory, *_ = env
+        long_body = "\n".join(f"linea_{i}" for i in range(2000))
+        assert len(long_body) > 3500
+        self._seed_run(service, factory, {"CONTCAR": long_body})
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "(archivo truncado)" in reply.text
+        assert "linea_0" in reply.text
+        assert len(reply.text) < 3700
 
 
 class TestTruncateListing:
