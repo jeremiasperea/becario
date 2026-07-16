@@ -35,7 +35,9 @@ class FakeCluster:
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
         return self.remote_dirs.get(remote_dir)
 
-    def read_file(self, remote_path: str) -> Optional[str]:
+    def read_file(
+        self, remote_path: str, max_bytes: Optional[int] = None
+    ) -> Optional[str]:
         return self.remote_files.get(remote_path)
 
 

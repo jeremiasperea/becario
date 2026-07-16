@@ -14,6 +14,7 @@ from becario.application.services import (
     BecarioService,
     HELP_TEXT,
     _LISTING_MAX_CHARS,
+    _VIEW_FILE_MAX_BYTES,
     _truncate_listing,
 )
 from becario.domain.models import (
@@ -109,6 +110,8 @@ class FakeCluster:
         self.remote_files: dict[str, str] = {}
         # Rutas pasadas a read_file (para verificar qué se intentó leer):
         self.read_calls: list[str] = []
+        # `max_bytes` de cada read_file, en paralelo a read_calls:
+        self.read_max_bytes: list = []
 
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
         self.submitted.append(req)
@@ -157,9 +160,16 @@ class FakeCluster:
         ]
         return sorted(set(names)) or None
 
-    def read_file(self, remote_path: str) -> Optional[str]:
+    def read_file(
+        self, remote_path: str, max_bytes: Optional[int] = None
+    ) -> Optional[str]:
         self.read_calls.append(remote_path)
-        return self.remote_files.get(remote_path)
+        self.read_max_bytes.append(max_bytes)
+        content = self.remote_files.get(remote_path)
+        if content is not None and max_bytes is not None:
+            # Simula el tope real: solo baja el prefijo pedido.
+            content = content.encode()[:max_bytes].decode(errors="replace")
+        return content
 
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
         self.concatenated.append((tuple(sources), dest))
@@ -790,6 +800,54 @@ class TestViewFile:
         assert "(archivo truncado)" in reply.text
         assert "linea_0" in reply.text
         assert len(reply.text) < 3700
+
+    def test_read_is_size_bounded(self, env):
+        # El nombre lo elige el usuario: un archivo gigante (WAVECAR/CHGCAR)
+        # NUNCA se baja entero. read_file recibe un tope de bytes y solo se
+        # decodifica ese prefijo — la respuesta igual entra en Telegram.
+        service, router, factory, *_ = env
+        huge = "A" * (5 * 1024 * 1024)  # 5 MiB
+        cluster = self._seed_run(service, factory, {"WAVECAR": huge})
+        reply = self._ask(service, router, {"nombre_archivo": "WAVECAR"})
+        assert cluster.read_max_bytes == [_VIEW_FILE_MAX_BYTES]
+        assert "(archivo truncado)" in reply.text
+        assert len(reply.text) < 3700
+
+    def test_both_forms_given_is_reported(self, env):
+        # El prompt del router puede extraer nombre Y ruta a la vez: se
+        # rechaza con un mensaje claro, sin tocar el gateway.
+        service, router, factory, *_ = env
+        cluster = self._seed_run(service, factory, {"CONTCAR": "x"})
+        reply = self._ask(
+            service, router,
+            {"nombre_archivo": "CONTCAR", "destino_remoto": "/home/alice/run/CONTCAR"},
+        )
+        assert "solo uno" in reply.text
+        assert not reply.ok
+        assert cluster.read_calls == []
+
+    def test_empty_run_dir_is_reported(self, env):
+        service, router, factory, *_ = env
+        service._calc_runs.add(ALICE.telegram_user_id, "9", "Zr_relajacion", "{}", "")
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "no tiene directorio" in reply.text
+        assert not reply.ok
+
+    def test_empty_file_is_reported(self, env):
+        service, router, factory, *_ = env
+        self._seed_run(service, factory, {"CONTCAR": ""})
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "(archivo vacío)" in reply.text
+        assert reply.ok
+
+    def test_by_name_without_calc_runs_configured(self, env):
+        # Sin historial de corridas, resolver por nombre es imposible: se pide
+        # la ruta absoluta en vez de fallar.
+        service, router, factory, *_ = env
+        service._calc_runs = None
+        reply = self._ask(service, router, {"nombre_archivo": "CONTCAR"})
+        assert "ruta absoluta" in reply.text
+        assert not reply.ok
 
 
 class TestTruncateListing:

@@ -263,13 +263,18 @@ class SSHClusterGateway:
             logger.error("Fallo SFTP (listdir %s): %s", remote_dir, exc)
             return None
 
-    def read_file(self, remote_path: str) -> Optional[str]:
+    def read_file(
+        self, remote_path: str, max_bytes: Optional[int] = None
+    ) -> Optional[str]:
         try:
             client = self._connection()
             sftp = client.open_sftp()
             try:
                 with sftp.open(remote_path, "r") as handle:
-                    return handle.read().decode(errors="replace")
+                    # handle.read(None) lee todo (callers históricos con
+                    # archivos chicos); con un tope solo baja ese prefijo,
+                    # sin cargar en memoria un archivo potencialmente enorme.
+                    return handle.read(max_bytes).decode(errors="replace")
             finally:
                 sftp.close()
         except (paramiko.SSHException, OSError) as exc:

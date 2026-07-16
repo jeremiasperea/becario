@@ -179,6 +179,10 @@ def _calc_fingerprint(req: VaspCalcRequest) -> str:
 
 
 _LISTING_MAX_CHARS = 3500  # margen bajo el límite de 4096 de Telegram
+# Tope de lectura para `ver_archivo`: el nombre lo elige el usuario, así que
+# no podemos bajar entero un archivo arbitrario del run (WAVECAR/CHGCAR pesan
+# GB). 64 KiB sobra para llenar el recorte de Telegram y acota la memoria.
+_VIEW_FILE_MAX_BYTES = 64 * 1024
 
 
 def _truncate_listing(text: str) -> str:
@@ -823,6 +827,12 @@ class BecarioService:
                 '(p. ej. "mostrame el CONTCAR") o una ruta absoluta.',
                 ok=False,
             )
+        if path and filename:
+            return Reply(
+                text="⚠️ Me diste un nombre y una ruta a la vez. Pasame solo "
+                "uno: el nombre del archivo o la ruta absoluta.",
+                ok=False,
+            )
         try:
             req = ViewFileRequest(path=path, filename=filename)
         except (ValidationError, ValueError):
@@ -858,7 +868,7 @@ class BecarioService:
                     ok=False,
                 )
             remote_path = f"{run_dir}/{req.filename}"
-        content = ctx.cluster.read_file(remote_path)
+        content = ctx.cluster.read_file(remote_path, max_bytes=_VIEW_FILE_MAX_BYTES)
         if content is None:
             return Reply(
                 text=f"❌ 📄 No pude leer {remote_path}. ¿Existe en el cluster?",
