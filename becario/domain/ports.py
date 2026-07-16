@@ -103,9 +103,14 @@ class ClusterGateway(Protocol):
         """Nombres dentro de un directorio remoto; None si no se pudo leer."""
         ...
 
-    def read_file(self, remote_path: str) -> Optional[str]:
+    def read_file(
+        self, remote_path: str, max_bytes: Optional[int] = None
+    ) -> Optional[str]:
         """Contenido de un archivo remoto chico (OSZICAR, POSCAR…);
-        None si no existe o no se pudo leer."""
+        None si no existe o no se pudo leer. `max_bytes` acota cuánto se
+        lee (y por ende cuánta memoria se usa): imprescindible cuando el
+        nombre lo elige el usuario, para no descargar entero un archivo
+        gigante (WAVECAR/CHGCAR pueden pesar GB). None = sin límite."""
         ...
 
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
