@@ -63,9 +63,12 @@ class TestMolecule:
         assert "a=" in res.cell_summary
 
     def test_unknown_molecule_friendly_error(self, builder):
+        # Fe2: elementos reales (pasa la validación de fórmula), pero no es
+        # una molécula de la base G2 de ASE, así que el builder debe traducir
+        # el fallo interno a un StructureBuildError amistoso.
         with pytest.raises(StructureBuildError, match="G2"):
             builder.build(
-                StructureRequest(formula="Xx9", kind=StructureKind.MOLECULE)
+                StructureRequest(formula="Fe2", kind=StructureKind.MOLECULE)
             )
 
 
