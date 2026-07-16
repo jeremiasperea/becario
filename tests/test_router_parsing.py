@@ -42,6 +42,7 @@ class TestParseLLMOutput:
             ("cancelar_calculo", Intent.CANCEL_JOB),
             ("crear_directorio", Intent.CREATE_DIR),
             ("listar_archivos", Intent.LIST_FILES),
+            ("ver_archivo", Intent.VIEW_FILE),
         ]:
             plan = parse(f'{{"steps": [{{"action": "{raw}", "parametros": {{}}}}]}}')
             assert plan.single_step.action is expected

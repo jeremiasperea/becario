@@ -18,6 +18,7 @@ from becario.domain.models import (
     PlanStep,
     RemoteDirRequest,
     SlurmJobRequest,
+    ViewFileRequest,
     is_plausible_formula,
 )
 
@@ -344,3 +345,36 @@ class TestIsPlausibleFormula:
     )
     def test_implausible_formulas(self, formula):
         assert is_plausible_formula(formula) is False
+
+
+class TestViewFileRequest:
+    """`ViewFileRequest` identifica un archivo remoto a mostrar por ruta
+    absoluta O por nombre suelto (exactamente uno). El nombre nunca lleva
+    separadores ni '..': así el nombre resuelto no puede escaparse del
+    directorio de la corrida (path traversal)."""
+
+    def test_bare_filename_is_accepted(self):
+        assert ViewFileRequest(filename="CONTCAR").filename == "CONTCAR"
+
+    def test_absolute_path_is_accepted(self):
+        req = ViewFileRequest(path="/home/ana/run/OSZICAR")
+        assert req.path == "/home/ana/run/OSZICAR"
+
+    @pytest.mark.parametrize(
+        "filename",
+        [".", "..", "../etc/passwd", "a/b", "sub/CONTCAR", "x;id", ""],
+    )
+    def test_unsafe_filenames_rejected(self, filename):
+        with pytest.raises((ValidationError, ValueError)):
+            ViewFileRequest(filename=filename)
+
+    @pytest.mark.parametrize("path", ["relativa", "/x/..", "/x; rm -rf /"])
+    def test_invalid_paths_rejected(self, path):
+        with pytest.raises((ValidationError, ValueError)):
+            ViewFileRequest(path=path)
+
+    def test_requires_exactly_one_form(self):
+        with pytest.raises((ValidationError, ValueError)):
+            ViewFileRequest()  # ninguna
+        with pytest.raises((ValidationError, ValueError)):
+            ViewFileRequest(path="/x/CONTCAR", filename="CONTCAR")  # ambas

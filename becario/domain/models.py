@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Intenciones
@@ -32,6 +32,7 @@ class Intent(str, Enum):
     CANCEL_JOB = "cancelar_calculo"
     CREATE_DIR = "crear_directorio"
     LIST_FILES = "listar_archivos"
+    VIEW_FILE = "ver_archivo"
     UNKNOWN = "error"
 
     @classmethod
@@ -53,6 +54,10 @@ _TIME_RE = re.compile(r"\A(\d{1,3}-)?\d{1,3}:\d{2}:\d{2}\Z")  # [D-]HH:MM:SS
 _SCRIPT_PATH_RE = re.compile(r"\A/[A-Za-z0-9_\-./]+\Z")
 _FORMULA_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9]{0,15}\Z")  # Si, NaCl, H2O, TiO2
 _UNIX_USER_RE = re.compile(r"\A[a-z_][a-z0-9_-]{0,31}\Z")
+# Nombre de archivo suelto (CONTCAR, OSZICAR, run.sh): sin separadores de
+# ruta ni '..', para que al resolverlo contra el dir de una corrida no se
+# pueda escapar de ese directorio (path traversal).
+_REMOTE_FILENAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
 
 # Símbolos de la tabla periódica (los 118 elementos conocidos). Pura data
 # de Python: nada de dependencias pesadas (p. ej. `ase`) solo para validar
@@ -205,6 +210,47 @@ class ListFilesRequest(BaseModel):
     @classmethod
     def _v_path(cls, v: str) -> str:
         return _validate_remote_dir_path(v.strip())
+
+
+class ViewFileRequest(BaseModel):
+    """Archivo remoto a mostrar (solo lectura). Dos formas mutuamente
+    excluyentes de identificarlo, y hay que dar exactamente una:
+
+    - `path`: ruta absoluta completa al archivo (misma política de rutas
+      que `ListFilesRequest`).
+    - `filename`: nombre suelto (p. ej. CONTCAR) que el servicio resuelve
+      contra el directorio de la última corrida. Nunca lleva separadores
+      de ruta ni es '.'/'..', así que el nombre resuelto no puede escapar
+      del directorio de la corrida.
+    """
+
+    path: Optional[str] = None
+    filename: Optional[str] = None
+
+    @field_validator("path")
+    @classmethod
+    def _v_path(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_remote_dir_path(v.strip())
+
+    @field_validator("filename")
+    @classmethod
+    def _v_filename(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if v in (".", "..") or not _REMOTE_FILENAME_RE.match(v):
+            raise ValueError(f"nombre de archivo inválido: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "ViewFileRequest":
+        # Corre siempre (a diferencia de los field_validator, que se saltean
+        # los defaults None): exige exactamente una de las dos formas.
+        if bool(self.path) == bool(self.filename):
+            raise ValueError("hay que dar 'path' o 'filename', y solo uno")
+        return self
 
 
 class HistoryFilter(BaseModel):

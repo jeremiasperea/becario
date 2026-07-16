@@ -83,6 +83,9 @@ class RouterParams(BaseModel):
     destino_remoto: Optional[str] = Field(
         default=None, description="directorio absoluto en el cluster"
     )
+    # Sin `description` a propósito: el schema del router tiene presupuesto
+    # de tamaño (ADR-0006). La guía de uso vive en `_SYSTEM_PROMPT`.
+    nombre_archivo: Optional[str] = None
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
         default=None, description="relajacion, estatico o convergencia_encut"
@@ -144,6 +147,10 @@ _SYSTEM_PROMPT = (
     "extraé la ruta en destino_remoto\n"
     "- 'listar_archivos': mostrar archivos, carpetas o la estructura de "
     "directorios del cluster; la ruta va en destino_remoto (puede faltar)\n"
+    "- 'ver_archivo': mostrar el CONTENIDO de UN archivo. Si el usuario "
+    "nombra el archivo (CONTCAR, OSZICAR, INCAR…) poné ese nombre en "
+    "nombre_archivo; si da una ruta absoluta al archivo, poné esa ruta en "
+    "destino_remoto\n"
     "- 'error': si el pedido no encaja en ninguna\n"
     "Ejemplos:\n"
     "'dame los parámetros de red del cálculo del zirconio bulk' -> "
@@ -164,6 +171,9 @@ _SYSTEM_PROMPT = (
     "'mostrame la estructura de archivos del cluster' -> listar_archivos\n"
     "'qué archivos hay en /data/becario_runs' -> listar_archivos, "
     "destino_remoto=/data/becario_runs\n"
+    "'mostrame el CONTCAR' -> ver_archivo, nombre_archivo=CONTCAR\n"
+    "'ver el contenido de /home/ana/run/OSZICAR' -> ver_archivo, "
+    "destino_remoto=/home/ana/run/OSZICAR\n"
     "Si el mensaje pide más de una acción, emitilas en 'steps', en el "
     "mismo orden en que las pidió el usuario, cada paso con su propia "
     "'action' y 'parametros':\n"
