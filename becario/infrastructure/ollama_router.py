@@ -81,7 +81,8 @@ class RouterParams(BaseModel):
         default=None, description="vasp, cif o xyz"
     )
     destino_remoto: Optional[str] = Field(
-        default=None, description="directorio absoluto en el cluster"
+        default=None,
+        description="ruta absoluta en el cluster (directorio o archivo)",
     )
     # Sin `description` a propósito: el schema del router tiene presupuesto
     # de tamaño (ADR-0006). La guía de uso vive en `_SYSTEM_PROMPT`.
@@ -238,6 +239,30 @@ _EDIT_TARGET_PROMPT_TEMPLATE = (
 )
 
 
+def _strip_schema_titles(schema):
+    """Poda recursiva de los `title` del JSON Schema.
+
+    Pydantic genera un `title` por campo y por modelo ("Job Id",
+    "RouterParams"…) que no aporta nada al LLM — el nombre ya está en la
+    key — pero pesa contra el presupuesto de tamaño del schema
+    (ADR-0006): ~590 bytes solo de titles en RouterDecision. Se aplica a
+    todo schema que viaja a Ollama; las `description` quedan intactas."""
+    if isinstance(schema, dict):
+        return {
+            k: _strip_schema_titles(v)
+            for k, v in schema.items()
+            if k != "title"
+        }
+    if isinstance(schema, list):
+        return [_strip_schema_titles(item) for item in schema]
+    return schema
+
+
+def compact_json_schema(model: type[BaseModel]) -> dict:
+    """El JSON Schema de `model` como se le manda a Ollama: sin titles."""
+    return _strip_schema_titles(model.model_json_schema())
+
+
 class OllamaRouter:
     """Router basado en structured outputs de Ollama (Gemma-compatible)."""
 
@@ -250,9 +275,9 @@ class OllamaRouter:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout
-        self._schema = RouterDecision.model_json_schema()
-        self._params_schema = RouterParams.model_json_schema()
-        self._edit_decision_schema = EditDecision.model_json_schema()
+        self._schema = compact_json_schema(RouterDecision)
+        self._params_schema = compact_json_schema(RouterParams)
+        self._edit_decision_schema = compact_json_schema(EditDecision)
 
     @staticmethod
     def _model_matches(configured: str, available: list[str]) -> bool:
