@@ -25,6 +25,13 @@ mismo input. Un solo intento daría ❌ engañosos; la mayoría estabiliza el
 gate manual. El voto se imprime entre corchetes cuando no fue unánime
 (p. ej. `✅ multi_destructive_tail [2/3]`).
 
+Además de acertar, cada fixture reporta su latencia (mediana de los
+intentos) y cada modelo su mediana por llamada. En CPU la velocidad es
+parte de la decisión de qué modelo servir, no un detalle: un modelo que
+acierta pero tarda 40s por mensaje no es usable desde Telegram. Antes de
+medir se hace una generación de warm-up descartada, porque la primera
+llamada paga la carga del modelo a RAM.
+
 Uso:
     BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py
     BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
@@ -38,9 +45,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Callable, Optional, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,7 +59,11 @@ from becario.infrastructure.ollama_router import OllamaRouter  # noqa: E402
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "router"
 # gemma3:4b primero: es el peor caso (HC4) y el que gatea el presupuesto
 # de schema/prompt; gemma4:12b es el default de producción.
-_DEFAULT_MODELS = ("gemma3:4b", "gemma4:12b")
+# qwen2.5:7b y gemma4:e4b son candidatos a reemplazarlo en CPU: el router
+# no redacta, solo clasifica intención y extrae parámetros contra un
+# schema que Ollama ya fuerza (ADR-0002), y ambos generan mucho más
+# rápido que el 12b sin GPU.
+_DEFAULT_MODELS = ("gemma3:4b", "qwen2.5:7b", "gemma4:e4b", "gemma4:12b")
 
 
 @dataclass(frozen=True)
@@ -175,23 +188,31 @@ def _majority_check(
     router: OllamaRouter,
     fx: Fixture,
     attempts: int,
-) -> tuple[Optional[str], int]:
+) -> tuple[Optional[str], int, list[float]]:
     """Corre `checker` `attempts` veces y decide por MAYORÍA. Devuelve
-    `(error, passes)`: `error=None` si la mayoría pasó. Necesario porque
-    `gemma4:12b` sobre CPU es no-determinístico (ver docstring del módulo);
-    un intento único daría ❌ engañosos. Ante mayoría fallida, reporta el
-    mensaje de error más frecuente."""
+    `(error, passes, latencias)`: `error=None` si la mayoría pasó, y una
+    latencia en segundos por intento. Necesario porque `gemma4:12b` sobre
+    CPU es no-determinístico (ver docstring del módulo); un intento único
+    daría ❌ engañosos. Ante mayoría fallida, reporta el mensaje de error
+    más frecuente.
+
+    Las latencias incluyen los intentos fallidos a propósito: un modelo
+    que responde rápido pero mal no es más barato, y esconder ese costo
+    falsearía la comparación."""
     passes = 0
     errors: list[str] = []
+    latencies: list[float] = []
     for _ in range(attempts):
+        started = time.monotonic()
         err = checker(router, fx)
+        latencies.append(time.monotonic() - started)
         if err is None:
             passes += 1
         else:
             errors.append(err)
     if passes > attempts // 2:
-        return None, passes
-    return Counter(errors).most_common(1)[0][0], passes
+        return None, passes, latencies
+    return Counter(errors).most_common(1)[0][0], passes, latencies
 
 
 def _installed_models(url: str) -> Optional[set[str]]:
@@ -236,16 +257,35 @@ def run(
             continue
         router = OllamaRouter(base_url=url, model=model, timeout=timeout)
         print(f"\n== modelo: {model} ==")
+        # Warm-up descartado: la primera generación paga la carga del
+        # modelo a RAM, que en CPU domina el reloj y crece con el tamaño.
+        # Sin esto, el primer fixture sale inflado y la comparación entre
+        # modelos castiga dos veces al más grande.
+        try:
+            router.route("hola")
+        except Exception:
+            # El warm-up no decide nada: si falla, los fixtures lo dirán.
+            pass
+        model_latencies: list[float] = []
         for fx in fixtures:
             checker = _check_edit if isinstance(fx, EditFixture) else _check_route
-            error, passes = _majority_check(checker, router, fx, attempts)
+            error, passes, latencies = _majority_check(checker, router, fx, attempts)
+            model_latencies.extend(latencies)
             status = "✅" if error is None else "❌"
             # El voto solo se muestra si no fue unánime: hace visible el
             # flake (p. ej. `✅ multi_destructive_tail [2/3]`) sin ruido
             # cuando todo coincidió.
             vote = "" if passes == attempts else f" [{passes}/{attempts}]"
-            print(f"{status} {fx.name}{vote}" + (f" — {error}" if error else ""))
+            # Mediana y no promedio: con `attempts` chico un solo outlier
+            # (scheduler, swap) arrastraría el promedio y haría ruido.
+            secs = f" {median(latencies):5.1f}s"
+            print(f"{status} {fx.name}{vote}{secs}" + (f" — {error}" if error else ""))
             all_ok = all_ok and error is None
+        if model_latencies:
+            print(
+                f"   ── mediana {median(model_latencies):.1f}s/llamada"
+                f" · {sum(model_latencies):.0f}s en {len(model_latencies)} llamadas"
+            )
     return all_ok
 
 
