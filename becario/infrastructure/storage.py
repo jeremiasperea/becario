@@ -208,6 +208,80 @@ class SQLiteChatLogRepository:
         return [dict(row) for row in reversed(rows)]
 
 
+class SQLiteRouterDecisionLog:
+    """Registro de decisiones del router (implementa RouterDecisionLog).
+    Cada mensaje ruteado guarda el plan que el LLM produjo y, cuando el
+    flujo de confirmación lo resuelve, su desenlace. Es la materia prima
+    del set de evaluación del router: `scripts/export_router_dataset.py`
+    lo convierte en fixtures/JSONL."""
+
+    def __init__(self, db_path: str, model: str) -> None:
+        self._db_path = db_path
+        self._model = model
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        return _connect(self._db_path)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS decisiones_router (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    steps_json TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    latency_seconds REAL NOT NULL,
+                    outcome TEXT NOT NULL DEFAULT 'routed'
+                        CHECK (outcome IN ('routed', 'confirmed', 'cancelled', 'error')),
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_decisiones_router_outcome "
+                "ON decisiones_router (outcome, created_at)"
+            )
+
+    def add(
+        self, chat_id: int, user_id: int, text: str,
+        steps_json: str, latency_seconds: float,
+    ) -> int:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO decisiones_router "
+                "(chat_id, user_id, text, steps_json, model, latency_seconds, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, user_id, text, steps_json, self._model,
+                 latency_seconds, created_at),
+            )
+            return int(cur.lastrowid)
+
+    def set_outcome(self, decision_id: int, outcome: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE decisiones_router SET outcome = ? WHERE id = ?",
+                (outcome, decision_id),
+            )
+
+    def rows(self, outcome: Optional[str] = None) -> list[dict]:
+        """Decisiones registradas, opcionalmente filtradas por desenlace.
+        No es parte del puerto (el caso de uso solo escribe): lo usan el
+        script de exportación del dataset y los tests."""
+        sql = "SELECT * FROM decisiones_router"
+        args: list = []
+        if outcome is not None:
+            sql += " WHERE outcome = ?"
+            args.append(outcome)
+        sql += " ORDER BY id"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
 class InMemoryConfirmationStore:
     """Planes pendientes con TTL. Thread-safe (PTB usa asyncio pero los
     handlers pueden intercalarse; el lock es barato y elimina la duda).

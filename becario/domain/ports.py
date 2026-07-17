@@ -203,6 +203,30 @@ class ChatLogRepository(Protocol):
         ...
 
 
+class RouterDecisionLog(Protocol):
+    """Registro de cada decisión del enrutador y de su desenlace humano.
+
+    Es la materia prima del set de evaluación del router: cada mensaje
+    real queda asociado al plan que el LLM produjo, y el mecanismo de
+    confirmación de ADR-0003 etiqueta gratis — confirmar un plan avala el
+    ruteo; cancelarlo lo pone en duda. Las decisiones sin desenlace
+    explícito quedan en 'routed' para revisión manual."""
+
+    def add(
+        self, chat_id: int, user_id: int, text: str,
+        steps_json: str, latency_seconds: float,
+    ) -> int:
+        """Registra una decisión recién ruteada y devuelve su id.
+        `steps_json` es la lista de pasos serializada (action + parámetros).
+        Qué modelo la produjo es detalle del adaptador (lo sabe la
+        composition root, no el caso de uso)."""
+        ...
+
+    def set_outcome(self, decision_id: int, outcome: str) -> None:
+        """Marca el desenlace: 'confirmed', 'cancelled' o 'error'."""
+        ...
+
+
 class ConfirmationStore(Protocol):
     """Guarda planes (uno o más pasos) pendientes de confirmación."""
 

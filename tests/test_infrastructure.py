@@ -27,6 +27,7 @@ from becario.infrastructure.storage import (
     SQLiteChatLogRepository,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
+    SQLiteRouterDecisionLog,
 )
 from becario.infrastructure.user_registry import JSONUserRegistry
 
@@ -606,6 +607,58 @@ class TestSQLiteChatLog:
         SQLiteChatLogRepository(path).add(chat_id=100, role="user", text="hola")
         rows = SQLiteChatLogRepository(path).recent(100)
         assert [r["text"] for r in rows] == ["hola"]
+
+
+class TestSQLiteRouterDecisionLog:
+    def _log(self, tmp_path):
+        return SQLiteRouterDecisionLog(
+            str(tmp_path / "decisiones.db"), model="qwen2.5:7b"
+        )
+
+    def test_add_returns_id_and_defaults_to_routed(self, tmp_path):
+        log = self._log(tmp_path)
+        steps = json.dumps([{"action": "crear_directorio", "parametros": {}}])
+        decision_id = log.add(
+            chat_id=100, user_id=1, text="creame la carpeta pruebas",
+            steps_json=steps, latency_seconds=5.4,
+        )
+        rows = log.rows()
+        assert rows[0]["id"] == decision_id
+        assert rows[0]["outcome"] == "routed"
+        assert rows[0]["model"] == "qwen2.5:7b"
+        assert rows[0]["latency_seconds"] == pytest.approx(5.4)
+        assert json.loads(rows[0]["steps_json"])[0]["action"] == "crear_directorio"
+
+    def test_set_outcome_updates_only_that_row(self, tmp_path):
+        log = self._log(tmp_path)
+        steps = json.dumps([])
+        first = log.add(100, 1, "enviá el cálculo", steps, 1.0)
+        second = log.add(100, 1, "cancelá el 42", steps, 1.0)
+        log.set_outcome(first, "confirmed")
+        by_id = {r["id"]: r["outcome"] for r in log.rows()}
+        assert by_id == {first: "confirmed", second: "routed"}
+
+    def test_rows_filters_by_outcome(self, tmp_path):
+        log = self._log(tmp_path)
+        steps = json.dumps([])
+        first = log.add(100, 1, "uno", steps, 1.0)
+        log.add(100, 1, "dos", steps, 1.0)
+        log.set_outcome(first, "cancelled")
+        assert [r["text"] for r in log.rows(outcome="cancelled")] == ["uno"]
+        assert [r["text"] for r in log.rows(outcome="routed")] == ["dos"]
+
+    def test_outcome_constraint(self, tmp_path):
+        import sqlite3
+
+        log = self._log(tmp_path)
+        decision_id = log.add(100, 1, "hola", json.dumps([]), 1.0)
+        with pytest.raises(sqlite3.IntegrityError):
+            log.set_outcome(decision_id, "desenlace_invalido")
+
+    def test_persists_across_instances(self, tmp_path):
+        path = str(tmp_path / "decisiones.db")
+        SQLiteRouterDecisionLog(path, model="m").add(100, 1, "hola", "[]", 1.0)
+        assert len(SQLiteRouterDecisionLog(path, model="m").rows()) == 1
 
 
 # ---------------------------------------------------------------------------

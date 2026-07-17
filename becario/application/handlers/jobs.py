@@ -73,7 +73,10 @@ def prepare_submit(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     built = build_submit_action(svc, ctx, params)
     if isinstance(built, Reply):
         return built
-    plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[built])
+    plan = PendingPlan(
+        chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[built],
+        decision_id=ctx.decision_id,
+    )
     token = svc._confirmations.put(plan)
     return Reply(
         text=f"⚠️ ¿Confirmás esta acción?\n\n{built.description}",
@@ -109,7 +112,10 @@ def prepare_cancel(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     built = build_cancel_action(svc, ctx, params)
     if isinstance(built, Reply):
         return built
-    plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[built])
+    plan = PendingPlan(
+        chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[built],
+        decision_id=ctx.decision_id,
+    )
     token = svc._confirmations.put(plan)
     return Reply(
         text=f"⚠️ ¿Confirmás esta acción?\n\n{built.description}",

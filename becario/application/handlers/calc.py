@@ -211,7 +211,10 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         request_intent=Intent.PREPARE_CALC,
         request_params=dict(params),
     )
-    plan = PendingPlan(chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[action])
+    plan = PendingPlan(
+        chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=[action],
+        decision_id=ctx.decision_id,
+    )
     token = svc._confirmations.put(plan)
     # El aviso de duplicado va PRIMERO: al final de un mensaje largo
     # pasa desapercibido.

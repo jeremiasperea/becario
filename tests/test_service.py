@@ -1487,3 +1487,103 @@ class TestJobTracking:
         service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
         assert ("777", ALICE.telegram_user_id) in tracker.notified_calls
         assert tracker.active_jobs() == []  # ya no lo vuelve a consultar el monitor
+
+
+# ---------------------------------------------------------------------------
+# Registro de decisiones del router (RouterDecisionLog)
+# ---------------------------------------------------------------------------
+
+
+class FakeDecisionLog:
+    """Implementa RouterDecisionLog en memoria; registra llamadas."""
+
+    def __init__(self):
+        self.decisions: list[dict] = []
+        self.outcomes: dict[int, str] = {}
+
+    def add(self, chat_id, user_id, text, steps_json, latency_seconds) -> int:
+        self.decisions.append({
+            "chat_id": chat_id, "user_id": user_id, "text": text,
+            "steps_json": steps_json, "latency_seconds": latency_seconds,
+        })
+        return len(self.decisions)  # ids 1..N
+
+    def set_outcome(self, decision_id: int, outcome: str) -> None:
+        self.outcomes[decision_id] = outcome
+
+
+@pytest.fixture()
+def env_with_log():
+    router = FakeRouter()
+    registry = FakeUserRegistry([ALICE, BOB])
+    cluster_factory = FakeClusterGatewayFactory()
+    decision_log = FakeDecisionLog()
+    service = BecarioService(
+        router=router,
+        registry=registry,
+        cluster_factory=cluster_factory,
+        history=FakeHistory(),
+        confirmations=InMemoryConfirmationStore(ttl_seconds=600),
+        structures=FakeStructureBuilder(),
+        job_tracker=FakeJobTracker(),
+        calc_inputs=FakeCalcInputGenerator(),
+        potcar_dir="/potcars",
+        remote_base="becario_runs",
+        calc_runs=FakeCalcRuns(),
+        decision_log=decision_log,
+    )
+    return service, router, decision_log
+
+
+class TestRouterDecisionLogging:
+    def test_every_routed_message_is_logged(self, env_with_log):
+        service, router, log = env_with_log
+        router.next = RoutedRequest(intent=Intent.CHECK_STATUS, params={})
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="estado del cluster")
+        assert len(log.decisions) == 1
+        d = log.decisions[0]
+        assert d["text"] == "estado del cluster"
+        assert '"revisar_estado"' in d["steps_json"]
+        assert d["latency_seconds"] >= 0
+
+    def test_confirm_labels_decision_as_confirmed(self, env_with_log):
+        service, router, log = env_with_log
+        router.next = RoutedRequest(
+            intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
+        )
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="corré el cálculo"
+        ).confirmation_token
+        service.confirm(token, requester_id=ALICE.telegram_user_id)
+        assert log.outcomes == {1: "confirmed"}
+
+    def test_reject_labels_decision_as_cancelled(self, env_with_log):
+        service, router, log = env_with_log
+        router.next = RoutedRequest(intent=Intent.CANCEL_JOB, params={"job_id": "777"})
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777"
+        ).confirmation_token
+        service.reject(token, requester_id=ALICE.telegram_user_id)
+        assert log.outcomes == {1: "cancelled"}
+
+    def test_failed_step_labels_decision_as_error(self, env_with_log):
+        service, router, log = env_with_log
+        # CREATE_DIR sin ruta: el handler valida y devuelve ok=False.
+        router.next = RoutedRequest(intent=Intent.CREATE_DIR, params={})
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="creame la carpeta")
+        assert log.outcomes == {1: "error"}
+
+    def test_unresolved_decision_stays_unlabeled(self, env_with_log):
+        service, router, log = env_with_log
+        router.next = RoutedRequest(
+            intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="corré x")
+        # Pendiente de confirmación sin respuesta humana: sin outcome.
+        assert log.outcomes == {}
+
+    def test_service_without_log_still_works(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.CHECK_STATUS, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="estado")
+        assert reply.text  # no explota sin decision_log

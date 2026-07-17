@@ -745,6 +745,10 @@ class PendingPlan:
     steps: list[PendingAction]
     token: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     created_at: float = field(default_factory=time.time)
+    # Id de la decisión del router que originó este plan (ver
+    # `RouterDecisionLog`): permite etiquetar el ruteo con el desenlace
+    # humano (confirmar/cancelar). None si el log está apagado.
+    decision_id: Optional[int] = None
 
     def expired(self, ttl_seconds: float) -> bool:
         return (time.time() - self.created_at) > ttl_seconds

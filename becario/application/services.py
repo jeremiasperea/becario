@@ -15,11 +15,12 @@ remote_files); esta fachada resuelve identidad, arma el contexto y delega.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Callable, Optional
 
@@ -38,6 +39,7 @@ from ..domain.ports import (
     HistoryRepository,
     IntentRouter,
     JobTracker,
+    RouterDecisionLog,
     StructureBuilder,
     UserRegistry,
 )
@@ -118,6 +120,7 @@ class BecarioService:
         remote_base: str = "becario_runs",
         calc_runs: Optional[CalcRunRepository] = None,
         edit_ttl_seconds: float = 600.0,
+        decision_log: Optional[RouterDecisionLog] = None,
     ) -> None:
         self._router = router
         self._registry = registry
@@ -130,6 +133,7 @@ class BecarioService:
         self._potcar_dir = potcar_dir.rstrip("/")
         self._remote_base = remote_base.rstrip("/")
         self._calc_runs = calc_runs
+        self._decision_log = decision_log
         # Modificaciones pendientes por usuario (en memoria, con TTL: si se
         # reinicia el bot simplemente se vuelve a pedir el cálculo).
         self._edit_ttl = edit_ttl_seconds
@@ -162,13 +166,53 @@ class BecarioService:
         if edit is not None:
             return self._apply_edit(ctx, edit, text)
 
+        started = time.monotonic()
         plan = self._router.route(text)
+        latency = time.monotonic() - started
         logger.info(
             "routed plan steps=%s ssh_user=%s",
             [(s.action, s.parametros) for s in plan.steps], identity.ssh_user,
         )
 
-        return self._dispatch_plan(ctx, plan)
+        decision_id = self._log_decision(chat_id, user_id, text, plan, latency)
+        if decision_id is not None:
+            ctx = replace(ctx, decision_id=decision_id)
+
+        reply = self._dispatch_plan(ctx, plan)
+        # Un paso que falló al ejecutarse marca la decisión como 'error':
+        # señal débil (pudo fallar el cluster, no el ruteo) pero separa
+        # estos casos de los 'routed' limpios al armar el dataset.
+        if decision_id is not None and not reply.ok:
+            self._set_decision_outcome(decision_id, "error")
+        return reply
+
+    # ------------------------------------------------------------------
+    # Registro de decisiones del router (materia prima del eval set)
+    # ------------------------------------------------------------------
+    def _log_decision(
+        self, chat_id: int, user_id: int, text: str, plan: Plan, latency: float,
+    ) -> Optional[int]:
+        """Registra la decisión ruteada. Nunca propaga errores: el log es
+        observabilidad, no puede tirar abajo el manejo del mensaje."""
+        if self._decision_log is None:
+            return None
+        steps_json = json.dumps(
+            [{"action": s.action.value, "parametros": s.parametros} for s in plan.steps],
+            ensure_ascii=False,
+        )
+        try:
+            return self._decision_log.add(chat_id, user_id, text, steps_json, latency)
+        except Exception:
+            logger.exception("no se pudo registrar la decisión del router")
+            return None
+
+    def _set_decision_outcome(self, decision_id: Optional[int], outcome: str) -> None:
+        if self._decision_log is None or decision_id is None:
+            return
+        try:
+            self._decision_log.set_outcome(decision_id, outcome)
+        except Exception:
+            logger.exception("no se pudo marcar outcome=%s de la decisión %s", outcome, decision_id)
 
     def _dispatch_plan(self, ctx: _Ctx, plan: Plan) -> Reply:
         """Arma/ejecuta un `Plan` ya construido (por `route()` o por un
@@ -297,6 +341,7 @@ class BecarioService:
         plan = PendingPlan(
             chat_id=ctx.chat_id, requester_id=ctx.user_id,
             steps=[*prefix_actions, built],
+            decision_id=ctx.decision_id,
         )
         token = self._confirmations.put(plan)
         # ADR-0003: se confirma exactamente lo que se ejecuta — el detalle
@@ -454,6 +499,10 @@ class BecarioService:
         plan = self._confirmations.pop(token)  # recién ahora se consume
         if plan is None:
             return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+        # El humano avaló el plan: etiqueta el ruteo como correcto aunque
+        # la ejecución posterior falle (eso es problema del cluster, no
+        # del router).
+        self._set_decision_outcome(plan.decision_id, "confirmed")
 
         # El paso destructivo (si existe) es siempre el último del plan
         # (`Plan._v_destructive_last`); en un plan de un solo paso es
@@ -473,4 +522,5 @@ class BecarioService:
         if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         self._confirmations.pop(token)
+        self._set_decision_outcome(plan.decision_id, "cancelled")
         return Reply(text="❌ Operación cancelada.")
