@@ -36,6 +36,7 @@ from becario.infrastructure.storage import (
     SQLiteChatLogRepository,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
+    SQLiteRouterDecisionLog,
 )
 from becario.infrastructure.user_registry import JSONUserRegistry
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
@@ -73,6 +74,9 @@ def build_bot(settings: Settings) -> TelegramBot:
     job_tracker = SQLiteJobTracker(settings.db_path)
     calc_runs = SQLiteCalcRunRepository(settings.db_path)
     chat_log = SQLiteChatLogRepository(settings.db_path)
+    decision_log = SQLiteRouterDecisionLog(
+        settings.db_path, model=settings.ollama_model
+    )
     confirmations = InMemoryConfirmationStore(
         ttl_seconds=settings.confirmation_ttl_seconds
     )
@@ -89,6 +93,7 @@ def build_bot(settings: Settings) -> TelegramBot:
         remote_base=settings.remote_base,
         calc_runs=calc_runs,
         edit_ttl_seconds=settings.confirmation_ttl_seconds,
+        decision_log=decision_log,
     )
     job_monitor = JobMonitorService(
         registry=registry,

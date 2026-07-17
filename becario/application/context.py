@@ -38,3 +38,7 @@ class _Ctx:
     user_id: int
     identity: ClusterIdentity
     cluster: ClusterGateway
+    # Id en el RouterDecisionLog de la decisión que originó este pedido;
+    # viaja hasta el PendingPlan para que confirmar/cancelar etiquete el
+    # ruteo. None cuando el log está apagado o el pedido no vino del router.
+    decision_id: Optional[int] = None
