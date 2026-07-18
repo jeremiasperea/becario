@@ -1,0 +1,5 @@
+# Barrido de ENCUT: los numéricos extraen bien; formula/red son los
+# que caen. Fija el contrato completo del paso.
+prompt: curva de convergencia de ENCUT para Zr hcp de 250 a 450
+steps: preparar_calculo
+params: formula=Zr,red_cristalina=hcp,encut_min=250,encut_max=450

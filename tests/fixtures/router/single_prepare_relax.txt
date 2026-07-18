@@ -1,0 +1,6 @@
+# Extracción de preparar_calculo: formula y red_cristalina DEBEN
+# sobrevivir (bug medido: qwen2.5:7b extrae los numéricos y pierde
+# justo estos dos bajo este intent — ver decisiones #22/#25).
+prompt: relajá el bulk de W con red cristalina bcc
+steps: preparar_calculo
+params: formula=W,red_cristalina=bcc

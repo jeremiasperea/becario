@@ -47,7 +47,7 @@ import os
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Callable, Optional, Union
@@ -69,11 +69,18 @@ _DEFAULT_MODELS = ("gemma3:4b", "qwen2.5:7b", "gemma4:e4b", "gemma4:12b")
 @dataclass(frozen=True)
 class RouteFixture:
     """Fixture de `router.route()`: un pedido (single o multi-paso) y la
-    secuencia de `Intent` esperada, en orden."""
+    secuencia de `Intent` esperada, en orden.
+
+    `expected_params` (opcional, solo fixtures de UN paso) exige que esos
+    pares estén presentes en los parámetros extraídos (chequeo de
+    subconjunto: extras como tipo_calculo no fallan). Sin esto, un
+    fixture de preparar_calculo pasaba en verde aunque el modelo
+    perdiera formula/red_cristalina — el bug real que motivó agregarlo."""
 
     name: str
     prompt: str
     expected_steps: list[str]
+    expected_params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -156,6 +163,7 @@ def parse_fixture(text: str, name: str) -> Fixture:
         name=name,
         prompt=fields.get("prompt", ""),
         expected_steps=_parse_step_list(fields.get("steps", "")),
+        expected_params=_parse_params(fields.get("params", "")),
     )
 
 
@@ -171,6 +179,13 @@ def _check_route(router: OllamaRouter, fx: RouteFixture) -> Optional[str]:
     actual = [s.action.value for s in plan.steps]
     if actual != fx.expected_steps:
         return f"esperaba steps={fx.expected_steps}, obtuve {actual}"
+    if fx.expected_params:
+        got = plan.steps[0].parametros
+        missing = {
+            k: v for k, v in fx.expected_params.items() if got.get(k) != v
+        }
+        if missing:
+            return f"faltan params {missing}, obtuve {got}"
     return None
 
 
