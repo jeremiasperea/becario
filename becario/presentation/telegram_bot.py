@@ -149,6 +149,10 @@ class TelegramBot:
         # Se registra el texto crudo (sin el envoltorio <pre>): la bitácora
         # guarda contenido, no detalles de formato del canal.
         await self._log_chat(update.effective_chat.id, "bot", reply.text)
+        # Confirmaciones individuales de un plan (una por cálculo), cada
+        # una con sus propios botones.
+        for followup in reply.followups:
+            await self._send_reply(update, followup)
 
     # ------------------------------------------------------------------
     async def _on_text(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
