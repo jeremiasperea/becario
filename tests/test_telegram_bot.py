@@ -7,6 +7,7 @@ sale, y una falla de persistencia NUNCA puede cortar la conversación.
 import asyncio
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,9 +22,13 @@ class FakeChat:
     def __init__(self, chat_id: int) -> None:
         self.id = chat_id
         self.sent: list[str] = []
+        self.actions: list[str] = []
 
     async def send_message(self, text, reply_markup=None, parse_mode=None):
         self.sent.append(text)
+
+    async def send_chat_action(self, action):
+        self.actions.append(str(action))
 
 
 class FakeUpdate:
@@ -312,3 +317,59 @@ class TestMonitorTickChatLogging:
 
         assert bot._chat_log.entries == []
         assert any("No pude notificar" in rec.message for rec in caplog.records)
+
+
+class TestTypingIndicator:
+    """El trabajo bloqueante corre en un hilo con el indicador
+    «escribiendo…» activo (ver `_run_blocking`)."""
+
+    def test_typing_action_sent_while_processing_text(self):
+        bot, service = _make_bot(Reply(text="respuesta"), FakeChatLog())
+        chat = FakeChat(chat_id=555)
+
+        asyncio.run(bot._on_text(FakeUpdate(chat, user_id=7, text="hola"), None))
+
+        assert len(chat.actions) >= 1
+        assert "typing" in chat.actions[0]
+        assert chat.sent == ["respuesta"]  # la respuesta llega igual
+
+    def test_slow_service_keeps_loop_responsive(self):
+        # Un servicio lento NO congela el event loop: mientras el hilo
+        # trabaja, el loop puede ejecutar otras corutinas.
+        class SlowService(FakeService):
+            def handle_text(self, chat_id, user_id, text):
+                time.sleep(0.3)
+                return super().handle_text(chat_id, user_id, text)
+
+        service = SlowService(Reply(text="tardé pero llegué"))
+        bot = TelegramBot(token=FAKE_TOKEN, service=service, chat_log=FakeChatLog())
+        chat = FakeChat(chat_id=555)
+        loop_alive = []
+
+        async def _both():
+            async def _heartbeat():
+                for _ in range(3):
+                    await asyncio.sleep(0.05)
+                    loop_alive.append(True)
+            await asyncio.gather(
+                bot._on_text(FakeUpdate(chat, user_id=7, text="hola"), None),
+                _heartbeat(),
+            )
+
+        asyncio.run(_both())
+        # Con el handler síncrono de antes, el heartbeat no habría corrido
+        # hasta después de los 0.3s del servicio.
+        assert loop_alive == [True, True, True]
+        assert chat.sent == ["tardé pero llegué"]
+
+    def test_typing_failure_does_not_break_reply(self):
+        class NoActionChat(FakeChat):
+            async def send_chat_action(self, action):
+                raise RuntimeError("chat action no soportado")
+
+        bot, _ = _make_bot(Reply(text="ok"), FakeChatLog())
+        chat = NoActionChat(chat_id=555)
+
+        asyncio.run(bot._on_text(FakeUpdate(chat, user_id=7, text="hola"), None))
+
+        assert chat.sent == ["ok"]
