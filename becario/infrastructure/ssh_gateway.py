@@ -56,7 +56,9 @@ class SSHClusterGateway:
     ) -> None:
         self._host = host
         self._user = user
-        self._key_path = key_path
+        # paramiko no expande '~' en key_filename, y el alta interactiva
+        # (`manage_users.py`) sugiere rutas con tilde: se expande acá.
+        self._key_path = str(Path(key_path).expanduser())
         self._port = port
         self._connect_timeout = connect_timeout
         self._command_timeout = command_timeout
