@@ -170,6 +170,8 @@ _SYSTEM_PROMPT = (
     "'creame la carpeta /home/ana/pruebas' -> crear_directorio, "
     "destino_remoto=/home/ana/pruebas\n"
     "'mostrame la estructura de archivos del cluster' -> listar_archivos\n"
+    "'listá mi home' -> listar_archivos (sin destino_remoto: el sistema "
+    "resuelve el home del usuario)\n"
     "'qué archivos hay en /data/becario_runs' -> listar_archivos, "
     "destino_remoto=/data/becario_runs\n"
     "'mostrame el CONTCAR' -> ver_archivo, nombre_archivo=CONTCAR\n"
@@ -185,8 +187,12 @@ _SYSTEM_PROMPT = (
     "paso 1: modificar_estructura, formula=Si; "
     "paso 2: crear_directorio, destino_remoto=/home/ana/run\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
-    "No inventes valores. En 'formula' usá siempre el símbolo químico "
-    "(zirconio->Zr, tungsteno/wolframio->W, silicio->Si)."
+    "No inventes valores. Las rutas de los ejemplos de arriba "
+    "(/home/ana/..., /data/...) son ILUSTRATIVAS: jamás las copies a tu "
+    "respuesta. Una ruta solo es válida si el usuario la escribió en SU "
+    "mensaje; si habla de 'mi home', 'mi carpeta' o no da ruta, dejá "
+    "destino_remoto sin completar. En 'formula' usá siempre el símbolo "
+    "químico (zirconio->Zr, tungsteno/wolframio->W, silicio->Si)."
 )
 
 
