@@ -229,6 +229,25 @@ _DECOMPOSE_PROMPT = (
 )
 
 
+# Segunda pasada de extracción de estructura para preparar_calculo. Bajo
+# ESE intent todos los modelos locales sueltan formula/red_cristalina
+# (medido, model-agnóstico: qwen2.5:7b, gemma4:e4b y gemma3:4b, 0/3),
+# aunque los extraen 3/3 sin el framing de intent. Este prompt no clasifica
+# ni menciona acciones: pide SOLO la estructura del material a calcular, y
+# así el modelo ya no la asocia a `modificar_estructura` ni la descarta.
+_STRUCT_PROMPT = (
+    "Sos el extractor de estructura de B.E.C.A.R.I.O., un asistente HPC. "
+    "El mensaje pide un cálculo DFT/VASP sobre una estructura atómica. "
+    "Extraé SOLO la estructura sobre la que se calcula: 'formula' (símbolo "
+    "químico: zirconio->Zr, tungsteno/wolframio->W, silicio->Si) y "
+    "'red_cristalina' (bcc, fcc, hcp, diamond…). No inventes valores; si el "
+    "mensaje no menciona uno, dejalo sin completar.\n"
+    "Ejemplos:\n"
+    "'relajá el bulk de W bcc' -> formula=W, red_cristalina=bcc\n"
+    "'convergencia de ENCUT para Zr hcp' -> formula=Zr, red_cristalina=hcp"
+)
+
+
 _EDIT_PROMPT = (
     "Sos el extractor de cambios de B.E.C.A.R.I.O., un asistente HPC. El "
     "usuario ya tiene un cálculo armado y este mensaje describe UN CAMBIO "
@@ -377,7 +396,55 @@ class OllamaRouter:
         raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
         if raw is None:
             return Plan(steps=[PlanStep(action=Intent.UNKNOWN)])
-        return self.parse_llm_output(raw)
+        return self._backfill_structure(user_text, self.parse_llm_output(raw))
+
+    def extract_structure(self, user_text: str) -> dict:
+        """Segunda pasada enfocada: extrae SOLO la estructura (formula/
+        red_cristalina) de un pedido de cálculo, sin clasificar intención.
+
+        Necesaria porque bajo el intent `preparar_calculo` el modelo asocia
+        la estructura a `modificar_estructura` y la descarta; una llamada
+        sin ese framing la recupera de forma confiable (ver `_STRUCT_PROMPT`).
+        `{}` si Ollama no respondió o la salida quedó fuera de schema."""
+        raw = self._chat(_STRUCT_PROMPT, user_text, self._params_schema)
+        if raw is None:
+            return {}
+        try:
+            params = RouterParams.model_validate_json(raw)
+        except ValidationError:
+            logger.warning("Extracción de estructura fuera de schema: %r", (raw or "")[:200])
+            return {}
+        return params.model_dump(exclude_none=True)
+
+    def _backfill_structure(self, user_text: str, plan: Plan) -> Plan:
+        """Recupera formula/red_cristalina en un cálculo vía la segunda
+        pasada de `extract_structure`.
+
+        Se aplica cuando el plan tiene EXACTAMENTE UN paso `preparar_calculo`
+        sin formula: ahí el material del texto es inequívoco, sin importar si
+        además hay pasos no-cálculo (p. ej. el `crear_directorio` que
+        acompaña al cálculo en cada instrucción que emite el descompositor).
+        Con dos o más cálculos el material deja de ser inequívoco y el caso
+        lo cubre el descompositor (capa de aplicación), que primero parte el
+        pedido para que cada instrucción tenga un solo material antes de
+        re-rutear — cada instrucción vuelve por acá y se completa.
+
+        Fail-open: si la segunda pasada no devuelve nada se conserva el plan
+        original, y el handler de `preparar_calculo` repregunta el material
+        faltante. Lo ya extraído por el router gana sobre el backfill."""
+        calcs = [s for s in plan.steps if s.action is Intent.PREPARE_CALC]
+        if len(calcs) != 1 or calcs[0].parametros.get("formula"):
+            return plan
+        structure = self.extract_structure(user_text)
+        if not structure:
+            return plan
+        target = calcs[0]
+        steps = [
+            PlanStep(action=s.action, parametros={**structure, **s.parametros})
+            if s is target else s
+            for s in plan.steps
+        ]
+        return Plan(steps=steps)
 
     def decompose(self, user_text: str) -> list[str]:
         """Divide un pedido largo en instrucciones simples auto-contenidas.
