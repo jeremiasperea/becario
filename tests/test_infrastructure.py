@@ -316,8 +316,12 @@ class TestSSHCommandConstruction:
         gw._run = lambda cmd: outputs["tree" if cmd.startswith("tree") else "find"]
         result = gw.list_directory("/data/runs")
         assert result.ok
+        # El fallback dibuja ramas como `tree`, no indentación plana.
         assert result.stdout == (
-            "/data/runs\n  corrida_1\n    INCAR\n  corrida_2"
+            "/data/runs\n"
+            "├── corrida_1\n"
+            "│   └── INCAR\n"
+            "└── corrida_2"
         )
 
     def test_list_directory_fallback_find_failure_passes_through(self):
@@ -762,3 +766,38 @@ class TestSQLiteConcurrency:
         assert errors == []
         assert len(chat.recent(1, limit=n + 1)) == n
         assert len(history.search(HistoryFilter(owner_id=7, limit=n + 1))) == n
+
+
+class TestFormatTree:
+    """`_format_tree` emula `tree -L 2` con ramas cuando el cluster no
+    tiene el binario `tree` (caso real: el contenedor SLURM local)."""
+
+    def test_draws_branches_like_tree(self):
+        from becario.infrastructure.ssh_gateway import _format_tree
+
+        find_out = "\n".join([
+            "/root/becario_runs/W",
+            "/root/becario_runs/W/bcc",
+            "/root/becario_runs/W/fcc",
+            "/root/becario_runs/Zr",
+            "/root/becario_runs/Zr/hcp",
+        ])
+        assert _format_tree("/root/becario_runs", find_out) == "\n".join([
+            "/root/becario_runs",
+            "├── W",
+            "│   ├── bcc",
+            "│   └── fcc",
+            "└── Zr",
+            "    └── hcp",
+        ])
+
+    def test_empty_listing_shows_only_base(self):
+        from becario.infrastructure.ssh_gateway import _format_tree
+
+        assert _format_tree("/data/x", "") == "/data/x"
+
+    def test_single_level(self):
+        from becario.infrastructure.ssh_gateway import _format_tree
+
+        out = _format_tree("/base", "/base/solo")
+        assert out == "/base\n└── solo"

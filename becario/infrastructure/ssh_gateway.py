@@ -25,20 +25,34 @@ _SBATCH_JOB_ID_RE = re.compile(r"Submitted batch job (\d+)")
 def _format_tree(base: str, find_output: str) -> str:
     """Emula la salida de `tree -L 2` a partir de `find -maxdepth 2`.
 
-    Recibe rutas absolutas (una por línea, ya ordenadas) y las convierte
-    en un árbol indentado de dos espacios por nivel, con la base arriba.
+    Recibe rutas absolutas (una por línea, ya ordenadas por `sort`) y
+    dibuja el árbol con ramas (├──/└──), igual que `tree`: para decidir
+    la rama de cada entrada hace falta saber si es la última hija de su
+    padre, así que primero se arma la jerarquía y después se renderiza.
+    El orden lexicográfico de `sort` garantiza que cada padre aparece
+    antes que sus hijos y que los hermanos quedan agrupados.
     """
     base_depth = len(PurePosixPath(base).parts)
-    lines = [base]
+    tree: dict = {}
     for raw in find_output.strip().splitlines():
         raw = raw.strip()
         if not raw:
             continue
-        parts = PurePosixPath(raw).parts
-        depth = len(parts) - base_depth
-        if depth < 1:
-            continue
-        lines.append("  " * depth + parts[-1])
+        parts = PurePosixPath(raw).parts[base_depth:]
+        node = tree
+        for part in parts:
+            node = node.setdefault(part, {})
+
+    lines = [base]
+
+    def _render(node: dict, prefix: str) -> None:
+        names = list(node)
+        for i, name in enumerate(names):
+            last = i == len(names) - 1
+            lines.append(f"{prefix}{'└── ' if last else '├── '}{name}")
+            _render(node[name], prefix + ("    " if last else "│   "))
+
+    _render(tree, "")
     return "\n".join(lines)
 
 
