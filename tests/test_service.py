@@ -1341,13 +1341,13 @@ class TestCompositePlans:
         assert reply.text.splitlines()[-1] == "2. ⏸ omitido"
 
     def test_unsupported_composite_step_is_rejected_fail_closed(self, env):
-        """v1 no combina `preparar_calculo` dentro de un plan multi-paso
-        (necesita su propio flujo de preparación/confirmación; ver
-        apply-progress, deviations de la tarea 4.3)."""
+        """Un paso sin handler combinable (p. ej. `error`) rechaza el plan
+        entero fail-closed. (`preparar_calculo` como cola SÍ se soporta:
+        ver TestCalcTailIndividualConfirmations.)"""
         service, router, factory, *_ = env
         router.next_plan = Plan(steps=[
             PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/home/alice/run"}),
-            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W"}),
+            PlanStep(action=Intent.UNKNOWN, parametros={}),
         ])
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
 
@@ -1642,4 +1642,57 @@ class TestWorkspaceRelativePaths:
             chat_id=1, user_id=ALICE.telegram_user_id, text="creala"
         )
         assert "Ruta inválida" in reply.text
+        assert factory.gateways["alice"].made_dirs == []
+
+
+class TestCalcTailIndividualConfirmations:
+    """Un plan que termina en `preparar_calculo` (uno o varios) materializa
+    el prefijo y emite UNA confirmación individual por cálculo (followups),
+    cada una con su propio token — decisión de producto: un botón por
+    cálculo, nunca N envíos con un solo botón."""
+
+    def _plan(self, *steps):
+        return Plan(steps=[PlanStep(action=a, parametros=p) for a, p in steps])
+
+    def test_prefix_materializes_and_each_calc_gets_own_confirmation(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = self._plan(
+            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
+            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
+            (Intent.PREPARE_CALC, {"formula": "W", "red_cristalina": "bcc"}),
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="creá W y corré Zr y Si"
+        )
+        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/W"]
+        assert len(reply.followups) == 2
+        tokens = {f.confirmation_token for f in reply.followups}
+        assert all(f.needs_confirmation for f in reply.followups)
+        assert len(tokens) == 2  # tokens distintos: confirmaciones independientes
+
+    def test_failed_prefix_omits_calcs(self, env):
+        service, router, factory, *_ = env
+        gateway = factory.gateways.setdefault("alice", FakeCluster("alice"))
+        gateway.make_directory_result = CommandResult(ok=False, stderr="disco lleno")
+        router.next_plan = self._plan(
+            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
+            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="creá W y corré Zr"
+        )
+        assert reply.followups == ()
+        assert "omitido" in reply.text
+
+    def test_calc_in_middle_is_still_rejected(self, env):
+        # `preparar_calculo` seguido de otro paso NO es cola: fail-closed.
+        service, router, factory, *_ = env
+        router.next_plan = self._plan(
+            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
+            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="raro"
+        )
+        assert reply.followups == ()
         assert factory.gateways["alice"].made_dirs == []

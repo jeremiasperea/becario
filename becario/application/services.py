@@ -284,6 +284,38 @@ class BecarioService:
         en un paso destructivo (`enviar_slurm`/`cancelar_calculo`, único
         posible por `Plan._v_destructive_last`), la confirmación se pide
         SOLO para esa cola — el resto ya corrió y se muestra ejecutado."""
+        # Cola de cálculos: pasos `preparar_calculo` contiguos al FINAL del
+        # plan. Cada uno arma su propia confirmación individual (decisión
+        # de producto: un botón por cálculo, nunca N envíos con un botón),
+        # así que acá no hay cola destructiva batch — el prefijo
+        # materializa y cada cálculo sale como followup con su token.
+        n_calc_tail = 0
+        for s in reversed(plan.steps):
+            if s.action is Intent.PREPARE_CALC:
+                n_calc_tail += 1
+            else:
+                break
+        if n_calc_tail:
+            prefix = plan.steps[:-n_calc_tail]
+            if any(s.action not in self._MATERIALIZABLE_STEP_INTENTS for s in prefix):
+                return Reply(text=HELP_TEXT)
+            result = PlanExecutor().run(
+                [self._materialize_step_fn(ctx, s) for s in prefix]
+            )
+            if prefix and not result.ok:
+                lines = result.report_lines + [
+                    f"⏸ {n_calc_tail} cálculo(s) omitido(s): falló un paso previo."
+                ]
+                return Reply(text="\n".join(lines), ok=False)
+            handler = self._intent_handlers()[Intent.PREPARE_CALC]
+            followups = tuple(
+                handler(ctx, s.parametros) for s in plan.steps[-n_calc_tail:]
+            )
+            lines = result.report_lines + [
+                f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"
+            ] if prefix else [f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"]
+            return Reply(text="\n".join(lines), followups=followups)
+
         tail = plan.steps[-1]
         has_destructive_tail = tail.action in Intent.destructive()
         prefix = plan.steps[:-1] if has_destructive_tail else plan.steps

@@ -28,6 +28,11 @@ class Reply:
     # el canal de salida lo ignora. Default True: un paso de un solo
     # intent (el camino de hoy) nunca lo consulta.
     ok: bool = True
+    # Respuestas adicionales que el canal envía DESPUÉS de esta, cada una
+    # con sus propios botones: un plan con varios `preparar_calculo` emite
+    # una confirmación individual por cálculo (decisión de producto: nada
+    # de aprobar N envíos con un solo botón).
+    followups: tuple["Reply", ...] = ()
 
 
 @dataclass(frozen=True)
