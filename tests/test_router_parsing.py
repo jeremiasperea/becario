@@ -1,7 +1,7 @@
 """Tests del parseo de la salida del LLM con structured outputs."""
 import json
 
-from becario.domain.models import Intent
+from becario.domain.models import Intent, Plan, PlanStep
 from becario.infrastructure.ollama_router import (
     OllamaRouter,
     RouterDecision,
@@ -245,3 +245,101 @@ class TestParseEditOutput:
     def test_empty_and_none_fail_closed(self):
         assert self.parse_edit("").target_index is None
         assert self.parse_edit(None).target_index is None
+
+
+class TestBackfillStructure:
+    """Segunda pasada de estructura: bajo `preparar_calculo` todos los
+    modelos locales sueltan formula/red_cristalina (medido, model-agnóstico),
+    aunque los extraen sin el framing de intent. `_backfill_structure`
+    recupera la estructura cuando el plan tiene EXACTAMENTE un cálculo sin
+    material (donde es inequívoco, aunque venga con un crear_directorio);
+    con dos o más cálculos manda el descompositor."""
+
+    @staticmethod
+    def _router(chat_stub):
+        router = OllamaRouter()
+        router._chat = chat_stub  # sin red: el backfill decide por el stub
+        return router
+
+    def test_recovers_structure_for_single_prepare(self):
+        calls = []
+
+        def chat(system_prompt, user_text, schema):
+            calls.append(user_text)
+            return '{"formula": "W", "red_cristalina": "bcc"}'
+
+        router = self._router(chat)
+        plan = Plan(steps=[PlanStep(
+            action=Intent.PREPARE_CALC,
+            parametros={"tipo_calculo": "relajacion"},
+        )])
+        result = router._backfill_structure("relajá el bulk de W bcc", plan)
+        assert result.single_step.parametros == {
+            "tipo_calculo": "relajacion", "formula": "W", "red_cristalina": "bcc",
+        }
+        assert calls == ["relajá el bulk de W bcc"]
+
+    def test_router_extracted_value_wins_over_backfill(self):
+        # El paso ya trae red_cristalina=fcc; el backfill no debe pisarlo.
+        router = self._router(
+            lambda s, u, sc: '{"formula": "W", "red_cristalina": "bcc"}'
+        )
+        plan = Plan(steps=[PlanStep(
+            action=Intent.PREPARE_CALC,
+            parametros={"red_cristalina": "fcc"},
+        )])
+        result = router._backfill_structure("x", plan)
+        assert result.single_step.parametros["red_cristalina"] == "fcc"
+        assert result.single_step.parametros["formula"] == "W"
+
+    def test_noop_when_formula_already_present(self):
+        calls = []
+        router = self._router(lambda s, u, sc: calls.append(u) or "{}")
+        plan = Plan(steps=[PlanStep(
+            action=Intent.PREPARE_CALC, parametros={"formula": "Zr"},
+        )])
+        assert router._backfill_structure("x", plan) is plan
+        assert calls == []  # sin segunda llamada
+
+    def test_noop_for_non_prepare_intent(self):
+        calls = []
+        router = self._router(lambda s, u, sc: calls.append(u) or "{}")
+        plan = Plan(steps=[PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={})])
+        assert router._backfill_structure("x", plan) is plan
+        assert calls == []
+
+    def test_recovers_structure_with_accompanying_create_dir(self):
+        # Cada instrucción del descompositor rutea a [calc, crear_directorio]:
+        # un solo cálculo -> material inequívoco -> se completa igual.
+        router = self._router(
+            lambda s, u, sc: '{"formula": "Zr", "red_cristalina": "bcc"}'
+        )
+        plan = Plan(steps=[
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "relajacion"}),
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "Zr/bcc"}),
+        ])
+        result = router._backfill_structure("relajá Zr bcc en Zr/bcc", plan)
+        assert result.steps[0].parametros == {
+            "tipo_calculo": "relajacion", "formula": "Zr", "red_cristalina": "bcc",
+        }
+        # El paso no-cálculo queda intacto y el orden se preserva.
+        assert result.steps[1].parametros == {"destino_remoto": "Zr/bcc"}
+        assert [s.action for s in result.steps] == [Intent.PREPARE_CALC, Intent.CREATE_DIR]
+
+    def test_noop_for_multiple_calc_steps(self):
+        # Dos cálculos: material ambiguo, no se adivina -> lo parte el
+        # descompositor. Sin segunda llamada.
+        calls = []
+        router = self._router(lambda s, u, sc: calls.append(u) or "{}")
+        plan = Plan(steps=[
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "relajacion"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "estatico"}),
+        ])
+        assert router._backfill_structure("x", plan) is plan
+        assert calls == []
+
+    def test_fail_open_when_second_pass_empty(self):
+        # Ollama caído / fuera de schema: se conserva el plan sin material.
+        router = self._router(lambda s, u, sc: None)
+        plan = Plan(steps=[PlanStep(action=Intent.PREPARE_CALC, parametros={})])
+        assert router._backfill_structure("x", plan) is plan
