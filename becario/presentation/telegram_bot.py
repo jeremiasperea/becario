@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -99,6 +100,36 @@ class TelegramBot:
             )
 
     # ------------------------------------------------------------------
+    async def _run_blocking(self, chat, fn, *args, **kwargs):
+        """Ejecuta trabajo bloqueante (LLM, SSH, transcripción) en un hilo,
+        manteniendo vivo el indicador «escribiendo…» del chat.
+
+        Dos problemas de una vez: el usuario ve que el bot está procesando
+        (una llamada al LLM en CPU puede superar los 30s y el silencio es
+        indistinguible de un cuelgue), y el event loop queda libre para
+        atender botones y el monitor mientras tanto — antes, el handler
+        llamaba al servicio de forma síncrona y congelaba el loop entero.
+
+        El servicio es thread-safe a propósito (locks en pending edits y
+        confirmaciones); Telegram expira el chat action a los ~5s, por eso
+        se reenvía. El indicador es cosmético: si falla, el trabajo sigue.
+        """
+        async def _keep_typing() -> None:
+            while True:
+                try:
+                    await chat.send_chat_action(ChatAction.TYPING)
+                except Exception:  # nunca interrumpir por el indicador
+                    pass
+                await asyncio.sleep(4.0)
+
+        keeper = asyncio.create_task(_keep_typing()) if chat is not None else None
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        finally:
+            if keeper is not None:
+                keeper.cancel()
+
+    # ------------------------------------------------------------------
     async def _send_reply(self, update: Update, reply: Reply) -> None:
         markup = (
             _keyboard(reply.confirmation_token, reply.allow_modify)
@@ -125,7 +156,9 @@ class TelegramBot:
             return
         text = update.message.text or ""
         await self._log_chat(update.effective_chat.id, "user", text)
-        reply = self._service.handle_text(
+        reply = await self._run_blocking(
+            update.effective_chat,
+            self._service.handle_text,
             chat_id=update.effective_chat.id,
             user_id=update.effective_user.id,
             text=text,
@@ -144,7 +177,9 @@ class TelegramBot:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "voice.ogg"
             await voice_file.download_to_drive(path)
-            text = self._transcriber.transcribe(path.read_bytes())
+            text = await self._run_blocking(
+                update.effective_chat, self._transcriber.transcribe, path.read_bytes()
+            )
         if not text.strip():
             aviso = "🎙️ No pude entender el audio, probá de nuevo."
             await update.effective_chat.send_message(aviso)
@@ -158,7 +193,9 @@ class TelegramBot:
         entendido = f"🎙️ Entendí: «{text.strip()}»"
         await update.effective_chat.send_message(entendido)
         await self._log_chat(update.effective_chat.id, "bot", entendido)
-        reply = self._service.handle_text(
+        reply = await self._run_blocking(
+            update.effective_chat,
+            self._service.handle_text,
             chat_id=update.effective_chat.id,
             user_id=update.effective_user.id,
             text=text,
@@ -177,12 +214,23 @@ class TelegramBot:
         if query.message is not None:
             etiquetas = {"confirm": "confirmar", "cancel": "cancelar", "modify": "modificar"}
             await self._log_chat(query.message.chat.id, "user", etiquetas.get(action, data))
+        # Confirmar ejecuta la acción real (sbatch/scancel por SSH): también
+        # es trabajo bloqueante y merece indicador. `query.message` puede ser
+        # None (mensaje viejo); en ese caso se corre sin typing.
+        chat = query.message.chat if query.message is not None else None
         if action == "confirm":
-            reply = self._service.confirm(token, requester_id=query.from_user.id)
+            reply = await self._run_blocking(
+                chat, self._service.confirm, token, requester_id=query.from_user.id
+            )
         elif action == "cancel":
-            reply = self._service.reject(token, requester_id=query.from_user.id)
+            reply = await self._run_blocking(
+                chat, self._service.reject, token, requester_id=query.from_user.id
+            )
         elif action == "modify":
-            reply = self._service.start_modification(token, requester_id=query.from_user.id)
+            reply = await self._run_blocking(
+                chat, self._service.start_modification, token,
+                requester_id=query.from_user.id,
+            )
         else:
             reply = Reply(text="⚠️ Acción desconocida.")
         if reply.text == FOREIGN_CONFIRMATION_TEXT:
