@@ -217,6 +217,28 @@ _SYSTEM_PROMPT = (
 )
 
 
+class _Decomposition(BaseModel):
+    """Contrato del descompositor: instrucciones simples, en orden."""
+
+    instrucciones: list[str] = Field(default_factory=list)
+
+
+_DECOMPOSE_PROMPT = (
+    "Sos el descompositor de pedidos de B.E.C.A.R.I.O., un asistente HPC. "
+    "Dividí el pedido del usuario en instrucciones SIMPLES y "
+    "AUTO-CONTENIDAS, una por acción, en el orden pedido. Cada "
+    "instrucción debe repetir TODOS los datos que le corresponden "
+    "(material/fórmula, red cristalina, tipo de cálculo, carpeta), sin "
+    "pronombres ni referencias a otras instrucciones: cada una tiene que "
+    "entenderse sola. No inventes datos que el usuario no dijo. Máximo 5 "
+    "instrucciones.\n"
+    "Ejemplo: 'creá la carpeta W y relajá el bulk de W para bcc y fcc' ->\n"
+    "1. creá la carpeta W\n"
+    "2. relajá el bulk de W con red cristalina bcc, en la carpeta W/bcc\n"
+    "3. relajá el bulk de W con red cristalina fcc, en la carpeta W/fcc"
+)
+
+
 _EDIT_PROMPT = (
     "Sos el extractor de cambios de B.E.C.A.R.I.O., un asistente HPC. El "
     "usuario ya tiene un cálculo armado y este mensaje describe UN CAMBIO "
@@ -366,6 +388,28 @@ class OllamaRouter:
         if raw is None:
             return Plan(steps=[PlanStep(action=Intent.UNKNOWN)])
         return self.parse_llm_output(raw)
+
+    def decompose(self, user_text: str) -> list[str]:
+        """Divide un pedido largo en instrucciones simples auto-contenidas.
+
+        Etapa intermedia para pedidos compuestos que exceden el techo de
+        extracción del modelo (medido: en mensajes largos emite la
+        estructura del plan bien pero omite formula/red_cristalina de los
+        pasos de cálculo). Cada instrucción resultante se rutea por
+        separado con `route()`, el camino corto que el modelo resuelve de
+        forma confiable. Lista vacía = no se pudo descomponer (el llamador
+        decide el fallback)."""
+        raw = self._chat(
+            _DECOMPOSE_PROMPT, user_text, _Decomposition.model_json_schema()
+        )
+        if raw is None:
+            return []
+        try:
+            parsed = _Decomposition.model_validate_json(raw)
+        except ValidationError:
+            logger.warning("decompose devolvió JSON inválido; sin descomposición")
+            return []
+        return [i.strip() for i in parsed.instrucciones if i.strip()]
 
     def extract_params(self, user_text: str) -> dict:
         """Solo parámetros (sin acción): para mensajes que modifican un

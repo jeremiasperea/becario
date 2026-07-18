@@ -64,8 +64,13 @@ class FakeRouter:
         # esto directamente en vez de simular el LLM real.
         self.next_edit: tuple[Optional[int], dict] = (None, {})
         self.extract_edit_calls: list[tuple[str, str]] = []
+        self.next_decomposition: list[str] = []
+        self.decompose_calls: list[str] = []
+        self.routes_queue: list[Plan] = []
 
     def route(self, user_text: str) -> Plan:
+        if self.routes_queue:
+            return self.routes_queue.pop(0)
         if self.next_plan is not None:
             return self.next_plan
         return Plan(steps=[PlanStep(action=self.next.intent, parametros=dict(self.next.params))])
@@ -76,6 +81,12 @@ class FakeRouter:
     def extract_edit(self, plan_context: str, user_text: str) -> tuple[Optional[int], dict]:
         self.extract_edit_calls.append((plan_context, user_text))
         return self.next_edit
+
+    def decompose(self, user_text: str) -> list[str]:
+        # Instrucciones fijadas por el test; al rutearse cada una, `route`
+        # consume `routes_queue` si el test lo cargó.
+        self.decompose_calls.append(user_text)
+        return list(self.next_decomposition)
 
 
 class FakeUserRegistry:
@@ -1696,3 +1707,62 @@ class TestCalcTailIndividualConfirmations:
         )
         assert reply.followups == ()
         assert factory.gateways["alice"].made_dirs == []
+
+
+class TestDecomposition:
+    """Un plan multi-paso con cálculos sin `formula` (la firma del techo
+    de extracción del modelo en mensajes largos) se reintenta vía
+    descomposición: instrucciones simples auto-contenidas, cada una
+    ruteada por el camino corto confiable."""
+
+    def _incomplete_plan(self):
+        return Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "relajacion"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "relajacion"}),
+        ])
+
+    def test_incomplete_multicalc_plan_is_decomposed_and_rerouted(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = self._incomplete_plan()
+        router.next_decomposition = [
+            "creá la carpeta ZrO2",
+            "relajá el bulk de Zr bcc",
+            "relajá el bulk de Zr fcc",
+        ]
+        router.routes_queue = [
+            Plan(steps=[PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2"})]),
+            Plan(steps=[PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "bcc"})]),
+            Plan(steps=[PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "fcc"})]),
+        ]
+        # El primer route() del handle_text consume la cola: recargamos con
+        # el plan incompleto al frente.
+        router.routes_queue.insert(0, self._incomplete_plan())
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="pedido largo de ZrO2"
+        )
+        assert router.decompose_calls == ["pedido largo de ZrO2"]
+        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/ZrO2"]
+        assert len(reply.followups) == 2
+        assert all(f.needs_confirmation for f in reply.followups)
+
+    def test_failed_decomposition_falls_back_to_original_plan(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = self._incomplete_plan()
+        router.next_decomposition = []  # el descompositor no pudo
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="pedido largo"
+        )
+        # Plan original: prefijo materializa y los cálculos incompletos
+        # repreguntan (el comportamiento previo, sin romper nada).
+        assert len(reply.followups) == 2
+        assert not any(f.needs_confirmation for f in reply.followups)
+
+    def test_complete_plans_never_trigger_decomposition(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "W"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W", "red_cristalina": "bcc"}),
+        ])
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ok")
+        assert router.decompose_calls == []

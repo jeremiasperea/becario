@@ -24,6 +24,8 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Callable, Optional
 
+from pydantic import ValidationError
+
 from ..domain.models import (
     Intent,
     PendingAction,
@@ -168,6 +170,7 @@ class BecarioService:
 
         started = time.monotonic()
         plan = self._router.route(text)
+        plan = self._maybe_decompose(text, plan)
         latency = time.monotonic() - started
         logger.info(
             "routed plan steps=%s ssh_user=%s",
@@ -185,6 +188,46 @@ class BecarioService:
         if decision_id is not None and not reply.ok:
             self._set_decision_outcome(decision_id, "error")
         return reply
+
+    # ------------------------------------------------------------------
+    # Descomposición de pedidos largos (etapa intermedia, medida antes
+    # que diseñada: en mensajes largos el modelo arma bien la estructura
+    # del plan pero omite formula/red_cristalina de los cálculos)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _needs_decomposition(plan: Plan) -> bool:
+        """Firma exacta del fallo medido: plan multi-paso con algún
+        cálculo sin material."""
+        if len(plan.steps) < 2:
+            return False
+        return any(
+            s.action is Intent.PREPARE_CALC and not s.parametros.get("formula")
+            for s in plan.steps
+        )
+
+    def _maybe_decompose(self, text: str, plan: Plan) -> Plan:
+        """Reintenta un plan defectuoso vía descomposición: el pedido se
+        parte en instrucciones simples auto-contenidas y cada una se rutea
+        por el camino corto (confiable). Ante CUALQUIER duda devuelve el
+        plan original — su repregunta es mejor que un plan inventado."""
+        if not self._needs_decomposition(plan):
+            return plan
+        parts = self._router.decompose(text)
+        if not parts or len(parts) > 5:
+            return plan
+        steps = []
+        for part in parts:
+            steps.extend(self._router.route(part).steps)
+        if not steps or len(steps) > 5:
+            return plan
+        try:
+            new_plan = Plan(steps=steps)
+        except (ValidationError, ValueError):
+            return plan
+        if self._needs_decomposition(new_plan):
+            return plan  # no mejoró: misma falla, mismo fallback
+        logger.info("plan descompuesto en %d instrucciones simples", len(parts))
+        return new_plan
 
     # ------------------------------------------------------------------
     # Registro de decisiones del router (materia prima del eval set)
