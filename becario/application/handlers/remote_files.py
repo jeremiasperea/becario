@@ -48,20 +48,53 @@ def _truncate_file_content(text: str) -> str:
     return text[:cut].rstrip() + "\n… (archivo truncado)"
 
 
+def _resolve_workspace_path(
+    svc: "BecarioService", ctx: _Ctx, raw: str
+) -> tuple[str | None, Reply | None]:
+    """Resuelve una ruta del usuario contra el workspace de corridas.
+
+    Una ruta absoluta pasa tal cual. Una relativa ('Zr/bcc') o vacía se
+    ancla en la base de corridas (`remote_base`, resuelta contra el home
+    remoto si la config es relativa). Este anclaje es lo que permite que
+    el router emita rutas relativas cuando el usuario habla en relativo
+    ('dentro de Zr…') en vez de verse forzado a inventar un prefijo
+    absoluto — el desparramo real que motivó esto: /Zr y /home/becario_runs
+    creados por rutas alucinadas, invisibles para el listado."""
+    raw = str(raw).strip()
+    if raw.startswith("/"):
+        return raw, None
+    base = svc._remote_base
+    if not base.startswith("/"):
+        home = ctx.cluster.home_dir()
+        if not home:
+            return None, Reply(
+                text="⚠️ No pude resolver el home remoto. "
+                "Revisá la conexión al cluster.",
+                ok=False,
+            )
+        base = f"{home}/{base}"
+    return (f"{base}/{raw}" if raw else base), None
+
+
 def create_directory(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     raw = params.get("destino_remoto")
     if not raw:
         return Reply(
-            text="⚠️ Decime la ruta de la carpeta que querés crear, "
-            'p. ej.: "creame la carpeta /home/usuario/pruebas".',
+            text="⚠️ Decime la carpeta que querés crear, p. ej.: "
+            '"creame la carpeta Zr/bcc" (relativa a tus corridas) '
+            "o una ruta absoluta.",
             ok=False,
         )
+    path, err = _resolve_workspace_path(svc, ctx, raw)
+    if err is not None:
+        return err
     try:
-        req = RemoteDirRequest(path=str(raw))
+        req = RemoteDirRequest(path=path)
     except (ValidationError, ValueError):
         return Reply(
-            text=f"⚠️ Ruta inválida: {raw!r}. Tiene que ser una ruta "
-            "absoluta (empezar con /), sin caracteres especiales ni '..'.",
+            text=f"⚠️ Ruta inválida: {raw!r}. Puede ser relativa a tus "
+            "corridas (Zr/bcc) o absoluta (/data/x), sin caracteres "
+            "especiales ni '..'.",
             ok=False,
         )
     result = ctx.cluster.make_directory(req.path)
@@ -73,28 +106,19 @@ def create_directory(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
 
 
 def list_files(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
-    raw = params.get("destino_remoto")
-    if not raw:
-        # Sin ruta: listar la base de corridas, resuelta contra el home
-        # remoto si la config es relativa (mismo criterio que al subir
-        # una corrida).
-        base = svc._remote_base
-        if not base.startswith("/"):
-            home = ctx.cluster.home_dir()
-            if not home:
-                return Reply(
-                    text="⚠️ No pude resolver el home remoto para listar. "
-                    "Revisá la conexión al cluster.",
-                    ok=False,
-                )
-            base = f"{home}/{base}"
-        raw = base
+    # Sin ruta lista la base de corridas; una relativa se ancla en ella
+    # (mismo criterio que `create_directory`).
+    raw = params.get("destino_remoto") or ""
+    path, err = _resolve_workspace_path(svc, ctx, raw)
+    if err is not None:
+        return err
     try:
-        req = ListFilesRequest(path=str(raw))
+        req = ListFilesRequest(path=path)
     except (ValidationError, ValueError):
         return Reply(
-            text=f"⚠️ Ruta inválida: {raw!r}. Tiene que ser una ruta "
-            "absoluta (empezar con /), sin caracteres especiales ni '..'.",
+            text=f"⚠️ Ruta inválida: {raw!r}. Puede ser relativa a tus "
+            "corridas (Zr/bcc) o absoluta (/data/x), sin caracteres "
+            "especiales ni '..'.",
             ok=False,
         )
     result = ctx.cluster.list_directory(req.path)

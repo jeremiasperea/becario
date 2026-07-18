@@ -580,7 +580,7 @@ class TestCreateDirectory:
 
     @pytest.mark.parametrize(
         "evil",
-        ["/tmp/../etc", "relativa/pruebas", "/tmp/x; rm -rf /", "/tmp/$(id)"],
+        ["/tmp/../etc", "../fuera/del/workspace", "/tmp/x; rm -rf /", "/tmp/$(id)"],
     )
     def test_invalid_path_never_reaches_the_gateway(self, env, evil):
         service, router, factory, *_ = env
@@ -646,7 +646,7 @@ class TestListFiles:
 
     @pytest.mark.parametrize(
         "evil",
-        ["/tmp/../etc", "relativa/pruebas", "/tmp/x; rm -rf /", "/tmp/$(id)"],
+        ["/tmp/../etc", "../fuera/del/workspace", "/tmp/x; rm -rf /", "/tmp/$(id)"],
     )
     def test_invalid_path_never_reaches_the_gateway(self, env, evil):
         service, router, factory, *_ = env
@@ -1587,3 +1587,59 @@ class TestRouterDecisionLogging:
         router.next = RoutedRequest(intent=Intent.CHECK_STATUS, params={})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="estado")
         assert reply.text  # no explota sin decision_log
+
+
+class TestWorkspaceRelativePaths:
+    """Las rutas relativas se anclan en la base de corridas (workspace).
+
+    Motivo: el dominio exigía rutas absolutas y el usuario habla en
+    relativo ('dentro de Zr…'), así que el LLM quedaba forzado a inventar
+    prefijos absolutos — carpetas reales terminaron en /Zr y
+    /home/becario_runs, invisibles para el listado."""
+
+    def test_create_dir_relative_resolves_against_runs_base(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.CREATE_DIR, params={"destino_remoto": "Zr/bcc"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="dentro de Zr creá bcc"
+        )
+        assert factory.gateways["alice"].made_dirs == [
+            "/home/alice/becario_runs/Zr/bcc"
+        ]
+        assert reply.ok
+
+    def test_create_dir_absolute_passes_through(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.CREATE_DIR, params={"destino_remoto": "/data/proyectos/x"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="creala")
+        assert factory.gateways["alice"].made_dirs == ["/data/proyectos/x"]
+
+    def test_list_files_relative_resolves_against_runs_base(self, env):
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.LIST_FILES, params={"destino_remoto": "Zr"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mostrame Zr"
+        )
+        assert factory.gateways["alice"].listed_dirs == [
+            "/home/alice/becario_runs/Zr"
+        ]
+        assert "corrida_1" in reply.text
+
+    def test_relative_traversal_is_still_rejected(self, env):
+        # La resolución NO relaja la seguridad: el dominio valida la ruta
+        # final y un '..' la mata aunque venga disfrazado de relativa.
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.CREATE_DIR, params={"destino_remoto": "Zr/../../etc"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="creala"
+        )
+        assert "Ruta inválida" in reply.text
+        assert factory.gateways["alice"].made_dirs == []
