@@ -169,8 +169,7 @@ class BecarioService:
             return self._apply_edit(ctx, edit, text)
 
         started = time.monotonic()
-        plan = self._router.route(text)
-        plan = self._maybe_decompose(text, plan)
+        plan = self._route_message(text)
         latency = time.monotonic() - started
         logger.info(
             "routed plan steps=%s ssh_user=%s",
@@ -194,6 +193,43 @@ class BecarioService:
     # que diseñada: en mensajes largos el modelo arma bien la estructura
     # del plan pero omite formula/red_cristalina de los cálculos)
     # ------------------------------------------------------------------
+    # Marcadores baratos de pedido compuesto (coordinación/secuencia).
+    _COMPOUND_MARKERS = (" y ", " luego", " despué", " despue", ";")
+
+    def _route_message(self, text: str) -> Plan:
+        """Punto de entrada de ruteo. Los pedidos largos/compuestos van
+        DIRECTO a la descomposición: sobre input largo el `route()` de
+        schema grande hace timeout en CPU (medido: 300s vs 21s de
+        `decompose()`), y el reintento post-hoc nunca llega a dispararse
+        porque depende de un `route()` que ya falló. El resto sigue el
+        camino corto con `_maybe_decompose` como red de seguridad.
+
+        Un mensaje que parece compuesto NUNCA se rutea entero: si no se pudo
+        descomponer con confianza (p. ej. el plan recompuesto excede el tope
+        de 5 pasos de ADR-0006), se devuelve `UNKNOWN` — el despacho responde
+        con la ayuda — en vez de caer al `route()` que haría timeout."""
+        if self._looks_compound(text):
+            return self._decompose_plan(text) or Plan(
+                steps=[PlanStep(action=Intent.UNKNOWN)]
+            )
+        plan = self._router.route(text)
+        return self._maybe_decompose(text, plan)
+
+    @classmethod
+    def _looks_compound(cls, text: str) -> bool:
+        """Heurística barata para pedidos largos/compuestos. Conservadora
+        donde importa: un falso positivo es inocuo — `decompose()` devuelve
+        una sola instrucción y se rutea igual (ver `_decompose_plan`); solo
+        un pedido realmente compuesto justifica saltear el `route()`
+        directo. No pretende clasificar: solo decidir a quién preguntar
+        primero."""
+        words = text.split()
+        if len(words) >= 16:
+            return True
+        lowered = f" {text.lower()} "
+        markers = sum(lowered.count(m) for m in cls._COMPOUND_MARKERS)
+        return markers >= 1 and len(words) >= 10
+
     @staticmethod
     def _needs_decomposition(plan: Plan) -> bool:
         """Firma exacta del fallo medido: plan multi-paso con algún
@@ -205,29 +241,36 @@ class BecarioService:
             for s in plan.steps
         )
 
-    def _maybe_decompose(self, text: str, plan: Plan) -> Plan:
-        """Reintenta un plan defectuoso vía descomposición: el pedido se
-        parte en instrucciones simples auto-contenidas y cada una se rutea
-        por el camino corto (confiable). Ante CUALQUIER duda devuelve el
-        plan original — su repregunta es mejor que un plan inventado."""
-        if not self._needs_decomposition(plan):
-            return plan
+    def _decompose_plan(self, text: str) -> Optional[Plan]:
+        """Parte el pedido en instrucciones simples auto-contenidas y rutea
+        cada una por el camino corto (confiable). Devuelve el plan
+        recompuesto, o `None` si no se pudo descomponer con confianza (el
+        llamador decide el fallback). Un solo `parts` es válido: un mensaje
+        que parecía compuesto pero era simple se rutea como un paso."""
         parts = self._router.decompose(text)
         if not parts or len(parts) > 5:
-            return plan
+            return None
         steps = []
         for part in parts:
             steps.extend(self._router.route(part).steps)
         if not steps or len(steps) > 5:
-            return plan
+            return None
         try:
             new_plan = Plan(steps=steps)
         except (ValidationError, ValueError):
-            return plan
+            return None
         if self._needs_decomposition(new_plan):
-            return plan  # no mejoró: misma falla, mismo fallback
+            return None  # no mejoró: misma falla, el llamador hace fallback
         logger.info("plan descompuesto en %d instrucciones simples", len(parts))
         return new_plan
+
+    def _maybe_decompose(self, text: str, plan: Plan) -> Plan:
+        """Reintenta un plan defectuoso vía descomposición. Ante CUALQUIER
+        duda devuelve el plan original — su repregunta es mejor que un plan
+        inventado."""
+        if not self._needs_decomposition(plan):
+            return plan
+        return self._decompose_plan(text) or plan
 
     # ------------------------------------------------------------------
     # Registro de decisiones del router (materia prima del eval set)

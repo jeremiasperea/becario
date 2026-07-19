@@ -66,9 +66,11 @@ class FakeRouter:
         self.extract_edit_calls: list[tuple[str, str]] = []
         self.next_decomposition: list[str] = []
         self.decompose_calls: list[str] = []
+        self.route_calls: list[str] = []
         self.routes_queue: list[Plan] = []
 
     def route(self, user_text: str) -> Plan:
+        self.route_calls.append(user_text)
         if self.routes_queue:
             return self.routes_queue.pop(0)
         if self.next_plan is not None:
@@ -1766,3 +1768,100 @@ class TestDecomposition:
         ])
         service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ok")
         assert router.decompose_calls == []
+
+    def test_compound_message_decomposes_without_routing_full_text(self, env):
+        # Un mensaje largo/compuesto NUNCA debe pasar por el route() de
+        # schema grande (hace timeout en CPU): va directo a decompose.
+        service, router, factory, *_ = env
+        compound = (
+            "creá la carpeta ZrO2 y relajá el bulk de ZrO2 en las redes "
+            "cristalinas rocksalt, zincblende y fluorite, cada una en su carpeta"
+        )
+        router.next_decomposition = [
+            "creá la carpeta ZrO2",
+            "relajá el bulk de Zr bcc",
+            "relajá el bulk de Zr fcc",
+        ]
+        router.routes_queue = [
+            Plan(steps=[PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2"})]),
+            Plan(steps=[PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "bcc"})]),
+            Plan(steps=[PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "fcc"})]),
+        ]
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text=compound
+        )
+        assert router.decompose_calls == [compound]
+        # El mensaje completo NO se ruteó: solo las instrucciones simples.
+        assert compound not in router.route_calls
+        assert router.route_calls == router.next_decomposition
+        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/ZrO2"]
+        assert len(reply.followups) == 2
+
+    def test_compound_but_undecomposable_never_routes_full_text(self, env):
+        # Parece compuesto pero decompose no pudo: NO se rutea el texto
+        # entero (evita el timeout del schema grande); responde con la ayuda.
+        service, router, factory, *_ = env
+        compound = "relajá el bulk de W y también minimizá sus parámetros de red por favor"
+        router.next_decomposition = []
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text=compound)
+        assert router.decompose_calls == [compound]
+        assert compound not in router.route_calls  # jamás el route directo
+        assert reply.text == HELP_TEXT
+
+    def test_over_cap_compound_returns_help_not_timeout(self, env):
+        # El pedido de 3 redes recompone a 7 pasos (> 5, ADR-0006): en vez
+        # de rutear el mega-mensaje (timeout), responde con la ayuda.
+        service, router, factory, *_ = env
+        compound = (
+            "creá la carpeta ZrO2 y relajá el bulk de ZrO2 en las redes "
+            "cristalinas rocksalt, zincblende y fluorite, cada una en su carpeta"
+        )
+        router.next_decomposition = [
+            "creá la carpeta ZrO2",
+            "relajá el bulk de Zr rocksalt en ZrO2/rocksalt",
+            "relajá el bulk de Zr zincblende en ZrO2/zincblende",
+            "relajá el bulk de Zr fluorite en ZrO2/fluorite",
+        ]
+        # Cada instrucción de cálculo rutea a [calc, crear_directorio]: 1 + 3*2 = 7.
+        router.routes_queue = [
+            Plan(steps=[PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2"})]),
+            Plan(steps=[
+                PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "rocksalt"}),
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2/rocksalt"}),
+            ]),
+            Plan(steps=[
+                PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "zincblende"}),
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2/zincblende"}),
+            ]),
+            Plan(steps=[
+                PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "fluorite"}),
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "ZrO2/fluorite"}),
+            ]),
+        ]
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text=compound)
+        assert compound not in router.route_calls
+        assert reply.text == HELP_TEXT
+
+
+class TestCompoundHeuristic:
+    """`_looks_compound` decide a quién preguntar primero, no clasifica.
+    Conservadora donde importa: un falso positivo es inocuo (decompose
+    devuelve una instrucción y se rutea igual)."""
+
+    @pytest.mark.parametrize("text", [
+        "creá la carpeta ZrO2 y relajá el bulk de ZrO2 en las redes "
+        "cristalinas rocksalt, zincblende y fluorite, cada una en su carpeta",
+        "creá la carpeta W y relajá el bulk de W en las redes bcc, fcc y hcp",
+        "generá el POSCAR de Si diamond y después creá la carpeta runs",
+    ])
+    def test_compound_messages_are_flagged(self, text):
+        assert BecarioService._looks_compound(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "relajá el bulk de W con red cristalina bcc",
+        "curva de convergencia de ENCUT para Zr hcp de 250 a 450",
+        "listá mi home",
+        "mostrame el CONTCAR",
+    ])
+    def test_simple_messages_are_not_flagged(self, text):
+        assert BecarioService._looks_compound(text) is False
