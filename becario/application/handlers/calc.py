@@ -6,6 +6,7 @@ primer argumento `svc` y conservan el comportamiento original sin cambios.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -83,7 +84,21 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     return Reply(text=f"🔬 Estructura generada:\n{result.describe()}{uploaded_note}")
 
 
-def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+@dataclass
+class _PreparedCalc:
+    """Resultado de preparar un cálculo (generar + subir + armar el envío),
+    listo para stagear una confirmación (camino simple) o para enviar de una
+    (paso de un batch confirmado)."""
+
+    payload: dict          # SlurmJobRequest.model_dump() + workflow/fingerprint/run_dir
+    description: str        # detalle humano del envío
+    duplicate: str         # aviso de duplicado (vacío si no hay)
+
+
+def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest | Reply":
+    """Valida y arma el `VaspCalcRequest` desde los parámetros crudos. SIN
+    I/O al cluster: sirve tanto para el preview del batch (describir sin
+    tocar nada) como para el camino que después genera y sube."""
     if svc._calc_inputs is None:
         return Reply(
             text="⚠️ La preparación de cálculos VASP no está configurada en este bot."
@@ -123,7 +138,7 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
-        req = VaspCalcRequest(
+        return VaspCalcRequest(
             formula=str(formula),
             crystal=params.get("red_cristalina"),
             lattice_a=params.get("parametro_red"),
@@ -139,6 +154,22 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     except (ValidationError, ValueError, TypeError) as exc:
         return Reply(text=f"⚠️ Parámetros de cálculo inválidos:\n{exc}")
 
+
+def describe_calc_request(req: "VaspCalcRequest") -> str:
+    """Línea de preview de un cálculo SIN tocar el cluster (para el batch)."""
+    crystal = f" {req.crystal}" if req.crystal else ""
+    return (
+        f"🧪 {req.formula}{crystal} — {req.calc_kind.value} "
+        f"(partición {req.partition}, {req.nodes} nodo(s), {req.time_limit})"
+    )
+
+
+def _generate_and_upload(
+    svc: "BecarioService", ctx: _Ctx, req: "VaspCalcRequest",
+) -> "_PreparedCalc | Reply":
+    """Genera los inputs, resuelve POTCAR, sube la corrida al cluster y arma
+    el envío. TODO el I/O al cluster vive acá. Devuelve un `_PreparedCalc` o
+    un `Reply` de error (fail-closed)."""
     try:
         result = svc._calc_inputs.generate(req)
     except Exception as exc:  # StructureBuildError y afines
@@ -181,7 +212,7 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
 
     try:
         slurm_req = SlurmJobRequest(
-            job_name=f"{req.formula}_{calc_kind.value}",
+            job_name=f"{req.formula}_{req.calc_kind.value}",
             partition=req.partition,
             nodes=req.nodes,
             time_limit=req.time_limit,
@@ -193,21 +224,34 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     fingerprint = _calc_fingerprint(req)
     duplicate = duplicate_note(svc, ctx.user_id, slurm_req.job_name, fingerprint)
 
-    workflow = "encut_scan" if calc_kind is CalcKind.ENCUT_SCAN else ""
     payload = slurm_req.model_dump()
-    payload["workflow"] = workflow
+    payload["workflow"] = "encut_scan" if req.calc_kind is CalcKind.ENCUT_SCAN else ""
     payload["calc_fingerprint"] = fingerprint
     payload["run_dir"] = remote_run_dir
+    description = (
+        f"🧪 Enviar cálculo VASP ({req.calc_kind.value}, cuenta "
+        f"{ctx.identity.ssh_user}):\n{result.describe()}\n"
+        f"📂 {remote_run_dir}\n{slurm_req.describe()}"
+    )
+    return _PreparedCalc(payload=payload, description=description, duplicate=duplicate)
+
+
+def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    """Camino de un solo cálculo (ADR-0006): genera y sube los inputs, y deja
+    el ENVÍO pendiente de confirmación individual — comportamiento sin cambios."""
+    req = _build_calc_request(svc, params)
+    if isinstance(req, Reply):
+        return req
+    prepared = _generate_and_upload(svc, ctx, req)
+    if isinstance(prepared, Reply):
+        return prepared
+
     action = PendingAction(
         chat_id=ctx.chat_id,
         requester_id=ctx.user_id,
         intent=Intent.SUBMIT_SLURM,
-        description=(
-            f"🧪 Enviar cálculo VASP ({calc_kind.value}, cuenta "
-            f"{ctx.identity.ssh_user}):\n{result.describe()}\n"
-            f"📂 {remote_run_dir}\n{slurm_req.describe()}"
-        ),
-        payload=payload,
+        description=prepared.description,
+        payload=prepared.payload,
         request_intent=Intent.PREPARE_CALC,
         request_params=dict(params),
     )
@@ -218,16 +262,38 @@ def prepare_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     token = svc._confirmations.put(plan)
     # El aviso de duplicado va PRIMERO: al final de un mensaje largo
     # pasa desapercibido.
-    warning_block = f"{duplicate}\n\n" if duplicate else ""
+    warning_block = f"{prepared.duplicate}\n\n" if prepared.duplicate else ""
     return Reply(
         text=(
             f"{warning_block}✅ Inputs generados y subidos al cluster.\n\n"
-            f"⚠️ ¿Confirmás el envío?\n\n{action.description}"
+            f"⚠️ ¿Confirmás el envío?\n\n{prepared.description}"
         ),
         needs_confirmation=True,
         confirmation_token=token,
         allow_modify=True,
     )
+
+
+def execute_calc(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    """Paso de cálculo de un batch YA confirmado (ADR-0007): genera, sube y
+    ENVÍA de una, sin confirmación intermedia (la del batch ya la cubrió).
+    Fail-closed: cualquier error corta el batch (`ok=False`)."""
+    from . import jobs  # import local: evita ciclo handlers <-> handlers
+
+    req = _build_calc_request(svc, params)
+    if isinstance(req, Reply):
+        return Reply(text=req.text, ok=False)
+    prepared = _generate_and_upload(svc, ctx, req)
+    if isinstance(prepared, Reply):
+        return Reply(text=prepared.text, ok=False)
+
+    action = PendingAction(
+        chat_id=ctx.chat_id, requester_id=ctx.user_id,
+        intent=Intent.SUBMIT_SLURM, description=prepared.description,
+        payload=prepared.payload,
+    )
+    ok, text = jobs.execute_submit(svc, ctx, action)
+    return Reply(text=text, ok=ok)
 
 
 def duplicate_note(svc: "BecarioService", owner_id: int, job_name: str, fingerprint: str) -> str:

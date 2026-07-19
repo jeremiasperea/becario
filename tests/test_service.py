@@ -1659,29 +1659,13 @@ class TestWorkspaceRelativePaths:
 
 
 class TestCalcTailIndividualConfirmations:
-    """Un plan que termina en `preparar_calculo` (uno o varios) materializa
-    el prefijo y emite UNA confirmación individual por cálculo (followups),
-    cada una con su propio token — decisión de producto: un botón por
-    cálculo, nunca N envíos con un solo botón."""
+    """Un plan que termina en UN solo `preparar_calculo` materializa el
+    prefijo y emite su confirmación individual (camino de ADR-0006). Con
+    VARIOS cálculos ya no hay N followups: es un batch (ADR-0007), ver
+    `TestBatchConfirmation`."""
 
     def _plan(self, *steps):
         return Plan(steps=[PlanStep(action=a, parametros=p) for a, p in steps])
-
-    def test_prefix_materializes_and_each_calc_gets_own_confirmation(self, env):
-        service, router, factory, *_ = env
-        router.next_plan = self._plan(
-            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
-            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
-            (Intent.PREPARE_CALC, {"formula": "W", "red_cristalina": "bcc"}),
-        )
-        reply = service.handle_text(
-            chat_id=1, user_id=ALICE.telegram_user_id, text="creá W y corré Zr y Si"
-        )
-        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/W"]
-        assert len(reply.followups) == 2
-        tokens = {f.confirmation_token for f in reply.followups}
-        assert all(f.needs_confirmation for f in reply.followups)
-        assert len(tokens) == 2  # tokens distintos: confirmaciones independientes
 
     def test_failed_prefix_omits_calcs(self, env):
         service, router, factory, *_ = env
@@ -1724,7 +1708,10 @@ class TestDecomposition:
             PlanStep(action=Intent.PREPARE_CALC, parametros={"tipo_calculo": "relajacion"}),
         ])
 
-    def test_incomplete_multicalc_plan_is_decomposed_and_rerouted(self, env):
+    def test_incomplete_multicalc_plan_is_decomposed_then_batched(self, env):
+        # El plan incompleto se descompone y recompone con material; al ser
+        # multi-cálculo, desemboca en UNA confirmación de batch (ADR-0007) —
+        # nada se materializa hasta confirmar.
         service, router, factory, *_ = env
         router.next_plan = self._incomplete_plan()
         router.next_decomposition = [
@@ -1744,21 +1731,25 @@ class TestDecomposition:
             chat_id=1, user_id=ALICE.telegram_user_id, text="pedido largo de ZrO2"
         )
         assert router.decompose_calls == ["pedido largo de ZrO2"]
-        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/ZrO2"]
-        assert len(reply.followups) == 2
-        assert all(f.needs_confirmation for f in reply.followups)
+        assert factory.gateways["alice"].made_dirs == []  # nada se ejecutó
+        assert reply.followups == ()
+        assert reply.needs_confirmation and reply.confirmation_token
+        assert "Batch" in reply.text
 
-    def test_failed_decomposition_falls_back_to_original_plan(self, env):
+    def test_failed_decomposition_of_incomplete_plan_is_fail_closed(self, env):
+        # No se pudo descomponer y el plan original es multi-cálculo sin
+        # material: al ir a batch, el cálculo inválido lo aborta SIN efectos
+        # (mejor que materializar a medias).
         service, router, factory, *_ = env
         router.next_plan = self._incomplete_plan()
         router.next_decomposition = []  # el descompositor no pudo
         reply = service.handle_text(
             chat_id=1, user_id=ALICE.telegram_user_id, text="pedido largo"
         )
-        # Plan original: prefijo materializa y los cálculos incompletos
-        # repreguntan (el comportamiento previo, sin romper nada).
-        assert len(reply.followups) == 2
-        assert not any(f.needs_confirmation for f in reply.followups)
+        assert factory.gateways["alice"].made_dirs == []  # nada se ejecutó
+        assert reply.followups == ()
+        assert not reply.needs_confirmation
+        assert "material" in reply.text  # repregunta la fórmula
 
     def test_complete_plans_never_trigger_decomposition(self, env):
         service, router, factory, *_ = env
@@ -1794,8 +1785,10 @@ class TestDecomposition:
         # El mensaje completo NO se ruteó: solo las instrucciones simples.
         assert compound not in router.route_calls
         assert router.route_calls == router.next_decomposition
-        assert factory.gateways["alice"].made_dirs == ["/home/alice/becario_runs/ZrO2"]
-        assert len(reply.followups) == 2
+        # Multi-cálculo -> batch: nada se materializa hasta confirmar.
+        assert factory.gateways["alice"].made_dirs == []
+        assert reply.followups == ()
+        assert reply.needs_confirmation and reply.confirmation_token
 
     def test_compound_but_undecomposable_never_routes_full_text(self, env):
         # Parece compuesto pero decompose no pudo: NO se rutea el texto
@@ -1808,9 +1801,10 @@ class TestDecomposition:
         assert compound not in router.route_calls  # jamás el route directo
         assert reply.text == HELP_TEXT
 
-    def test_over_cap_compound_returns_help_not_timeout(self, env):
-        # El pedido de 3 redes recompone a 7 pasos (> 5, ADR-0006): en vez
-        # de rutear el mega-mensaje (timeout), responde con la ayuda.
+    def test_three_lattice_compound_becomes_batch(self, env):
+        # El pedido de 3 redes recompone a 7 pasos: entra en el cap de 11 y,
+        # al ser multi-cálculo, sale como UNA confirmación de batch (ADR-0007)
+        # sin routear el mega-mensaje ni materializar nada.
         service, router, factory, *_ = env
         compound = (
             "creá la carpeta ZrO2 y relajá el bulk de ZrO2 en las redes "
@@ -1840,7 +1834,56 @@ class TestDecomposition:
         ]
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text=compound)
         assert compound not in router.route_calls
-        assert reply.text == HELP_TEXT
+        assert factory.gateways["alice"].made_dirs == []  # nada se ejecutó
+        assert reply.followups == ()
+        assert reply.needs_confirmation and reply.confirmation_token
+        assert "Batch" in reply.text
+
+
+class TestBatchConfirmation:
+    """Batch (ADR-0007): un plan multi-cálculo se confirma ENTERO. Nada toca
+    el cluster hasta confirmar; al confirmar se ejecuta todo en orden con
+    corte al primer fallo (misma semántica sin-rollback de ADR-0006)."""
+
+    def _batch_plan(self):
+        return Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W", "red_cristalina": "bcc"}),
+        ])
+
+    def test_nothing_runs_until_confirmed_then_all_in_order(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = self._batch_plan()
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+        gw = factory.gateways["alice"]
+        # Preview: nada tocó el cluster.
+        assert gw.made_dirs == [] and gw.submitted == [] and gw.uploaded_dirs == []
+        assert reply.needs_confirmation and reply.confirmation_token
+        # Confirmar ejecuta todo: crea la carpeta y encola los 2 trabajos.
+        done = service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert gw.made_dirs == ["/home/alice/becario_runs/runs"]
+        assert len(gw.submitted) == 2
+        assert done.ok
+
+    def test_stops_on_first_failure(self, env):
+        service, router, factory, *_ = env
+        gw = factory.gateways.setdefault("alice", FakeCluster("alice"))
+        gw.make_directory_result = CommandResult(ok=False, stderr="disco lleno")
+        router.next_plan = self._batch_plan()
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+        done = service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        # El mkdir falló: los cálculos quedan omitidos, sin envíos.
+        assert gw.submitted == []
+        assert "omitido" in done.text and not done.ok
+
+    def test_reject_executes_nothing(self, env):
+        service, router, factory, *_ = env
+        router.next_plan = self._batch_plan()
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+        service.reject(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        gw = factory.gateways["alice"]
+        assert gw.made_dirs == [] and gw.submitted == []
 
 
 class TestCompoundHeuristic:

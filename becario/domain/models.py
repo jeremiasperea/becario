@@ -550,7 +550,17 @@ class RoutedRequest:
 # Planes multi-paso (composición de intenciones)
 # ---------------------------------------------------------------------------
 
-_MAX_PLAN_STEPS = 5  # ver justificación en docs/decisions/0006-plan-then-execute.md
+# El cap ya no acota el blast-radius del plan directo (eso lo hace ahora la
+# capa de aplicación: nada que supere la composición chica se auto-ejecuta,
+# va a confirmación completa de batch — ver ADR-0007). Queda como tope
+# estructural: el descompositor emite <=5 instrucciones y cada una expande a
+# <=2 pasos, así que 11 acota una descomposición desbocada sin recortar un
+# batch legítimo. El router directo sigue capado en 5 (RouterDecision).
+_MAX_PLAN_STEPS = 11
+# Umbral de auto-ejecución: un plan compuesto de hasta esta cantidad de pasos
+# con a lo sumo un cálculo se materializa en el acto (camino de ADR-0006);
+# por encima, o con varios cálculos, va a confirmación de batch (ADR-0007).
+_MAX_AUTOMATERIALIZE_STEPS = 5
 
 
 class PlanStep(BaseModel):
@@ -749,6 +759,11 @@ class PendingPlan:
     # `RouterDecisionLog`): permite etiquetar el ruteo con el desenlace
     # humano (confirmar/cancelar). None si el log está apagado.
     decision_id: Optional[int] = None
+    # Batch (ADR-0007): si es True, confirmar ejecuta TODOS los pasos en
+    # orden (nada se materializó antes), en vez de solo la cola destructiva
+    # final. `payload` de cada paso lleva sus parámetros crudos para ejecutar
+    # recién al confirmar.
+    execute_all: bool = False
 
     def expired(self, ttl_seconds: float) -> bool:
         return (time.time() - self.created_at) > ttl_seconds
