@@ -27,6 +27,7 @@ from typing import Callable, Optional
 from pydantic import ValidationError
 
 from ..domain.models import (
+    _MAX_AUTOMATERIALIZE_STEPS,
     Intent,
     PendingAction,
     PendingPlan,
@@ -253,9 +254,12 @@ class BecarioService:
         steps = []
         for part in parts:
             steps.extend(self._router.route(part).steps)
-        if not steps or len(steps) > 5:
+        if not steps:
             return None
         try:
+            # El cap estructural (11, ADR-0007) lo aplica `Plan`; un batch
+            # más grande cae acá como plan inválido -> None (el llamador
+            # responde la ayuda en vez de tocar el cluster).
             new_plan = Plan(steps=steps)
         except (ValidationError, ValueError):
             return None
@@ -314,7 +318,73 @@ class BecarioService:
                 return Reply(text=HELP_TEXT)
             return handler(ctx, step.parametros)
 
+        if self._is_batch_plan(plan):
+            return self._prepare_batch(ctx, plan)
         return self._run_composite_plan(ctx, plan)
+
+    @classmethod
+    def _is_batch_plan(cls, plan: Plan) -> bool:
+        """Un plan es BATCH (ADR-0007) si excede la composición chica que se
+        auto-materializa —— más de `_MAX_AUTOMATERIALIZE_STEPS` pasos O varios
+        cálculos —— y está formado SOLO por pasos materializables y
+        `preparar_calculo` (sin cola realmente destructiva). Estos planes
+        salen del descompositor; se confirman enteros antes de tocar el
+        cluster, así que nada se auto-ejecuta y el cap deja de gatear el
+        blast-radius (lo hace la confirmación)."""
+        n_calc = sum(1 for s in plan.steps if s.action is Intent.PREPARE_CALC)
+        if len(plan.steps) <= _MAX_AUTOMATERIALIZE_STEPS and n_calc <= 1:
+            return False
+        return all(
+            s.action in cls._MATERIALIZABLE_STEP_INTENTS or s.action is Intent.PREPARE_CALC
+            for s in plan.steps
+        )
+
+    @staticmethod
+    def _describe_batch_step(step: PlanStep) -> str:
+        if step.action is Intent.CREATE_DIR:
+            return f"📁 crear carpeta {step.parametros.get('destino_remoto', '?')}"
+        return f"• {step.action.value}"
+
+    def _prepare_batch(self, ctx: _Ctx, plan: Plan) -> Reply:
+        """Batch (ADR-0007): valida y describe cada paso SIN tocar el cluster,
+        stagea el plan entero con una sola confirmación. Recién al confirmar
+        se ejecuta todo. Fail-closed: un cálculo inválido aborta el batch sin
+        efectos."""
+        actions: list[PendingAction] = []
+        preview: list[str] = []
+        n_calc = 0
+        for i, step in enumerate(plan.steps, start=1):
+            if step.action is Intent.PREPARE_CALC:
+                req = calc._build_calc_request(self, step.parametros)
+                if isinstance(req, Reply):
+                    return req  # cálculo inválido: nada se ejecuta
+                n_calc += 1
+                line = calc.describe_calc_request(req)
+            else:
+                line = self._describe_batch_step(step)
+            preview.append(f"{i}. {line}")
+            actions.append(PendingAction(
+                chat_id=ctx.chat_id, requester_id=ctx.user_id,
+                intent=step.action, description=line, payload=dict(step.parametros),
+            ))
+        pending = PendingPlan(
+            chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=actions,
+            decision_id=ctx.decision_id, execute_all=True,
+        )
+        token = self._confirmations.put(pending)
+        header = (
+            f"📋 Batch de {len(plan.steps)} pasos"
+            + (f" · {n_calc} trabajo(s) SLURM al confirmar" if n_calc else "")
+            + ":"
+        )
+        return Reply(
+            text=(
+                f"{header}\n" + "\n".join(preview)
+                + "\n\n⚠️ Nada se ejecutó todavía. ¿Confirmás el batch entero?"
+            ),
+            needs_confirmation=True,
+            confirmation_token=token,
+        )
 
     def _intent_handlers(self) -> dict:
         return {
@@ -622,6 +692,11 @@ class BecarioService:
         # del router).
         self._set_decision_outcome(plan.decision_id, "confirmed")
 
+        # Batch (ADR-0007): nada se materializó antes, así que confirmar
+        # ejecuta TODOS los pasos en orden (stop-on-failure).
+        if plan.execute_all:
+            return self._execute_batch(plan, requester_id, identity, cluster)
+
         # El paso destructivo (si existe) es siempre el último del plan
         # (`Plan._v_destructive_last`); en un plan de un solo paso es
         # indistinguible de la `PendingAction` que confirmaba antes.
@@ -632,6 +707,40 @@ class BecarioService:
             return Reply(text="⚠️ Acción pendiente desconocida.")
         _ok, text = executor(ctx, action)
         return Reply(text=text)
+
+    def _execute_batch(
+        self, plan: PendingPlan, requester_id: int, identity, cluster,
+    ) -> Reply:
+        """Ejecuta un batch confirmado, EN ORDEN y con corte al primer fallo
+        (misma semántica sin-rollback de ADR-0006, ahora sobre el plan
+        entero). Cada paso se reporta ✅/❌/⏸."""
+        ctx = _Ctx(
+            chat_id=plan.steps[0].chat_id, user_id=requester_id,
+            identity=identity, cluster=cluster,
+        )
+        lines: list[str] = []
+        ok_all = True
+        for i, action in enumerate(plan.steps, start=1):
+            if not ok_all:
+                lines.append(f"{i}. ⏸ {action.description} — omitido")
+                continue
+            reply = self._execute_batch_step(ctx, action)
+            # El texto del handler ya trae su propio ✅/🚀/⚠️; solo lo
+            # numeramos (evita duplicar el mark).
+            lines.append(f"{i}. {reply.text}")
+            ok_all = ok_all and reply.ok
+        return Reply(text="\n".join(lines), ok=ok_all)
+
+    def _execute_batch_step(self, ctx: _Ctx, action: PendingAction) -> Reply:
+        """Ejecuta un paso de batch al confirmar: `preparar_calculo` genera,
+        sube y ENVÍA de una (la confirmación del batch ya lo avaló); el resto
+        usa su handler normal, que materializa en el acto."""
+        if action.intent is Intent.PREPARE_CALC:
+            return calc.execute_calc(self, ctx, action.payload)
+        handler = self._intent_handlers().get(action.intent)
+        if handler is None:  # pragma: no cover - defensivo
+            return Reply(text=f"paso '{action.intent.value}' no ejecutable", ok=False)
+        return handler(ctx, action.payload)
 
     def reject(self, token: str, requester_id: int) -> Reply:
         plan = self._confirmations.peek(token)

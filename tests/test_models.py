@@ -261,12 +261,13 @@ class TestPlan:
             )
 
     def test_too_many_steps_rejected(self):
+        # Cap estructural = 11 (ADR-0007): acota una descomposición desbocada.
         with pytest.raises(ValidationError):
-            Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(6)])
+            Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(12)])
 
     def test_max_steps_is_accepted(self):
-        plan = Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(5)])
-        assert len(plan.steps) == 5
+        plan = Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(11)])
+        assert len(plan.steps) == 11
 
     def test_empty_steps_rejected(self):
         with pytest.raises(ValidationError):
