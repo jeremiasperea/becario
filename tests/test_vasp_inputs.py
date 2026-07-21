@@ -61,6 +61,61 @@ class TestSingleCalc:
         assert "a=3.230" in result.cell_summary
 
 
+class TestIncarQualityTags:
+    def test_common_quality_tags_present(self, generator):
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        for tag in ("ADDGRID = .TRUE.", "LASPH = .TRUE.", "LMAXMIX = 6",
+                    "ALGO = Fast", "NELMIN = 10"):
+            assert tag in incar
+
+    def test_lreal_false_not_auto(self, generator):
+        """Desviación deliberada de la referencia: celdas chicas => .FALSE."""
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "LREAL = .FALSE." in incar
+
+    def test_metal_smearing_not_tetrahedron(self, generator):
+        """ISMEAR=1 (metales), nunca -5 al relajar."""
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "ISMEAR = 1" in incar
+        assert "ISMEAR = -5" not in incar
+
+
+class TestNbands:
+    def test_computed_from_zval_table(self, generator):
+        """Zr hcp: 2 átomos * ZVAL 12 = 24 e-; NBANDS = ceil(24/2 * 1.2) = 15."""
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NBANDS = 15" in incar
+
+    def test_absent_when_element_not_in_table(self, generator):
+        """W (W_pv) todavía no está en la tabla ZVAL => VASP calcula NBANDS."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NBANDS" not in incar
+
+    def test_explicit_override_wins(self, generator):
+        """Un NBANDS pedido a mano se respeta aun sin ZVAL del elemento."""
+        req = VaspCalcRequest(formula="W", nbands=200)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NBANDS = 200" in incar
+
+
+class TestIsif:
+    def test_relax_override_relaxes_ions_only(self, generator):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, isif=2)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "ISIF = 2" in incar
+
+    def test_static_ignores_isif(self, generator):
+        """ISIF no tiene sentido con NSW=0: no se emite ni forzándolo."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, isif=3)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "ISIF" not in incar
+
+
 class TestEncutScan:
     def test_scan_creates_one_subdir_per_point(self, generator):
         req = VaspCalcRequest(

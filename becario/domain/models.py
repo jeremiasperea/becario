@@ -428,6 +428,15 @@ class VaspCalcRequest(BaseModel):
     encut: int = Field(default=520, ge=100, le=1500)  # eV
     kpoints: Optional[tuple[int, int, int]] = None  # None => grilla automática
     encut_values: Optional[list[int]] = None  # solo para ENCUT_SCAN
+    # ISIF: qué relaja la corrida de relajación. None => default por tipo de
+    # cálculo (RELAX usa 3: iones + forma + volumen). Se puede pedir 2 para
+    # relajar solo iones (típico en slabs/interfaces). Solo tiene efecto con
+    # NSW>0, así que el generador lo emite únicamente en RELAX.
+    isif: Optional[int] = Field(default=None, ge=0, le=7)
+    # NBANDS: None => lo calcula el generador a partir del conteo de electrones
+    # (tabla ZVAL) o, si no puede, lo deja a criterio de VASP. Se puede forzar
+    # un número mayor cuando hacen falta bandas vacías (DOS, estados desocupados).
+    nbands: Optional[int] = Field(default=None, ge=1, le=100000)
     partition: str = Field(default="default")
     nodes: int = Field(default=1, ge=1, le=64)
     time_limit: str = Field(default="01:00:00")
