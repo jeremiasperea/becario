@@ -67,13 +67,14 @@ _INCAR_BY_KIND = {
 # Electrones de valencia (ZVAL) por elemento, para estimar NBANDS por sistema.
 # CLAVE: cada valor corresponde al POTCAR EXACTO que el cluster concatena para
 # ese elemento (ver `_POTCAR_VARIANTS` en services: prueba `_sv`, `_pv`, `""`
-# y usa el primero que existe). Estos valores se leyeron de POTCAR reales, NO
-# de memoria: Zr -> PAW_PBE Zr_sv (ZVAL=12), O -> PAW_PBE O (ZVAL=6).
-# Si en el cluster cambia la variante disponible para un elemento, hay que
-# actualizar su ZVAL acá. Un elemento ausente => NBANDS lo decide VASP.
+# y usa el primero que existe). Estos valores se leyeron de POTCAR reales
+# (potpaw_PBE), NO de memoria. Si en el cluster cambia la variante disponible
+# para un elemento, hay que actualizar su ZVAL acá. Un elemento ausente =>
+# NBANDS lo decide VASP.
 _ZVAL: dict[str, int] = {
-    "Zr": 12,  # Zr_sv
-    "O": 6,    # O
+    "Zr": 12,  # resuelve a Zr_sv
+    "O": 6,    # resuelve a O
+    "W": 12,   # sin W_sv en potpaw_PBE => resuelve a W_pv
 }
 
 # Margen de bandas vacías sobre el mínimo ocupado (NELECT/2). Holgado a

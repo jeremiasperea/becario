@@ -91,14 +91,14 @@ class TestNbands:
         assert "NBANDS = 15" in incar
 
     def test_absent_when_element_not_in_table(self, generator):
-        """W (W_pv) todavía no está en la tabla ZVAL => VASP calcula NBANDS."""
-        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC)
+        """Un elemento sin ZVAL en la tabla => VASP calcula NBANDS."""
+        req = VaspCalcRequest(formula="Al", crystal="fcc", calc_kind=CalcKind.STATIC)
         incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
         assert "NBANDS" not in incar
 
     def test_explicit_override_wins(self, generator):
         """Un NBANDS pedido a mano se respeta aun sin ZVAL del elemento."""
-        req = VaspCalcRequest(formula="W", nbands=200)
+        req = VaspCalcRequest(formula="Al", crystal="fcc", nbands=200)
         incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
         assert "NBANDS = 200" in incar
 
