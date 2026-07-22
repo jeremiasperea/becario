@@ -44,6 +44,7 @@ from ..domain.ports import (
     JobTracker,
     RouterDecisionLog,
     StructureBuilder,
+    StructureProvider,
     UserRegistry,
 )
 from .context import Reply, _Ctx
@@ -124,6 +125,8 @@ class BecarioService:
         calc_runs: Optional[CalcRunRepository] = None,
         edit_ttl_seconds: float = 600.0,
         decision_log: Optional[RouterDecisionLog] = None,
+        structure_provider: Optional[StructureProvider] = None,
+        mp_api_key: str = "",
     ) -> None:
         self._router = router
         self._registry = registry
@@ -137,6 +140,8 @@ class BecarioService:
         self._remote_base = remote_base.rstrip("/")
         self._calc_runs = calc_runs
         self._decision_log = decision_log
+        self._structure_provider = structure_provider
+        self._mp_api_key = mp_api_key
         # Modificaciones pendientes por usuario (en memoria, con TTL: si se
         # reinicia el bot simplemente se vuelve a pedir el cálculo).
         self._edit_ttl = edit_ttl_seconds

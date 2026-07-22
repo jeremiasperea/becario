@@ -109,6 +109,23 @@ def is_plausible_formula(formula: str) -> bool:
     return True
 
 
+def elements_of(formula: str) -> list[str]:
+    """Símbolos de elemento (en orden de aparición, sin repetir) de una
+    fórmula. 'Fe2O3' -> ['Fe', 'O']; 'W' -> ['W']. Sirve para distinguir un
+    elemento simple (ASE) de un compuesto (Materials Project)."""
+    out: list[str] = []
+    pos = 0
+    while pos < len(formula):
+        match = _ELEMENT_TOKEN_RE.match(formula, pos)
+        if not match:
+            break
+        symbol = match.group(1)
+        if symbol not in out:
+            out.append(symbol)
+        pos = match.end()
+    return out
+
+
 def _validate_remote_dir_path(v: str) -> str:
     """Política única para directorios remotos: ruta absoluta, sin
     metacaracteres de shell y sin '..'. La comparten `RemoteDirRequest`
