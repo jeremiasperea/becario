@@ -12,10 +12,12 @@ from becario.config import Settings
 from becario.domain.models import (
     StructureAlternative,
     StructureQuery,
+    StructureRequest,
     StructureResolution,
     StructureResolutionError,
     StructureResolutionReason,
     StructureSource,
+    VaspCalcRequest,
 )
 from becario.domain.ports import StructureProvider
 
@@ -101,6 +103,35 @@ class TestFakeProvider:
         )
         assert out.formula == "Fe2O3"
         assert out.alternatives[0].mp_id == "mp-1234"
+
+
+class TestRequestMpFields:
+    def test_vasp_request_defaults_are_inert(self):
+        req = VaspCalcRequest(formula="Zr")
+        assert req.mp_id is None
+        assert req.source is StructureSource.AUTO
+
+    def test_vasp_request_accepts_mp_id_and_source(self):
+        req = VaspCalcRequest(formula="Fe2O3", mp_id="mp-19770", source="mp")
+        assert req.mp_id == "mp-19770"
+        assert req.source is StructureSource.MP
+
+    def test_vasp_request_rejects_bad_mp_id(self):
+        with pytest.raises(ValueError):
+            VaspCalcRequest(formula="Fe2O3", mp_id="19770")
+
+    def test_vasp_request_rejects_bad_source(self):
+        with pytest.raises(ValueError):
+            VaspCalcRequest(formula="Fe2O3", source="materials-project")
+
+    def test_structure_request_accepts_mp_fields(self):
+        req = StructureRequest(formula="Fe2O3", mp_id="mp-19770", source="mp")
+        assert req.mp_id == "mp-19770"
+        assert req.source is StructureSource.MP
+
+    def test_structure_request_rejects_bad_mp_id(self):
+        with pytest.raises(ValueError):
+            StructureRequest(formula="Fe2O3", mp_id="xx-1")
 
 
 class TestConfigMpApiKey:
