@@ -11,9 +11,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+if TYPE_CHECKING:  # solo para anotar; el dominio no importa ASE en runtime
+    from ase import Atoms
 
 # ---------------------------------------------------------------------------
 # Intenciones
@@ -553,6 +556,119 @@ class RoutedRequest:
 
     intent: Intent
     params: dict
+
+
+# ---------------------------------------------------------------------------
+# Fuente de estructura cristalina (ASE local vs Materials Project)
+# ---------------------------------------------------------------------------
+
+# Id de material de Materials Project: 'mp-' seguido de dígitos (mp-19770).
+_MP_ID_RE = re.compile(r"\Amp-\d+\Z")
+
+
+class StructureSource(str, Enum):
+    """De dónde sale la estructura de un cálculo.
+
+    `AUTO` deja que el ruteo decida (elemento -> ASE, compuesto -> MP);
+    `ASE`/`MP` fuerzan una fuente. El default `AUTO` preserva el comportamiento
+    actual, así el campo queda inerte si no se usa.
+    """
+
+    AUTO = "auto"
+    ASE = "ase"
+    MP = "mp"
+
+
+class StructureResolutionReason(str, Enum):
+    """Por qué falló resolver una estructura, para mapear a un ⚠️ claro."""
+
+    NETWORK = "network"      # no se pudo llegar a Materials Project
+    API = "api"              # MP respondió con error
+    NO_MATCH = "no_match"    # la consulta no devolvió estructura usable
+
+
+class StructureResolutionError(RuntimeError):
+    """Error de resolución de estructura con una causa clasificada.
+
+    Lo lanza el adaptador (infraestructura) y lo mapea la capa de aplicación
+    a una respuesta al usuario, sin que el dominio toque excepciones crudas
+    de pymatgen/httpx."""
+
+    def __init__(self, reason: StructureResolutionReason, message: str = "") -> None:
+        self.reason = reason
+        super().__init__(message or reason.value)
+
+
+class StructureQuery(BaseModel):
+    """Pedido neutral de estructura que la capa de aplicación arma a partir
+    del request del usuario y le pasa al `StructureProvider`.
+
+    El puerto no sabe de Telegram ni de Reply: solo recibe qué buscar.
+    - `elements`: sistema químico (chemsys), p. ej. ('Fe', 'O').
+    - `formula`: estequiometría explícita si el usuario la dio (Fe2O3).
+    - `mp_id`: id explícito de Materials Project (bypassea la selección).
+    - `qualifier`: elemento para filtrar el chemsys (O para óxidos).
+    Hay que dar al menos una forma de identificar el material.
+    """
+
+    elements: tuple[str, ...] = ()
+    formula: Optional[str] = None
+    mp_id: Optional[str] = None
+    qualifier: Optional[str] = None
+
+    @field_validator("mp_id")
+    @classmethod
+    def _v_mp_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not _MP_ID_RE.match(v):
+            raise ValueError(f"mp_id inválido: {v!r} (formato mp-<número>)")
+        return v
+
+    @field_validator("formula")
+    @classmethod
+    def _v_formula(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not is_plausible_formula(v):
+            raise ValueError(f"fórmula inválida: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "StructureQuery":
+        if not (self.elements or self.formula or self.mp_id):
+            raise ValueError("StructureQuery necesita elements, formula o mp_id")
+        return self
+
+
+@dataclass(frozen=True)
+class StructureAlternative:
+    """Un candidato de Materials Project que NO se eligió, ofrecido al usuario
+    para que decida cuando el nombre era ambiguo (p. ej. 'óxido de hierro')."""
+
+    mp_id: str
+    formula: str
+    energy_above_hull: float
+
+
+@dataclass(frozen=True)
+class StructureResolution:
+    """Estructura resuelta por un `StructureProvider`: los átomos elegidos
+    más metadatos neutrales.
+
+    `atoms` es un `ase.Atoms` (el mismo tipo que ya consumen los generadores):
+    el adaptador convierte desde pymatgen internamente y NUNCA filtra tipos de
+    pymatgen a través del puerto. `alternatives` viaja como metadato plano para
+    satisfacer la política de nombre ambiguo sin acoplar el dominio a MP."""
+
+    atoms: "Atoms"
+    mp_id: str
+    formula: str
+    spacegroup: str
+    energy_above_hull: float
+    alternatives: tuple[StructureAlternative, ...] = ()
 
 
 # ---------------------------------------------------------------------------

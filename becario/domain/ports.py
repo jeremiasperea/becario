@@ -18,7 +18,9 @@ from .models import (
     PendingPlan,
     Plan,
     SlurmJobRequest,
+    StructureQuery,
     StructureRequest,
+    StructureResolution,
     StructureResult,
     TrackedJob,
     VaspCalcRequest,
@@ -58,6 +60,18 @@ class CalcInputGenerator(Protocol):
     (POSCAR/INCAR/KPOINTS/script), listo para subir al cluster."""
 
     def generate(self, req: VaspCalcRequest) -> CalcDirResult: ...
+
+
+class StructureProvider(Protocol):
+    """Resuelve una estructura cristalina desde una fuente externa
+    (Materials Project) para compuestos que ASE no sabe armar.
+
+    La capa de aplicación arma el `StructureQuery` y decide cuándo usar este
+    puerto (compuestos) vs el `StructureBuilder`/ASE (elementos). El proveedor
+    devuelve `ase.Atoms` + metadatos, sin filtrar tipos de pymatgen al dominio,
+    y lanza `StructureResolutionError` ante fallos de red/API/sin-resultado."""
+
+    def resolve(self, query: StructureQuery) -> StructureResolution: ...
 
 
 class ClusterGateway(Protocol):
