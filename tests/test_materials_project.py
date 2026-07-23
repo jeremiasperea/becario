@@ -93,6 +93,19 @@ class TestMpIdBranch:
             _provider(fake).resolve(StructureQuery(mp_id="mp-1"))
         assert exc.value.reason is StructureResolutionReason.NO_MATCH
 
+    def test_list_return_is_normalized(self):
+        # get_structure_by_material_id puede devolver Structure | list[Structure]
+        fake = _FakeRester(structure=[_iron_oxide(5.0)])
+        res = _provider(fake).resolve(StructureQuery(mp_id="mp-19770"))
+        assert res.mp_id == "mp-19770"
+        assert "Fe" in res.atoms.get_chemical_symbols()
+
+    def test_empty_list_return_is_no_match(self):
+        fake = _FakeRester(structure=[])
+        with pytest.raises(StructureResolutionError) as exc:
+            _provider(fake).resolve(StructureQuery(mp_id="mp-1"))
+        assert exc.value.reason is StructureResolutionReason.NO_MATCH
+
 
 class TestFormulaBranch:
     def test_picks_lowest_energy_above_hull(self):
