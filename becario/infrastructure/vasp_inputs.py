@@ -10,6 +10,7 @@ esta máquina.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -24,24 +25,62 @@ logger = logging.getLogger(__name__)
 # Densidad de la grilla automática de k-points: n_i = max(1, round(RK / a_i)).
 _RK_LENGTH = 30.0  # Å — razonable para metales; el usuario puede pedir otra grilla
 
-# Parámetros comunes a todos los cálculos. ISMEAR=1/SIGMA=0.2 es el smearing
-# recomendado para metales (W, Zr…), el caso de uso principal del grupo.
+# Parámetros comunes a todos los cálculos. Base tomada de un INCAR de producción
+# del grupo (interfaz ZrO2-Zr), quedándonos solo con los tags de CALIDAD que
+# valen para cualquier sistema; los específicos del sistema de origen (NBANDS,
+# ISMEAR=-5 de tetraedros, mixing agresivo, DOS, U) NO se copian.
+#
+# ISMEAR=1/SIGMA=0.2 (Methfessel-Paxton) es el smearing correcto para relajar
+# metales (W, Zr…), el caso de uso principal del grupo — NO tetraedros (-5),
+# que da fuerzas malas al relajar.
+#
+# LREAL=.FALSE. es una desviación deliberada respecto del INCAR de referencia
+# (que usa `auto`): la referencia es un slab de ~42 átomos, pero acá se arman
+# celdas chicas (bulk de pocos átomos), donde VASP recomienda proyección en
+# espacio recíproco (.FALSE.), no real.
 _INCAR_COMMON = {
     "PREC": "Accurate",
     "EDIFF": "1E-6",
     "ISMEAR": 1,
     "SIGMA": 0.2,
+    "ALGO": "Fast",
+    "LREAL": ".FALSE.",
+    "NELMIN": 10,
+    "ADDGRID": ".TRUE.",
+    "LASPH": ".TRUE.",
+    "LMAXMIX": 6,
     "LWAVE": ".FALSE.",
     "LCHARG": ".FALSE.",
 }
 
-# La relajación usa ISIF=3: relaja posiciones, forma y volumen de la celda —
-# es lo que minimiza los parámetros de red.
+# ISIF por tipo de cálculo cuando el pedido no lo fuerza. Solo se emite en
+# RELAX (con NSW>0 tiene efecto): 3 relaja posiciones, forma y volumen —
+# es lo que minimiza los parámetros de red. Los demás tipos no llevan ISIF.
+_DEFAULT_ISIF = {CalcKind.RELAX: 3}
+
 _INCAR_BY_KIND = {
-    CalcKind.RELAX: {"IBRION": 2, "ISIF": 3, "NSW": 60, "EDIFFG": "-0.01"},
+    CalcKind.RELAX: {"IBRION": 2, "NSW": 60, "EDIFFG": "-0.01"},
     CalcKind.STATIC: {"NSW": 0},
     CalcKind.ENCUT_SCAN: {"NSW": 0},
 }
+
+# Electrones de valencia (ZVAL) por elemento, para estimar NBANDS por sistema.
+# CLAVE: cada valor corresponde al POTCAR EXACTO que el cluster concatena para
+# ese elemento (ver `_POTCAR_VARIANTS` en services: prueba `_sv`, `_pv`, `""`
+# y usa el primero que existe). Estos valores se leyeron de POTCAR reales
+# (potpaw_PBE), NO de memoria. Si en el cluster cambia la variante disponible
+# para un elemento, hay que actualizar su ZVAL acá. Un elemento ausente =>
+# NBANDS lo decide VASP.
+_ZVAL: dict[str, int] = {
+    "Zr": 12,  # resuelve a Zr_sv
+    "O": 6,    # resuelve a O
+    "W": 12,   # sin W_sv en potpaw_PBE => resuelve a W_pv
+}
+
+# Margen de bandas vacías sobre el mínimo ocupado (NELECT/2). Holgado a
+# propósito: si la tabla ZVAL subestima el conteo, VASP 5.4.4 igual auto-sube
+# NBANDS con un warning en vez de romper, así que preferimos pasarnos.
+_NBANDS_MARGIN = 1.2
 
 
 class VaspInputGenerator:
@@ -67,6 +106,15 @@ class VaspInputGenerator:
             req.scan_values() if req.calc_kind is CalcKind.ENCUT_SCAN else [req.encut]
         )
 
+        # NBANDS e ISIF son iguales en todos los puntos (misma estructura y
+        # tipo de cálculo), así que se resuelven una sola vez acá.
+        nbands = req.nbands if req.nbands is not None else _auto_nbands(atoms)
+        # ISIF solo tiene efecto con NSW>0, así que se resuelve (default o
+        # override del pedido) únicamente para los tipos que relajan.
+        isif = None
+        if req.calc_kind in _DEFAULT_ISIF:
+            isif = req.isif if req.isif is not None else _DEFAULT_ISIF[req.calc_kind]
+
         stamp = time.strftime("%Y%m%d_%H%M%S")
         run_name = f"{req.formula}_{req.calc_kind.value}_{stamp}"
         run_dir = self._workdir / run_name
@@ -77,10 +125,14 @@ class VaspInputGenerator:
             for encut in encut_values:
                 subdir = run_dir / f"encut_{encut}"
                 subdir.mkdir()
-                files += self._write_point(subdir, atoms, run_name, kpoints, encut)
+                files += self._write_point(
+                    subdir, atoms, run_name, kpoints, encut, nbands=nbands
+                )
         else:
-            files += self._write_point(run_dir, atoms, run_name, kpoints, req.encut,
-                                       calc_kind=req.calc_kind)
+            files += self._write_point(
+                run_dir, atoms, run_name, kpoints, req.encut,
+                calc_kind=req.calc_kind, nbands=nbands, isif=isif,
+            )
 
         script = run_dir / "run_vasp.sh"
         script.write_text(self._job_script(req.calc_kind), encoding="utf-8")
@@ -114,6 +166,8 @@ class VaspInputGenerator:
         kpoints: tuple[int, int, int],
         encut: int,
         calc_kind: CalcKind = CalcKind.ENCUT_SCAN,
+        nbands: int | None = None,
+        isif: int | None = None,
     ) -> list[str]:
         """POSCAR + INCAR + KPOINTS de un punto de cálculo."""
         # sort=True ordena los átomos alfabéticamente por símbolo: el orden
@@ -121,7 +175,8 @@ class VaspInputGenerator:
         # mismo orden usa el servicio para concatenar el POTCAR.
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
-            _render_incar(run_name, calc_kind, encut), encoding="utf-8"
+            _render_incar(run_name, calc_kind, encut, nbands=nbands, isif=isif),
+            encoding="utf-8",
         )
         (directory / "KPOINTS").write_text(_render_kpoints(kpoints), encoding="utf-8")
         rel = directory.name + "/" if directory.name.startswith("encut_") else ""
@@ -157,10 +212,33 @@ def _auto_kpoints(atoms: Atoms) -> tuple[int, int, int]:
     return tuple(max(1, round(_RK_LENGTH / length)) for length in (a, b, c))
 
 
-def _render_incar(run_name: str, calc_kind: CalcKind, encut: int) -> str:
+def _auto_nbands(atoms: Atoms) -> int | None:
+    """Estima NBANDS a partir del conteo de electrones de valencia.
+
+    Devuelve None si algún elemento no está en la tabla ZVAL: en ese caso el
+    INCAR se emite sin NBANDS y VASP lo calcula con el ZVAL real del POTCAR.
+    """
+    symbols = atoms.get_chemical_symbols()
+    if any(sym not in _ZVAL for sym in symbols):
+        return None
+    nelect = sum(_ZVAL[sym] for sym in symbols)
+    return math.ceil((nelect / 2) * _NBANDS_MARGIN)
+
+
+def _render_incar(
+    run_name: str,
+    calc_kind: CalcKind,
+    encut: int,
+    nbands: int | None = None,
+    isif: int | None = None,
+) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
     params.update(_INCAR_BY_KIND[calc_kind])
+    if isif is not None:
+        params["ISIF"] = isif
+    if nbands is not None:
+        params["NBANDS"] = nbands
     return "\n".join(f"{key} = {value}" for key, value in params.items()) + "\n"
 
 
