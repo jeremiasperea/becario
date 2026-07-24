@@ -223,18 +223,24 @@ def _mp_error_reply(exc: StructureResolutionError) -> Reply:
 
 
 def _mp_note(resolution) -> str:
-    """Nota humana con el material elegido y, si el nombre era ambiguo, las
-    alternativas con su mp-id para que el usuario elija (R3)."""
+    """Nota humana con el material elegido (el más estable). Las alternativas
+    se listan como referencia informativa.
+
+    OJO: NO se le promete al usuario que puede pedir otra por mp-id, porque hoy
+    el router no extrae `mp_id`/`source` y `_build_calc_request` no los reenvía
+    (los campos existen en el request pero quedan inertes vía chat). Elegir un
+    polimorfo distinto por conversación es un follow-up pendiente; hasta que se
+    cablee, la nota no debe prometer una interacción que se ignoraría."""
     lines = [
         f"🧬 Estructura de Materials Project: {resolution.formula} "
-        f"({resolution.mp_id}, {resolution.spacegroup})."
+        f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable."
     ]
     if resolution.alternatives:
         alts = "; ".join(
             f"{a.formula} {a.mp_id} (E_hull={a.energy_above_hull:.3f} eV/át.)"
             for a in resolution.alternatives
         )
-        lines.append(f"Otras opciones: {alts}.\nPasame el mp-id si querés otra.")
+        lines.append(f"Otras opciones que devolvió MP: {alts}.")
     return "\n".join(lines)
 
 
