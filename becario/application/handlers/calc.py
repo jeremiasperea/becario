@@ -233,14 +233,19 @@ def _mp_note(resolution) -> str:
     cablee, la nota no debe prometer una interacción que se ignoraría."""
     lines = [
         f"🧬 Estructura de Materials Project: {resolution.formula} "
-        f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable."
+        f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable "
+        f"(E_hull={resolution.energy_above_hull:.3f} eV/át.)."
     ]
     if resolution.alternatives:
         alts = "; ".join(
             f"{a.formula} {a.mp_id} (E_hull={a.energy_above_hull:.3f} eV/át.)"
             for a in resolution.alternatives
         )
-        lines.append(f"Otras opciones que devolvió MP: {alts}.")
+        lines.append(
+            f"Otras opciones que devolvió MP (a título informativo): {alts}. "
+            "Se usa automáticamente la más estable; elegir otra todavía no "
+            "está disponible."
+        )
     return "\n".join(lines)
 
 
