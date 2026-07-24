@@ -90,11 +90,13 @@ class MaterialsProjectProvider:
             structure = structure[0] if structure else None
         if structure is None:
             raise StructureResolutionError(StructureResolutionReason.NO_MATCH, mp_id)
+        # Sin summary no conocemos el hull: se deja en None (la nota humana
+        # no afirmará "la más estable" para un polimorfo elegido por id).
         return _to_resolution(
             structure,
             mp_id=mp_id,
             formula=structure.composition.reduced_formula,
-            energy_above_hull=0.0,
+            energy_above_hull=None,
             alternatives=(),
         )
 
@@ -147,7 +149,7 @@ def _to_resolution(
     *,
     mp_id: str,
     formula: str,
-    energy_above_hull: float,
+    energy_above_hull: Optional[float],
     alternatives: tuple,
 ) -> StructureResolution:
     sga = SpacegroupAnalyzer(structure)

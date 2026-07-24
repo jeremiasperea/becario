@@ -240,11 +240,19 @@ def _mp_note(resolution) -> str:
     se listan con su mp-id: el router ya extrae `mp_id`/`fuente_estructura`
     y `_build_calc_request` los reenvía, así que pedir otro polimorfo por su
     id es una interacción real — la nota puede ofrecerla honestamente."""
-    lines = [
+    head = (
         f"🧬 Estructura de Materials Project: {resolution.formula} "
-        f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable "
-        f"(E_hull={resolution.energy_above_hull:.3f} eV/át.)."
-    ]
+        f"({resolution.mp_id}, {resolution.spacegroup})"
+    )
+    if resolution.energy_above_hull is None:
+        # Pedida por su mp-id: no conocemos el hull, así que no afirmamos
+        # estabilidad — el usuario eligió este polimorfo a propósito.
+        lines = [f"{head} — elegida por su mp-id."]
+    else:
+        lines = [
+            f"{head} — la más estable "
+            f"(E_hull={resolution.energy_above_hull:.3f} eV/át.)."
+        ]
     if resolution.alternatives:
         alts = "; ".join(
             f"{a.formula} {a.mp_id} (E_hull={a.energy_above_hull:.3f} eV/át.)"

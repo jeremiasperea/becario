@@ -9,8 +9,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from becario.application.context import Reply
-from becario.application.handlers.calc import _build_calc_request, _resolve_structure
+from becario.application.handlers.calc import (
+    _build_calc_request,
+    _mp_note,
+    _resolve_structure,
+)
 from becario.domain.models import (
+    StructureResolution,
     StructureResolutionError,
     StructureResolutionReason,
     StructureSource,
@@ -18,6 +23,33 @@ from becario.domain.models import (
 )
 
 from .fakes import FakeStructureProvider
+
+
+def _resolution(energy_above_hull):
+    return StructureResolution(
+        atoms=None,
+        mp_id="mp-19770",
+        formula="Fe2O3",
+        spacegroup="R-3c",
+        energy_above_hull=energy_above_hull,
+    )
+
+
+class TestMpNote:
+    """La nota humana no debe afirmar estabilidad que no conoce: pedir un
+    polimorfo por su mp-id deja el hull en None (no hay summary), y la nota
+    NO puede decir "la más estable" ni inventar E_hull=0.000."""
+
+    def test_note_omits_stability_when_hull_unknown(self):
+        note = _mp_note(_resolution(None))
+        assert "más estable" not in note
+        assert "E_hull" not in note
+        assert "mp-19770" in note
+
+    def test_note_reports_hull_when_known(self):
+        note = _mp_note(_resolution(0.008))
+        assert "más estable" in note
+        assert "E_hull=0.008" in note
 
 
 def _svc(provider=None, key="secret"):
