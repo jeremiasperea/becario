@@ -103,6 +103,10 @@ class Settings:
     potcar_dir: str = ""
     vasp_cmd: str = "vasp_std"
     vasp_prelude: str = ""
+    # API key de Materials Project (fuente de estructuras para compuestos).
+    # Vacía => MP no disponible; el chequeo fail-closed vive en la capa de
+    # aplicación, antes de resolver cualquier compuesto.
+    mp_api_key: str = ""
     # Dónde viven las corridas en el cluster (relativa al home remoto
     # salvo que empiece con /).
     remote_base: str = "becario_runs"
@@ -127,6 +131,7 @@ class Settings:
             confirmation_ttl_seconds=_float_env("BECARIO_CONFIRM_TTL", "600"),
             monitor_interval_seconds=_float_env("BECARIO_MONITOR_INTERVAL", "60"),
             potcar_dir=os.environ.get("BECARIO_POTCAR_DIR", "").strip(),
+            mp_api_key=os.environ.get("BECARIO_MP_API_KEY", "").strip(),
             vasp_cmd=os.environ.get("BECARIO_VASP_CMD", "vasp_std").strip() or "vasp_std",
             vasp_prelude=os.environ.get("BECARIO_VASP_PRELUDE", "").strip(),
             remote_base=os.environ.get("BECARIO_REMOTE_BASE", "becario_runs").strip()

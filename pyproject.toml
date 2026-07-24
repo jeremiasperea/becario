@@ -10,6 +10,13 @@ dependencies = [
     "httpx>=0.27",
     "ase>=3.23",
     "faster-whisper>=1.0",
+    # Fuente de estructuras cristalinas para compuestos que ASE no arma
+    # (corundum, spinel, perovskitas). emmet-core se fija <0.86 porque el
+    # 0.86.0rc1 hace `from typing import NotRequired` (Python 3.11+) y rompe
+    # el import de MPRester en 3.10 — el 0.85.1 estable importa bien.
+    "pymatgen>=2025.10.7",
+    "mp-api>=0.45",
+    "emmet-core<0.86",
 ]
 
 [project.optional-dependencies]
