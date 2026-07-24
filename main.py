@@ -24,6 +24,7 @@ from becario.application.job_monitor import JobMonitorService
 from becario.application.services import BecarioService
 from becario.config import ConfigError, Settings, required_config_present
 from becario.infrastructure.ase_builder import ASEStructureBuilder
+from becario.infrastructure.materials_project import MaterialsProjectProvider
 from becario.infrastructure.ollama_router import (
     OllamaModelMissingError,
     OllamaRouter,
@@ -69,6 +70,13 @@ def build_bot(settings: Settings) -> TelegramBot:
         vasp_cmd=settings.vasp_cmd,
         vasp_prelude=settings.vasp_prelude,
     )
+    # Fuente de estructuras para compuestos (Materials Project). Sin API key
+    # no se instancia; el chequeo fail-closed vive en la capa de aplicación.
+    structure_provider = (
+        MaterialsProjectProvider(api_key=settings.mp_api_key)
+        if settings.mp_api_key
+        else None
+    )
     history = SQLiteHistoryRepository(settings.db_path)
     history.ensure_schema()
     job_tracker = SQLiteJobTracker(settings.db_path)
@@ -94,6 +102,8 @@ def build_bot(settings: Settings) -> TelegramBot:
         calc_runs=calc_runs,
         edit_ttl_seconds=settings.confirmation_ttl_seconds,
         decision_log=decision_log,
+        structure_provider=structure_provider,
+        mp_api_key=settings.mp_api_key,
     )
     job_monitor = JobMonitorService(
         registry=registry,

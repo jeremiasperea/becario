@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import pytest
+from ase import Atoms
 
 from becario.domain.models import CalcKind, VaspCalcRequest
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
@@ -114,6 +115,31 @@ class TestIsif:
         req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, isif=3)
         incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
         assert "ISIF" not in incar
+
+
+class TestProvidedAtoms:
+    """El seam MP: si se pasan átomos ya resueltos, el generador los usa tal
+    cual (no arma la estructura desde la fórmula del pedido)."""
+
+    def test_generate_uses_provided_atoms_verbatim(self, generator):
+        atoms = Atoms(
+            "FeO",
+            scaled_positions=[[0, 0, 0], [0.5, 0.5, 0.5]],
+            cell=[4.3, 4.3, 4.3],
+            pbc=True,
+        )
+        # el req dice Zr, pero los átomos provistos (FeO) son los que mandan
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        result = generator.generate(req, atoms)
+        assert sorted(result.elements) == ["Fe", "O"]
+        poscar = (Path(result.local_dir) / "POSCAR").read_text()
+        assert "Fe" in poscar and "O" in poscar
+
+    def test_generate_without_atoms_builds_from_formula(self, generator):
+        # sin átomos: comportamiento existente (ASE desde la fórmula)
+        req = VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23)
+        result = generator.generate(req)
+        assert result.elements == ["Zr"]
 
 
 class TestEncutScan:

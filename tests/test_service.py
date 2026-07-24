@@ -220,9 +220,11 @@ class FakeStructureBuilder:
 class FakeCalcInputGenerator:
     def __init__(self):
         self.requests: list[VaspCalcRequest] = []
+        self.atoms_seen: list = []
 
-    def generate(self, req: VaspCalcRequest) -> CalcDirResult:
+    def generate(self, req: VaspCalcRequest, atoms=None) -> CalcDirResult:
         self.requests.append(req)
+        self.atoms_seen.append(atoms)
         encut_values = (
             req.scan_values() if req.calc_kind is CalcKind.ENCUT_SCAN else [req.encut]
         )

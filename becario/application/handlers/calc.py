@@ -19,8 +19,13 @@ from ...domain.models import (
     PendingPlan,
     SlurmJobRequest,
     StructureKind,
+    StructureQuery,
     StructureRequest,
+    StructureResolutionError,
+    StructureResolutionReason,
+    StructureSource,
     VaspCalcRequest,
+    elements_of,
 )
 from ..context import Reply, _Ctx
 
@@ -164,14 +169,101 @@ def describe_calc_request(req: "VaspCalcRequest") -> str:
     )
 
 
+def _resolve_structure(
+    svc: "BecarioService", req: "VaspCalcRequest",
+) -> "tuple[object, str] | Reply":
+    """Decide la FUENTE de la estructura y la resuelve, SIN escribir nada.
+
+    - Elemento simple o `source=ase` -> ASE: devuelve `(None, "")` y el
+      generador arma la estructura desde la fórmula (comportamiento previo, R1).
+    - Compuesto, `source=mp` o `mp_id` -> Materials Project (R2/R3/R4),
+      fail-closed si falta la key (R5) o si MP falla (R6/R7).
+
+    Devuelve `(atoms|None, nota)` en éxito, o un `Reply` de error. La
+    resolución ocurre ANTES de crear el directorio de la corrida, así un
+    fallo de MP nunca deja una corrida a medias."""
+    elements = elements_of(req.formula)
+    wants_mp = (
+        req.mp_id is not None
+        or req.source is StructureSource.MP
+        or (req.source is StructureSource.AUTO and len(elements) > 1)
+    )
+    if not wants_mp:
+        return None, ""  # camino ASE: el generador la arma (sin key)
+
+    if svc._structure_provider is None or not svc._mp_api_key:
+        return Reply(
+            text="⚠️ Para calcular compuestos uso Materials Project, pero falta "
+            "configurar la API key (BECARIO_MP_API_KEY)."
+        )
+
+    if req.mp_id:
+        query = StructureQuery(mp_id=req.mp_id)
+    elif len(elements) > 1:
+        query = StructureQuery(formula=req.formula, elements=tuple(elements))
+    else:
+        query = StructureQuery(formula=req.formula)
+
+    try:
+        resolution = svc._structure_provider.resolve(query)
+    except StructureResolutionError as exc:
+        return _mp_error_reply(exc)
+    return resolution.atoms, _mp_note(resolution)
+
+
+def _mp_error_reply(exc: StructureResolutionError) -> Reply:
+    """Mapea la causa clasificada a un ⚠️ claro (R6/R7)."""
+    if exc.reason is StructureResolutionReason.NO_MATCH:
+        text = "⚠️ No encontré una estructura en Materials Project para ese material."
+    elif exc.reason is StructureResolutionReason.NETWORK:
+        text = "⚠️ No pude conectarme a Materials Project. Probá de nuevo en un rato."
+    else:
+        text = "⚠️ Materials Project devolvió un error al buscar la estructura."
+    return Reply(text=text)
+
+
+def _mp_note(resolution) -> str:
+    """Nota humana con el material elegido (el más estable). Las alternativas
+    se listan como referencia informativa.
+
+    OJO: NO se le promete al usuario que puede pedir otra por mp-id, porque hoy
+    el router no extrae `mp_id`/`source` y `_build_calc_request` no los reenvía
+    (los campos existen en el request pero quedan inertes vía chat). Elegir un
+    polimorfo distinto por conversación es un follow-up pendiente; hasta que se
+    cablee, la nota no debe prometer una interacción que se ignoraría."""
+    lines = [
+        f"🧬 Estructura de Materials Project: {resolution.formula} "
+        f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable "
+        f"(E_hull={resolution.energy_above_hull:.3f} eV/át.)."
+    ]
+    if resolution.alternatives:
+        alts = "; ".join(
+            f"{a.formula} {a.mp_id} (E_hull={a.energy_above_hull:.3f} eV/át.)"
+            for a in resolution.alternatives
+        )
+        lines.append(
+            f"Otras opciones que devolvió MP (a título informativo): {alts}. "
+            "Se usa automáticamente la más estable; elegir otra todavía no "
+            "está disponible."
+        )
+    return "\n".join(lines)
+
+
 def _generate_and_upload(
     svc: "BecarioService", ctx: _Ctx, req: "VaspCalcRequest",
 ) -> "_PreparedCalc | Reply":
     """Genera los inputs, resuelve POTCAR, sube la corrida al cluster y arma
     el envío. TODO el I/O al cluster vive acá. Devuelve un `_PreparedCalc` o
     un `Reply` de error (fail-closed)."""
+    # Resolver la estructura (ASE local vs Materials Project) ANTES de generar:
+    # un fallo de MP corta acá, sin dejar directorio de corrida a medias.
+    resolved = _resolve_structure(svc, req)
+    if isinstance(resolved, Reply):
+        return resolved
+    atoms, mp_note = resolved
+
     try:
-        result = svc._calc_inputs.generate(req)
+        result = svc._calc_inputs.generate(req, atoms)
     except Exception as exc:  # StructureBuildError y afines
         return Reply(text=f"⚠️ No pude generar los inputs:\n{exc}")
 
@@ -228,9 +320,10 @@ def _generate_and_upload(
     payload["workflow"] = "encut_scan" if req.calc_kind is CalcKind.ENCUT_SCAN else ""
     payload["calc_fingerprint"] = fingerprint
     payload["run_dir"] = remote_run_dir
+    mp_block = f"{mp_note}\n" if mp_note else ""
     description = (
         f"🧪 Enviar cálculo VASP ({req.calc_kind.value}, cuenta "
-        f"{ctx.identity.ssh_user}):\n{result.describe()}\n"
+        f"{ctx.identity.ssh_user}):\n{mp_block}{result.describe()}\n"
         f"📂 {remote_run_dir}\n{slurm_req.describe()}"
     )
     return _PreparedCalc(payload=payload, description=description, duplicate=duplicate)

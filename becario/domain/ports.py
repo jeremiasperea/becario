@@ -6,7 +6,7 @@ las implementan en `infrastructure/`.
 """
 from __future__ import annotations
 
-from typing import Optional, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
 
 from .models import (
     CalcDirResult,
@@ -25,6 +25,9 @@ from .models import (
     TrackedJob,
     VaspCalcRequest,
 )
+
+if TYPE_CHECKING:  # solo para anotar la firma; el dominio no importa ASE
+    from ase import Atoms
 
 
 class IntentRouter(Protocol):
@@ -59,7 +62,9 @@ class CalcInputGenerator(Protocol):
     """Genera localmente el directorio completo de una corrida VASP
     (POSCAR/INCAR/KPOINTS/script), listo para subir al cluster."""
 
-    def generate(self, req: VaspCalcRequest) -> CalcDirResult: ...
+    def generate(
+        self, req: VaspCalcRequest, atoms: "Atoms | None" = None
+    ) -> CalcDirResult: ...
 
 
 class StructureProvider(Protocol):

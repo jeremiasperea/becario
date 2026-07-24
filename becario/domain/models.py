@@ -109,6 +109,23 @@ def is_plausible_formula(formula: str) -> bool:
     return True
 
 
+def elements_of(formula: str) -> list[str]:
+    """Símbolos de elemento (en orden de aparición, sin repetir) de una
+    fórmula. 'Fe2O3' -> ['Fe', 'O']; 'W' -> ['W']. Sirve para distinguir un
+    elemento simple (ASE) de un compuesto (Materials Project)."""
+    out: list[str] = []
+    pos = 0
+    while pos < len(formula):
+        match = _ELEMENT_TOKEN_RE.match(formula, pos)
+        if not match:
+            break
+        symbol = match.group(1)
+        if symbol not in out:
+            out.append(symbol)
+        pos = match.end()
+    return out
+
+
 def _validate_remote_dir_path(v: str) -> str:
     """Política única para directorios remotos: ruta absoluta, sin
     metacaracteres de shell y sin '..'. La comparten `RemoteDirRequest`
@@ -339,6 +356,19 @@ class OutputFormat(str, Enum):
     XYZ = "xyz"
 
 
+class StructureSource(str, Enum):
+    """De dónde sale la estructura de un cálculo.
+
+    `AUTO` deja que el ruteo decida (elemento -> ASE, compuesto -> MP);
+    `ASE`/`MP` fuerzan una fuente. El default `AUTO` preserva el comportamiento
+    actual, así el campo queda inerte si no se usa.
+    """
+
+    AUTO = "auto"
+    ASE = "ase"
+    MP = "mp"
+
+
 class StructureRequest(BaseModel):
     """Pedido validado de construcción de una estructura atómica."""
 
@@ -350,6 +380,9 @@ class StructureRequest(BaseModel):
     vacuum: Optional[float] = Field(default=None, ge=0.0, le=60.0)  # Å
     output_format: OutputFormat = OutputFormat.VASP
     remote_dest_dir: Optional[str] = None  # si se define, se sube por SFTP
+    # Materials Project: id explícito y/o fuente forzada. Inertes por default.
+    mp_id: Optional[str] = None
+    source: StructureSource = StructureSource.AUTO
 
     @field_validator("formula")
     @classmethod
@@ -357,6 +390,16 @@ class StructureRequest(BaseModel):
         v = v.strip()
         if not is_plausible_formula(v):
             raise ValueError(f"fórmula inválida: {v!r}")
+        return v
+
+    @field_validator("mp_id")
+    @classmethod
+    def _v_mp_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not _MP_ID_RE.match(v):
+            raise ValueError(f"mp_id inválido: {v!r} (formato mp-<número>)")
         return v
 
     @field_validator("crystal")
@@ -440,6 +483,11 @@ class VaspCalcRequest(BaseModel):
     # (tabla ZVAL) o, si no puede, lo deja a criterio de VASP. Se puede forzar
     # un número mayor cuando hacen falta bandas vacías (DOS, estados desocupados).
     nbands: Optional[int] = Field(default=None, ge=1, le=100000)
+    # Materials Project: id explícito (fuerza fuente MP por id) y/o fuente
+    # forzada (auto = el ruteo decide elemento->ASE, compuesto->MP). Inertes
+    # por default, así el cambio es aditivo.
+    mp_id: Optional[str] = None
+    source: StructureSource = StructureSource.AUTO
     partition: str = Field(default="default")
     nodes: int = Field(default=1, ge=1, le=64)
     time_limit: str = Field(default="01:00:00")
@@ -450,6 +498,16 @@ class VaspCalcRequest(BaseModel):
         v = v.strip()
         if not is_plausible_formula(v):
             raise ValueError(f"fórmula inválida: {v!r}")
+        return v
+
+    @field_validator("mp_id")
+    @classmethod
+    def _v_mp_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not _MP_ID_RE.match(v):
+            raise ValueError(f"mp_id inválido: {v!r} (formato mp-<número>)")
         return v
 
     @field_validator("crystal")
@@ -564,19 +622,6 @@ class RoutedRequest:
 
 # Id de material de Materials Project: 'mp-' seguido de dígitos (mp-19770).
 _MP_ID_RE = re.compile(r"\Amp-\d+\Z")
-
-
-class StructureSource(str, Enum):
-    """De dónde sale la estructura de un cálculo.
-
-    `AUTO` deja que el ruteo decida (elemento -> ASE, compuesto -> MP);
-    `ASE`/`MP` fuerzan una fuente. El default `AUTO` preserva el comportamiento
-    actual, así el campo queda inerte si no se usa.
-    """
-
-    AUTO = "auto"
-    ASE = "ase"
-    MP = "mp"
 
 
 class StructureResolutionReason(str, Enum):

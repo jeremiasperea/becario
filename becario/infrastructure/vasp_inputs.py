@@ -96,8 +96,13 @@ class VaspInputGenerator:
         self._vasp_prelude = vasp_prelude.strip()
 
     # ------------------------------------------------------------------
-    def generate(self, req: VaspCalcRequest) -> CalcDirResult:
-        atoms = make_bulk_atoms(req.formula, req.crystal, req.lattice_a)
+    def generate(self, req: VaspCalcRequest, atoms: Atoms | None = None) -> CalcDirResult:
+        # `atoms` ya resuelto (p. ej. desde Materials Project) se usa tal cual;
+        # None => se arma con ASE desde la fórmula/red del pedido. El generador
+        # es agnóstico a la FUENTE de la estructura: solo la escribe. La
+        # supercelda y todo lo de abajo es idéntico sea cual sea el origen.
+        if atoms is None:
+            atoms = make_bulk_atoms(req.formula, req.crystal, req.lattice_a)
         if req.supercell != (1, 1, 1):
             atoms = atoms.repeat(req.supercell)
 
