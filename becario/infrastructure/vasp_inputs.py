@@ -50,6 +50,11 @@ _INCAR_COMMON = {
     "EDIFF": "1E-6",
     "ISMEAR": 1,
     "SIGMA": 0.2,
+    # ISPIN se emite SIEMPRE, aunque 1 sea el default de VASP: el INCAR es la
+    # vista rápida de las condiciones de la corrida (el OUTCAR también lo dice
+    # pero es más lento de revisar). `_render_incar` lo sube a 2 si el pedido
+    # es magnético — MAGMOM queda a criterio de VASP (mejora futura).
+    "ISPIN": 1,
     "ALGO": "Fast",
     "LREAL": ".FALSE.",
     "NELMIN": 10,
@@ -191,6 +196,9 @@ class VaspInputGenerator:
         isif = None
         if nsw > 0:
             isif = req.isif if req.isif is not None else _DEFAULT_ISIF.get(req.calc_kind)
+        # ISPIN vale para toda la corrida (misma estructura), así que se resuelve
+        # una vez y se pasa a cada punto — igual que NBANDS.
+        ispin = req.ispin
 
         run_name, run_dir = self._new_run_dir(req)
 
@@ -201,12 +209,13 @@ class VaspInputGenerator:
                 subdir.mkdir()
                 files += self._write_point(
                     subdir, atoms, run_name, kpoints, encut, nsw=nsw,
-                    nbands=nbands, extra=req.incar_tags, por_tipo=por_tipo,
+                    nbands=nbands, ispin=ispin, extra=req.incar_tags,
+                    por_tipo=por_tipo,
                 )
         else:
             files += self._write_point(
                 run_dir, atoms, run_name, kpoints, req.encut,
-                nsw=nsw, nbands=nbands, isif=isif,
+                nsw=nsw, nbands=nbands, isif=isif, ispin=ispin,
                 extra=req.incar_tags, por_tipo=por_tipo,
             )
 
@@ -281,6 +290,7 @@ class VaspInputGenerator:
         nsw: int = 0,
         nbands: int | None = None,
         isif: int | None = None,
+        ispin: int = 1,
         extra: dict[str, str] | None = None,
         por_tipo: dict | None = None,
     ) -> list[str]:
@@ -291,7 +301,7 @@ class VaspInputGenerator:
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
             _render_incar(run_name, encut, nsw, nbands=nbands, isif=isif,
-                          extra=extra, por_tipo=por_tipo),
+                          ispin=ispin, extra=extra, por_tipo=por_tipo),
             encoding="utf-8",
         )
         (directory / "KPOINTS").write_text(_render_kpoints(kpoints), encoding="utf-8")
@@ -365,11 +375,15 @@ def _render_incar(
     nsw: int,
     nbands: int | None = None,
     isif: int | None = None,
+    ispin: int = 1,
     extra: dict[str, str] | None = None,
     por_tipo: dict | None = None,
 ) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
+    # ISPIN ya viene de _INCAR_COMMON (=1): sobreescribir la clave in-place
+    # conserva su posición en el INCAR y sube a 2 los cálculos magnéticos.
+    params["ISPIN"] = ispin
     for tag, valor in (por_tipo or {}).items():
         if valor is None:
             params.pop(tag, None)

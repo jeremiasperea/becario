@@ -112,13 +112,14 @@ class RouterParams(BaseModel):
     puntos_k: Optional[list[int]] = Field(
         default=None, description="grilla de k-points [kx, ky, kz]"
     )
-    # UN campo para los 169 tags del INCAR, en vez de uno por tag: el schema
-    # tiene presupuesto (ADR-0006) y un campo por feature lo agota en tres.
+    # UN campo para los 169 tags del INCAR, en vez de uno por tag: un campo
+    # por feature no escala como diseño (ADR-0006), más allá de que el techo
+    # del schema ya no sea la restricción que se creía.
     # El dominio valida contra el vocabulario del manual antes de emitir nada.
-    # Sin `description` a propósito, como `mp_id` y `nombre_archivo`: un dict
-    # ya cuesta `additionalProperties` en el schema, y la guía de extracción
-    # vive en `_SYSTEM_PROMPT`, que no pesa contra este presupuesto.
     tags_incar: Optional[dict[str, str]] = None
+    magnetico: Optional[bool] = Field(
+        default=None, description="true si el usuario pide un cálculo magnético"
+    )
 
 
 # Docstrings de RouterStep/RouterDecision se mantienen cortos a propósito:
@@ -219,6 +220,11 @@ _SYSTEM_PROMPT = (
     "formula=ZrO2, fuente_estructura=relajado\n"
     "'relajá Fe2O3 con mp-19770' -> preparar_calculo, formula=Fe2O3, "
     "mp_id=mp-19770\n"
+    "Si el usuario pide un cálculo MAGNÉTICO (con espín, polarizado en "
+    "espín, spin-polarized, ferromagnético/antiferromagnético) poné "
+    "magnetico=true. Si no lo menciona, dejá magnetico sin completar.\n"
+    "'relajá el bulk de Fe con espín' -> preparar_calculo, formula=Fe, "
+    "magnetico=true\n"
     "'corré el script /home/ana/run.sh' -> enviar_slurm, "
     "script_remoto=/home/ana/run.sh\n"
     "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"
