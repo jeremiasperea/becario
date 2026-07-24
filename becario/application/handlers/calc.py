@@ -151,6 +151,10 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
         else StructureSource.AUTO
     )
 
+    # Magnetismo: el router habla en intención (`magnetico`); el dominio en
+    # VASP (`ispin`). true => ISPIN=2 (cálculo con espín); ausente/false => 1.
+    ispin = 2 if params.get("magnetico") else 1
+
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
@@ -163,6 +167,7 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             encut=int(params.get("encut") or 520),
             kpoints=tuple(int(x) for x in kp) if kp else None,
             encut_values=encut_values,
+            ispin=ispin,
             mp_id=params.get("mp_id"),
             source=source,
             partition=params.get("particion") or "default",

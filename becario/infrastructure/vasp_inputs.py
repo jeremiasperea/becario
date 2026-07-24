@@ -43,6 +43,11 @@ _INCAR_COMMON = {
     "EDIFF": "1E-6",
     "ISMEAR": 1,
     "SIGMA": 0.2,
+    # ISPIN se emite SIEMPRE, aunque 1 sea el default de VASP: el INCAR es la
+    # vista rápida de las condiciones de la corrida (el OUTCAR también lo dice
+    # pero es más lento de revisar). `_render_incar` lo sube a 2 si el pedido
+    # es magnético — MAGMOM queda a criterio de VASP (mejora futura).
+    "ISPIN": 1,
     "ALGO": "Fast",
     "LREAL": ".FALSE.",
     "NELMIN": 10,
@@ -119,6 +124,9 @@ class VaspInputGenerator:
         isif = None
         if req.calc_kind in _DEFAULT_ISIF:
             isif = req.isif if req.isif is not None else _DEFAULT_ISIF[req.calc_kind]
+        # ISPIN vale para toda la corrida (misma estructura), así que se resuelve
+        # una vez y se pasa a cada punto — igual que NBANDS.
+        ispin = req.ispin
 
         stamp = time.strftime("%Y%m%d_%H%M%S")
         run_name = f"{req.formula}_{req.calc_kind.value}_{stamp}"
@@ -131,12 +139,13 @@ class VaspInputGenerator:
                 subdir = run_dir / f"encut_{encut}"
                 subdir.mkdir()
                 files += self._write_point(
-                    subdir, atoms, run_name, kpoints, encut, nbands=nbands
+                    subdir, atoms, run_name, kpoints, encut,
+                    nbands=nbands, ispin=ispin,
                 )
         else:
             files += self._write_point(
                 run_dir, atoms, run_name, kpoints, req.encut,
-                calc_kind=req.calc_kind, nbands=nbands, isif=isif,
+                calc_kind=req.calc_kind, nbands=nbands, isif=isif, ispin=ispin,
             )
 
         script = run_dir / "run_vasp.sh"
@@ -173,6 +182,7 @@ class VaspInputGenerator:
         calc_kind: CalcKind = CalcKind.ENCUT_SCAN,
         nbands: int | None = None,
         isif: int | None = None,
+        ispin: int = 1,
     ) -> list[str]:
         """POSCAR + INCAR + KPOINTS de un punto de cálculo."""
         # sort=True ordena los átomos alfabéticamente por símbolo: el orden
@@ -180,7 +190,7 @@ class VaspInputGenerator:
         # mismo orden usa el servicio para concatenar el POTCAR.
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
-            _render_incar(run_name, calc_kind, encut, nbands=nbands, isif=isif),
+            _render_incar(run_name, calc_kind, encut, nbands=nbands, isif=isif, ispin=ispin),
             encoding="utf-8",
         )
         (directory / "KPOINTS").write_text(_render_kpoints(kpoints), encoding="utf-8")
@@ -236,10 +246,14 @@ def _render_incar(
     encut: int,
     nbands: int | None = None,
     isif: int | None = None,
+    ispin: int = 1,
 ) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
     params.update(_INCAR_BY_KIND[calc_kind])
+    # ISPIN ya viene de _INCAR_COMMON (=1): sobreescribir la clave in-place
+    # conserva su posición en el INCAR y sube a 2 los cálculos magnéticos.
+    params["ISPIN"] = ispin
     if isif is not None:
         params["ISIF"] = isif
     if nbands is not None:

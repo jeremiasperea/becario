@@ -90,6 +90,22 @@ class TestBuildForwardsStructureSource:
         assert req.source is StructureSource.AUTO
 
 
+class TestBuildForwardsMagnetic:
+    """El router extrae `magnetico` (intención); el build lo traduce a ISPIN."""
+
+    def test_magnetic_true_sets_ispin_2(self):
+        req = _build_calc_request(_build_svc(), {"formula": "Fe", "magnetico": True})
+        assert req.ispin == 2
+
+    def test_absent_magnetic_defaults_ispin_1(self):
+        req = _build_calc_request(_build_svc(), {"formula": "W"})
+        assert req.ispin == 1
+
+    def test_magnetic_false_is_ispin_1(self):
+        req = _build_calc_request(_build_svc(), {"formula": "W", "magnetico": False})
+        assert req.ispin == 1
+
+
 class TestAsePath:
     def test_single_element_uses_ase(self):
         fake = FakeStructureProvider()

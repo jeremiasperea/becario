@@ -104,6 +104,36 @@ class TestNbands:
         assert "NBANDS = 200" in incar
 
 
+class TestIspin:
+    """ISPIN se emite SIEMPRE en el INCAR (aunque 1 sea el default de VASP):
+    el INCAR es la vista rápida de las condiciones de la corrida. Un pedido
+    magnético lo sube a 2."""
+
+    def test_ispin_always_emitted_default_1(self, generator):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "ISPIN = 1" in incar
+
+    def test_magnetic_request_sets_ispin_2(self, generator):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, ispin=2)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "ISPIN = 2" in incar
+
+    def test_ispin_emitted_in_every_scan_point(self, generator):
+        req = VaspCalcRequest(
+            formula="W", calc_kind=CalcKind.ENCUT_SCAN,
+            encut_values=[300, 400], ispin=2,
+        )
+        run_dir = Path(generator.generate(req).local_dir)
+        for pt in ("encut_300", "encut_400"):
+            incar = (run_dir / pt / "INCAR").read_text()
+            assert "ISPIN = 2" in incar
+
+    def test_invalid_ispin_rejected(self):
+        with pytest.raises(ValueError):
+            VaspCalcRequest(formula="W", ispin=3)
+
+
 class TestIsif:
     def test_relax_override_relaxes_ions_only(self, generator):
         req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, isif=2)

@@ -105,6 +105,9 @@ class RouterParams(BaseModel):
     puntos_k: Optional[list[int]] = Field(
         default=None, description="grilla de k-points [kx, ky, kz]"
     )
+    magnetico: Optional[bool] = Field(
+        default=None, description="true si el usuario pide un cálculo magnético"
+    )
 
 
 # Docstrings de RouterStep/RouterDecision se mantienen cortos a propósito:
@@ -179,6 +182,11 @@ _SYSTEM_PROMPT = (
     "ambos sin completar (el sistema decide la fuente).\n"
     "'relajá Fe2O3 con mp-19770' -> preparar_calculo, formula=Fe2O3, "
     "mp_id=mp-19770\n"
+    "Si el usuario pide un cálculo MAGNÉTICO (con espín, polarizado en "
+    "espín, spin-polarized, ferromagnético/antiferromagnético) poné "
+    "magnetico=true. Si no lo menciona, dejá magnetico sin completar.\n"
+    "'relajá el bulk de Fe con espín' -> preparar_calculo, formula=Fe, "
+    "magnetico=true\n"
     "'corré el script /home/ana/run.sh' -> enviar_slurm, "
     "script_remoto=/home/ana/run.sh\n"
     "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"

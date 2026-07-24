@@ -483,6 +483,11 @@ class VaspCalcRequest(BaseModel):
     # (tabla ZVAL) o, si no puede, lo deja a criterio de VASP. Se puede forzar
     # un número mayor cuando hacen falta bandas vacías (DOS, estados desocupados).
     nbands: Optional[int] = Field(default=None, ge=1, le=100000)
+    # ISPIN: 1 => sin polarización de espín (default); 2 => cálculo magnético.
+    # Se emite SIEMPRE en el INCAR (no se deja implícito), y el router lo sube
+    # a 2 cuando el usuario pide un cálculo magnético. MAGMOM no se setea todavía
+    # (VASP arranca con su guess por defecto) — mejora futura.
+    ispin: int = Field(default=1)
     # Materials Project: id explícito (fuerza fuente MP por id) y/o fuente
     # forzada (auto = el ruteo decide elemento->ASE, compuesto->MP). Inertes
     # por default, así el cambio es aditivo.
@@ -525,6 +530,13 @@ class VaspCalcRequest(BaseModel):
     def _v_supercell(cls, v: tuple[int, int, int]) -> tuple[int, int, int]:
         if len(v) != 3 or any(not (1 <= n <= 10) for n in v):
             raise ValueError(f"supercelda inválida: {v!r} (cada dimensión entre 1 y 10)")
+        return v
+
+    @field_validator("ispin")
+    @classmethod
+    def _v_ispin(cls, v: int) -> int:
+        if v not in (1, 2):
+            raise ValueError(f"ISPIN inválido: {v!r} (solo 1 = sin espín o 2 = magnético)")
         return v
 
     @field_validator("partition")
