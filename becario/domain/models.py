@@ -712,7 +712,10 @@ class StructureResolution:
     mp_id: str
     formula: str
     spacegroup: str
-    energy_above_hull: float
+    # `None` cuando la estructura se pidió por su mp-id: `get_structure_by_
+    # material_id` no trae el summary, así que el hull es desconocido. No se
+    # inventa 0.0 — la nota humana omite la afirmación de estabilidad si es None.
+    energy_above_hull: Optional[float] = None
     alternatives: tuple[StructureAlternative, ...] = ()
 
 

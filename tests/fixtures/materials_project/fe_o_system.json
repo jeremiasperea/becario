@@ -1,0 +1,498 @@
+[
+ {
+  "material_id": "mp-13",
+  "formula_pretty": "Fe",
+  "energy_above_hull": 0.0,
+  "structure": {
+   "@module": "pymatgen.core.structure",
+   "@class": "Structure",
+   "charge": 0.0,
+   "lattice": {
+    "matrix": [
+     [
+      2.87,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      2.87,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      2.87
+     ]
+    ],
+    "pbc": [
+     true,
+     true,
+     true
+    ],
+    "a": 2.87,
+    "b": 2.87,
+    "c": 2.87,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0,
+    "volume": 23.639903
+   },
+   "properties": {},
+   "sites": [
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.5,
+      0.5,
+      0.5
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      1.435,
+      1.435,
+      1.435
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "material_id": "mp-19770",
+  "formula_pretty": "Fe2O3",
+  "energy_above_hull": 0.0,
+  "structure": {
+   "@module": "pymatgen.core.structure",
+   "@class": "Structure",
+   "charge": 0.0,
+   "lattice": {
+    "matrix": [
+     [
+      5.03,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      5.03,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      5.03
+     ]
+    ],
+    "pbc": [
+     true,
+     true,
+     true
+    ],
+    "a": 5.03,
+    "b": 5.03,
+    "c": 5.03,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0,
+    "volume": 127.26352700000001
+   },
+   "properties": {},
+   "sites": [
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.5,
+      0.5,
+      0.5
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      2.515,
+      2.515,
+      2.515
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.25,
+      0.25,
+      0.25
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      1.2575,
+      1.2575,
+      1.2575
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.75,
+      0.75,
+      0.75
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      3.7725,
+      3.7725,
+      3.7725
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.5,
+      0.0,
+      0.0
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      2.515,
+      0.0,
+      0.0
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "material_id": "mp-1279",
+  "formula_pretty": "Fe3O4",
+  "energy_above_hull": 0.008,
+  "structure": {
+   "@module": "pymatgen.core.structure",
+   "@class": "Structure",
+   "charge": 0.0,
+   "lattice": {
+    "matrix": [
+     [
+      8.39,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      8.39,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      8.39
+     ]
+    ],
+    "pbc": [
+     true,
+     true,
+     true
+    ],
+    "a": 8.39,
+    "b": 8.39,
+    "c": 8.39,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0,
+    "volume": 590.5897190000002
+   },
+   "properties": {},
+   "sites": [
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.5,
+      0.5,
+      0.0
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      4.195,
+      4.195,
+      0.0
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.0,
+      0.5,
+      0.5
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      0.0,
+      4.195,
+      4.195
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.25,
+      0.25,
+      0.25
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      2.0975,
+      2.0975,
+      2.0975
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.75,
+      0.75,
+      0.25
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      6.2925,
+      6.2925,
+      2.0975
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.75,
+      0.25,
+      0.75
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      6.2925,
+      2.0975,
+      6.2925
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.25,
+      0.75,
+      0.75
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      2.0975,
+      6.2925,
+      6.2925
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "material_id": "mp-1178",
+  "formula_pretty": "FeO",
+  "energy_above_hull": 0.045,
+  "structure": {
+   "@module": "pymatgen.core.structure",
+   "@class": "Structure",
+   "charge": 0.0,
+   "lattice": {
+    "matrix": [
+     [
+      4.33,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      4.33,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      4.33
+     ]
+    ],
+    "pbc": [
+     true,
+     true,
+     true
+    ],
+    "a": 4.33,
+    "b": 4.33,
+    "c": 4.33,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0,
+    "volume": 81.182737
+   },
+   "properties": {},
+   "sites": [
+    {
+     "species": [
+      {
+       "element": "Fe",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "properties": {},
+     "label": "Fe",
+     "xyz": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "species": [
+      {
+       "element": "O",
+       "occu": 1
+      }
+     ],
+     "abc": [
+      0.5,
+      0.5,
+      0.5
+     ],
+     "properties": {},
+     "label": "O",
+     "xyz": [
+      2.165,
+      2.165,
+      2.165
+     ]
+    }
+   ]
+  }
+ }
+]

@@ -87,6 +87,13 @@ class RouterParams(BaseModel):
     # Sin `description` a propósito: el schema del router tiene presupuesto
     # de tamaño (ADR-0006). La guía de uso vive en `_SYSTEM_PROMPT`.
     nombre_archivo: Optional[str] = None
+    # Fuente de estructura (Materials Project). `mp_id` es el id explícito de
+    # un polimorfo ('mp-149'); `fuente_estructura` fuerza el origen. Sin
+    # description (presupuesto de schema): la guía vive en `_SYSTEM_PROMPT`.
+    mp_id: Optional[str] = None
+    fuente_estructura: Optional[str] = Field(
+        default=None, description="ase o mp"
+    )
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
         default=None, description="relajacion, estatico o convergencia_encut"
@@ -164,6 +171,14 @@ _SYSTEM_PROMPT = (
     "'curva de convergencia de ENCUT para Zr hcp de 250 a 450' -> "
     "preparar_calculo, tipo_calculo=convergencia_encut, formula=Zr, "
     "red_cristalina=hcp, encut_min=250, encut_max=450\n"
+    "En 'preparar_calculo' de un compuesto, si el usuario nombra una "
+    "estructura de Materials Project por su id ('mp-149', 'usá mp-19770') "
+    "extraé ese id en 'mp_id'. Si pide forzar el origen ('bajala de "
+    "Materials Project' -> mp; 'armala con ASE', 'estructura ideal' -> "
+    "ase) poné 'ase' o 'mp' en 'fuente_estructura'. Sin pistas, dejá "
+    "ambos sin completar (el sistema decide la fuente).\n"
+    "'relajá Fe2O3 con mp-19770' -> preparar_calculo, formula=Fe2O3, "
+    "mp_id=mp-19770\n"
     "'corré el script /home/ana/run.sh' -> enviar_slurm, "
     "script_remoto=/home/ana/run.sh\n"
     "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"

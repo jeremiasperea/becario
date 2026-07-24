@@ -84,13 +84,19 @@ class MaterialsProjectProvider:
 
     def _by_mp_id(self, mpr, mp_id: str) -> StructureResolution:
         structure = mpr.get_structure_by_material_id(mp_id)
+        # Con final=True (default) devuelve UNA estructura, pero la API declara
+        # `Structure | list[Structure]`: normalizamos para no romper si lista.
+        if isinstance(structure, list):
+            structure = structure[0] if structure else None
         if structure is None:
             raise StructureResolutionError(StructureResolutionReason.NO_MATCH, mp_id)
+        # Sin summary no conocemos el hull: se deja en None (la nota humana
+        # no afirmará "la más estable" para un polimorfo elegido por id).
         return _to_resolution(
             structure,
             mp_id=mp_id,
             formula=structure.composition.reduced_formula,
-            energy_above_hull=0.0,
+            energy_above_hull=None,
             alternatives=(),
         )
 
@@ -131,7 +137,10 @@ def _chemsys(elements) -> str:
 
 def _contains(doc, element: str) -> bool:
     """¿La estructura del documento contiene `element`? Filtra el chemsys a los
-    óxidos reales (p. ej. descarta Fe puro de una búsqueda 'Fe-O')."""
+    óxidos reales (p. ej. descarta Fe puro de una búsqueda 'Fe-O'). Un doc sin
+    estructura no se puede verificar: se excluye (no se cuela sin filtrar)."""
+    if doc.structure is None:
+        return False
     return any(el.symbol == element for el in doc.structure.composition.elements)
 
 
@@ -140,7 +149,7 @@ def _to_resolution(
     *,
     mp_id: str,
     formula: str,
-    energy_above_hull: float,
+    energy_above_hull: Optional[float],
     alternatives: tuple,
 ) -> StructureResolution:
     sga = SpacegroupAnalyzer(structure)
