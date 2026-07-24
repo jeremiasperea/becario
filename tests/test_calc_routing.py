@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from becario.application.context import Reply
-from becario.application.handlers.calc import _resolve_structure
+from becario.application.handlers.calc import _build_calc_request, _resolve_structure
 from becario.domain.models import (
     StructureResolutionError,
     StructureResolutionReason,
@@ -22,6 +22,40 @@ from .fakes import FakeStructureProvider
 
 def _svc(provider=None, key="secret"):
     return SimpleNamespace(_structure_provider=provider, _mp_api_key=key)
+
+
+def _build_svc():
+    """Stub mínimo para `_build_calc_request`: solo mira `_calc_inputs`
+    (que exista) y `_potcar_dir` (ruta absoluta). Sin I/O al cluster."""
+    return SimpleNamespace(_calc_inputs=object(), _potcar_dir="/opt/potcar")
+
+
+class TestBuildForwardsStructureSource:
+    """El router extrae `mp_id`/`fuente_estructura`; `_build_calc_request`
+    debe reenviarlos al `VaspCalcRequest` para que el ruteo a MP los vea."""
+
+    def test_forwards_mp_id(self):
+        req = _build_calc_request(_build_svc(), {"formula": "Fe2O3", "mp_id": "mp-19770"})
+        assert isinstance(req, VaspCalcRequest)
+        assert req.mp_id == "mp-19770"
+
+    def test_forwards_source_mp(self):
+        req = _build_calc_request(_build_svc(), {"formula": "Fe", "fuente_estructura": "mp"})
+        assert req.source is StructureSource.MP
+
+    def test_forwards_source_ase(self):
+        req = _build_calc_request(_build_svc(), {"formula": "Fe2O3", "fuente_estructura": "ase"})
+        assert req.source is StructureSource.ASE
+
+    def test_defaults_to_auto_without_hints(self):
+        req = _build_calc_request(_build_svc(), {"formula": "W"})
+        assert req.mp_id is None
+        assert req.source is StructureSource.AUTO
+
+    def test_unknown_source_falls_back_to_auto(self):
+        # Un typo del LLM en la fuente no debe romper el cálculo.
+        req = _build_calc_request(_build_svc(), {"formula": "W", "fuente_estructura": "xyz"})
+        assert req.source is StructureSource.AUTO
 
 
 class TestAsePath:

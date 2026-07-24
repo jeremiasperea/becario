@@ -71,6 +71,17 @@ class TestParseLLMOutput:
         assert plan.single_step.parametros["encut_min"] == 250
         assert plan.single_step.parametros["encut_max"] == 450
 
+    def test_mp_source_params_roundtrip(self):
+        raw = (
+            '{"steps": [{"action": "preparar_calculo", "parametros": '
+            '{"formula": "Fe2O3", "mp_id": "mp-19770", '
+            '"fuente_estructura": "mp"}}]}'
+        )
+        plan = parse(raw)
+        assert plan.single_step.action is Intent.PREPARE_CALC
+        assert plan.single_step.parametros["mp_id"] == "mp-19770"
+        assert plan.single_step.parametros["fuente_estructura"] == "mp"
+
     def test_none_params_are_excluded(self):
         plan = parse('{"steps": [{"action": "revisar_estado", "parametros": {"job_id": null}}]}')
         assert plan.single_step.parametros == {}
@@ -172,6 +183,11 @@ class TestSchema:
         schema = RouterParams.model_json_schema()
         for key in ("tipo_calculo", "encut", "encut_min", "encut_max",
                     "encut_paso", "puntos_k"):
+            assert key in schema["properties"]
+
+    def test_schema_has_structure_source_params(self):
+        schema = RouterParams.model_json_schema()
+        for key in ("mp_id", "fuente_estructura"):
             assert key in schema["properties"]
 
     def test_schema_size_stays_within_budget(self):

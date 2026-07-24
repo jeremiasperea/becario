@@ -140,6 +140,17 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             return Reply(text="⚠️ El paso del barrido de ENCUT debe ser positivo.")
         encut_values = list(range(int(lo), int(hi) + 1, step))
 
+    # Fuente de estructura (Materials Project): el router puede extraer un
+    # `mp_id` explícito y/o forzar el origen vía `fuente_estructura`. Un
+    # valor de fuente fuera del enum se ignora (queda AUTO) para no romper
+    # el cálculo por un typo del LLM; `mp_id` inválido sí lo caza el modelo.
+    src_raw = str(params.get("fuente_estructura") or "").strip().lower()
+    source = (
+        StructureSource(src_raw)
+        if src_raw in StructureSource._value2member_map_
+        else StructureSource.AUTO
+    )
+
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
@@ -152,6 +163,8 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             encut=int(params.get("encut") or 520),
             kpoints=tuple(int(x) for x in kp) if kp else None,
             encut_values=encut_values,
+            mp_id=params.get("mp_id"),
+            source=source,
             partition=params.get("particion") or "default",
             nodes=int(params.get("nodos") or 1),
             time_limit=params.get("tiempo_limite") or "01:00:00",
@@ -224,13 +237,9 @@ def _mp_error_reply(exc: StructureResolutionError) -> Reply:
 
 def _mp_note(resolution) -> str:
     """Nota humana con el material elegido (el más estable). Las alternativas
-    se listan como referencia informativa.
-
-    OJO: NO se le promete al usuario que puede pedir otra por mp-id, porque hoy
-    el router no extrae `mp_id`/`source` y `_build_calc_request` no los reenvía
-    (los campos existen en el request pero quedan inertes vía chat). Elegir un
-    polimorfo distinto por conversación es un follow-up pendiente; hasta que se
-    cablee, la nota no debe prometer una interacción que se ignoraría."""
+    se listan con su mp-id: el router ya extrae `mp_id`/`fuente_estructura`
+    y `_build_calc_request` los reenvía, así que pedir otro polimorfo por su
+    id es una interacción real — la nota puede ofrecerla honestamente."""
     lines = [
         f"🧬 Estructura de Materials Project: {resolution.formula} "
         f"({resolution.mp_id}, {resolution.spacegroup}) — la más estable "
@@ -242,9 +251,9 @@ def _mp_note(resolution) -> str:
             for a in resolution.alternatives
         )
         lines.append(
-            f"Otras opciones que devolvió MP (a título informativo): {alts}. "
-            "Se usa automáticamente la más estable; elegir otra todavía no "
-            "está disponible."
+            f"Otras opciones que devolvió MP: {alts}. Se usa automáticamente "
+            "la más estable; si querés otra, pedímela por su mp-id "
+            "(p. ej. «usá mp-19770»)."
         )
     return "\n".join(lines)
 
