@@ -438,6 +438,55 @@ class _Completed:
         self.returncode = returncode
 
 
+class _RecordingStream:
+    """Stream falso que anota cuándo le piden flush."""
+
+    def __init__(self, eventos, nombre):
+        self.eventos = eventos
+        self.nombre = nombre
+
+    def flush(self):
+        self.eventos.append(f"flush:{self.nombre}")
+
+    def write(self, texto):
+        return len(texto)
+
+
+class TestMain:
+    def test_vacia_los_buffers_antes_de_ceder_el_proceso(self, monkeypatch):
+        """`execv` NO vacía los buffers de Python.
+
+        Con la salida redirigida a un archivo (systemd, CI) todo lo que
+        imprimió el launcher se perdería si no se hace flush a mano.
+        """
+        eventos = []
+        monkeypatch.setattr(start_becario, "load_local_env", lambda *a, **k: None)
+        monkeypatch.setattr(start_becario, "ensure_ollama", lambda *a, **k: None)
+        monkeypatch.setattr(
+            start_becario.sys, "stdout", _RecordingStream(eventos, "stdout")
+        )
+        monkeypatch.setattr(
+            start_becario.sys, "stderr", _RecordingStream(eventos, "stderr")
+        )
+        monkeypatch.setattr(
+            start_becario.os, "execv", lambda *a: eventos.append("execv")
+        )
+
+        start_becario.main([])
+
+        assert eventos.index("flush:stdout") < eventos.index("execv")
+        assert eventos.index("flush:stderr") < eventos.index("execv")
+
+    def test_check_only_no_cede_el_proceso(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "load_local_env", lambda *a, **k: None)
+        monkeypatch.setattr(start_becario, "ensure_ollama", lambda *a, **k: None)
+        monkeypatch.setattr(
+            start_becario.os, "execv", lambda *a: pytest.fail("no debía arrancar el bot")
+        )
+
+        start_becario.main(["--check-only"])
+
+
 class _FakeProcess:
     """Popen falso: `alive` controla si sigue vivo en el poll."""
 

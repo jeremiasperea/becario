@@ -374,6 +374,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"✅ Ollama listo en {url} con el modelo {model!r}.")
         return
 
+    # `execv` reemplaza la imagen del proceso SIN vaciar los buffers de Python.
+    # Con la salida a una terminal no se nota (buffer por línea), pero
+    # redirigida a un archivo — systemd, CI, `> bot.log` — se pierde todo lo
+    # que imprimimos hasta acá. Vaciamos a mano antes de ceder el proceso.
+    sys.stdout.flush()
+    sys.stderr.flush()
+
     # Le cedemos el proceso a main.py: un solo PID para el bot, y los señales
     # (Ctrl+C, systemd stop) le llegan directo sin intermediarios.
     os.execv(sys.executable, [sys.executable, str(PROJECT_ROOT / "main.py")])
