@@ -195,13 +195,181 @@ class TestEnsureOllama:
         assert bajados == ["gemma3:4b"]
 
 
-class _Completed:
-    def __init__(self, returncode):
-        self.returncode = returncode
+class TestHumanSize:
+    def test_gigas(self):
+        assert start_becario.human_size(4_683_073_952) == "4.7 GB"
+
+    def test_megas(self):
+        assert start_becario.human_size(74_000_000) == "74 MB"
+
+
+class TestManifestPath:
+    def test_biblioteca_oficial_con_tag(self):
+        assert start_becario.manifest_path("qwen2.5:7b") == (
+            "library/qwen2.5/manifests/7b"
+        )
+
+    def test_sin_tag_asume_latest(self):
+        assert start_becario.manifest_path("llama3") == (
+            "library/llama3/manifests/latest"
+        )
+
+    def test_namespace_propio_no_lleva_library(self):
+        assert start_becario.manifest_path("hf.co/user/modelo:q4") == (
+            "hf.co/user/modelo/manifests/q4"
+        )
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class TestModelDownloadSize:
+    def test_suma_capas_y_config(self, monkeypatch):
+        payload = {
+            "config": {"size": 487},
+            "layers": [{"size": 4_683_073_952}, {"size": 1482}],
+        }
+        monkeypatch.setattr(
+            start_becario.httpx, "get", lambda *a, **k: _FakeResponse(payload)
+        )
+
+        assert start_becario.model_download_size("qwen2.5:7b") == 4_683_075_921
+
+    def test_none_si_el_registro_no_contesta(self, monkeypatch):
+        def boom(*a, **k):
+            raise start_becario.httpx.ConnectError("sin red")
+
+        monkeypatch.setattr(start_becario.httpx, "get", boom)
+
+        assert start_becario.model_download_size("qwen2.5:7b") is None
+
+    def test_none_si_el_manifest_viene_raro(self, monkeypatch):
+        monkeypatch.setattr(
+            start_becario.httpx,
+            "get",
+            lambda *a, **k: _FakeResponse({"layers": [{"size": "no-es-un-numero"}]}),
+        )
+
+        assert start_becario.model_download_size("qwen2.5:7b") is None
+
+
+class TestFreeSpace:
+    def test_sube_hasta_un_padre_existente(self, tmp_path):
+        inexistente = tmp_path / "no" / "existe" / "todavia"
+
+        assert start_becario.free_space(inexistente) > 0
+
+
+class TestCheckDisk:
+    def test_aborta_si_no_entra(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "free_space", lambda _: 1_000_000_000)
+
+        with pytest.raises(SystemExit) as exc:
+            start_becario.check_disk("gemma3:4b", 4_000_000_000)
+
+        assert exc.value.code == 1
+
+    def test_pasa_si_entra_holgado(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "free_space", lambda _: 100_000_000_000)
+
+        start_becario.check_disk("gemma3:4b", 4_000_000_000)
+
+    def test_no_bloquea_si_no_sabe_el_peso(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "free_space", lambda _: 1_000)
+
+        start_becario.check_disk("gemma3:4b", None)
+
+    def test_no_bloquea_si_no_sabe_el_espacio(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "free_space", lambda _: None)
+
+        start_becario.check_disk("gemma3:4b", 4_000_000_000)
+
+    def test_avisa_si_queda_justo(self, monkeypatch, capsys):
+        monkeypatch.setattr(start_becario, "free_space", lambda _: 4_100_000_000)
+
+        start_becario.check_disk("gemma3:4b", 4_000_000_000)
+
+        assert "muy justo" in capsys.readouterr().out
+
+
+class TestEnsureBinary:
+    def test_no_hace_nada_si_ya_esta(self, monkeypatch):
+        monkeypatch.setattr(start_becario.shutil, "which", lambda _: "/usr/bin/ollama")
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: pytest.fail("no instalar")
+        )
+
+        start_becario.ensure_binary(assume_yes=True)
+
+    def test_aborta_si_el_usuario_no_quiere_instalar(self, monkeypatch):
+        monkeypatch.setattr(start_becario.shutil, "which", lambda _: None)
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: pytest.fail("no instalar")
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            start_becario.ensure_binary(assume_yes=False)
+
+        assert exc.value.code == 1
+
+    def test_instala_si_el_usuario_acepta(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "s")
+        corridos = []
+        monkeypatch.setattr(
+            start_becario.subprocess,
+            "run",
+            lambda cmd, **k: corridos.append(cmd) or _Completed(0),
+        )
+        # Antes de instalar no está; después del install sí.
+        estados = iter([None, "/usr/local/bin/ollama"])
+        monkeypatch.setattr(start_becario.shutil, "which", lambda _: next(estados))
+
+        start_becario.ensure_binary(assume_yes=False)
+
+        assert corridos == [start_becario.INSTALL_COMMAND]
+
+    def test_aborta_si_el_instalador_falla(self, monkeypatch):
+        monkeypatch.setattr(start_becario.shutil, "which", lambda _: None)
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: _Completed(1)
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            start_becario.ensure_binary(assume_yes=True)
+
+        assert exc.value.code == 1
+
+    def test_aborta_si_tras_instalar_sigue_sin_estar_en_el_path(self, monkeypatch):
+        monkeypatch.setattr(start_becario.shutil, "which", lambda _: None)
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: _Completed(0)
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            start_becario.ensure_binary(assume_yes=True)
+
+        assert exc.value.code == 1
+
+
+@pytest.fixture
+def pull_sin_efectos(monkeypatch):
+    """Aísla `pull_model`: sin binario real, sin red y con disco de sobra."""
+    monkeypatch.setattr(start_becario, "ensure_binary", lambda **k: None)
+    monkeypatch.setattr(start_becario, "model_download_size", lambda *a, **k: 4_000_000_000)
+    monkeypatch.setattr(start_becario, "free_space", lambda _: 500_000_000_000)
 
 
 class TestPullModel:
-    def test_aborta_si_el_usuario_dice_que_no(self, monkeypatch):
+    def test_aborta_si_el_usuario_dice_que_no(self, monkeypatch, pull_sin_efectos):
         monkeypatch.setattr("builtins.input", lambda _: "n")
 
         with pytest.raises(SystemExit) as exc:
@@ -209,7 +377,19 @@ class TestPullModel:
 
         assert exc.value.code == 1
 
-    def test_no_pregunta_con_assume_yes(self, monkeypatch):
+    def test_muestra_peso_y_espacio_antes_de_preguntar(
+        self, monkeypatch, pull_sin_efectos, capsys
+    ):
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+
+        with pytest.raises(SystemExit):
+            start_becario.pull_model("gemma3:4b", assume_yes=False)
+
+        salida = capsys.readouterr().out
+        assert "Peso de la descarga: 4.0 GB" in salida
+        assert "Espacio libre en" in salida
+
+    def test_no_pregunta_con_assume_yes(self, monkeypatch, pull_sin_efectos):
         monkeypatch.setattr(
             "builtins.input", lambda _: pytest.fail("no debía preguntar")
         )
@@ -219,7 +399,30 @@ class TestPullModel:
 
         start_becario.pull_model("gemma3:4b", assume_yes=True)
 
-    def test_aborta_si_el_pull_falla(self, monkeypatch):
+    def test_assume_yes_no_saltea_el_chequeo_de_disco(self, monkeypatch):
+        monkeypatch.setattr(start_becario, "ensure_binary", lambda **k: None)
+        monkeypatch.setattr(start_becario, "model_download_size", lambda *a, **k: 4_000_000_000)
+        monkeypatch.setattr(start_becario, "free_space", lambda _: 1_000_000_000)
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: pytest.fail("no debía bajar")
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            start_becario.pull_model("gemma3:4b", assume_yes=True)
+
+        assert exc.value.code == 1
+
+    def test_baja_igual_si_no_pudo_averiguar_el_peso(
+        self, monkeypatch, pull_sin_efectos
+    ):
+        monkeypatch.setattr(start_becario, "model_download_size", lambda *a, **k: None)
+        monkeypatch.setattr(
+            start_becario.subprocess, "run", lambda *a, **k: _Completed(0)
+        )
+
+        start_becario.pull_model("gemma3:4b", assume_yes=True)
+
+    def test_aborta_si_el_pull_falla(self, monkeypatch, pull_sin_efectos):
         monkeypatch.setattr(
             start_becario.subprocess, "run", lambda *a, **k: _Completed(1)
         )
@@ -228,6 +431,11 @@ class TestPullModel:
             start_becario.pull_model("gemma3:4b", assume_yes=True)
 
         assert exc.value.code == 1
+
+
+class _Completed:
+    def __init__(self, returncode):
+        self.returncode = returncode
 
 
 class _FakeProcess:
