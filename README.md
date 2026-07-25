@@ -97,13 +97,52 @@ setearlas como variables de entorno: el entorno tiene prioridad sobre el `.env`.
 
 > Si el bot venía de usar webhooks: `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook`
 
+### Arranque con Ollama automático
+
+`main.py` **no** levanta Ollama: valida que esté arriba con el modelo configurado
+y aborta con un mensaje claro si no (fail-fast, ver ADR-1/ADR-2). Levantar un
+demonio del sistema es orquestación, no responsabilidad del composition root.
+
+Para eso hay un launcher una capa más afuera:
+
+```bash
+python3 scripts/start_becario.py        # asegura Ollama y arranca el bot
+python3 scripts/start_becario.py --yes  # sin preguntas (systemd, CI)
+python3 scripts/start_becario.py --check-only   # deja Ollama listo, no arranca el bot
+```
+
+Qué hace, en orden:
+
+1. Consulta `BECARIO_OLLAMA_URL`. Si no responde y es **local**, corre
+   `ollama serve` en background (log en `ollama.log`, gitignoreado) y espera
+   hasta `--timeout` segundos a que atienda.
+2. Si falta el modelo de `BECARIO_OLLAMA_MODEL`, ofrece bajarlo. Un pull son
+   varios GB: no se dispara solo salvo que pases `--yes`. Sin terminal
+   (systemd, CI), cualquier pregunta cuenta como "no".
+3. Le cede el proceso a `main.py` con `execv`, así el bot queda con un solo PID
+   y las señales (Ctrl+C, `systemctl stop`) le llegan directo.
+
+Si la URL apunta a **otra máquina**, el launcher no intenta nada: avisa qué
+falta allá y corta. No hay forma de arrancar un demonio remoto desde acá.
+
+El servidor que levanta queda corriendo después de que el bot termine (es un
+demonio); el propio script te imprime el PID para pararlo.
+
+> **Ojo con el store de modelos.** `ollama serve` resuelve los modelos contra el
+> home del usuario que lo corre. Un Ollama de sistema (usuario `ollama`) usa
+> `/usr/share/ollama/.ollama` y **no ve** los modelos que bajaste con tu usuario
+> en `~/.ollama`. Si `ollama list` te muestra modelos pero el bot dice que falta
+> el modelo, es esto: bajalo con `sudo -u ollama ollama pull <modelo>` o pará el
+> servicio de sistema y dejá que el launcher levante uno con tu usuario.
+
 ### Como servicio (systemd)
 
 ```ini
 # /etc/systemd/system/becario.service
 [Unit]
 Description=BECARIO Telegram HPC bot
-After=network-online.target
+After=network-online.target ollama.service
+Wants=ollama.service
 
 [Service]
 User=jeremias
@@ -116,6 +155,11 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+Con systemd de por medio, la dependencia declarativa (`Wants=`/`After=`) es
+mejor que el launcher: el init system ya sabe ordenar y reiniciar servicios, y
+`main.py` mantiene su fail-fast. `start_becario.py` es para la máquina de
+escritorio, donde no hay nadie ordenando el arranque.
 
 ## Tests
 
