@@ -31,6 +31,8 @@ htmlcov/
 *Zone.Identifier
 
 # === Artefactos generados ===
+# Log del `ollama serve` que levanta scripts/start_becario.py
+ollama.log
 repomix-output.xml
 .atl/
 graphify-out/
