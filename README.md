@@ -113,14 +113,31 @@ python3 scripts/start_becario.py --check-only   # deja Ollama listo, no arranca 
 
 Qué hace, en orden:
 
-1. Consulta `BECARIO_OLLAMA_URL`. Si no responde y es **local**, corre
+1. Si no existe el comando `ollama`, te muestra el comando del instalador
+   oficial y pregunta si lo instala.
+2. Consulta `BECARIO_OLLAMA_URL`. Si no responde y es **local**, corre
    `ollama serve` en background (log en `ollama.log`, gitignoreado) y espera
    hasta `--timeout` segundos a que atienda.
-2. Si falta el modelo de `BECARIO_OLLAMA_MODEL`, ofrece bajarlo. Un pull son
-   varios GB: no se dispara solo salvo que pases `--yes`. Sin terminal
-   (systemd, CI), cualquier pregunta cuenta como "no".
-3. Le cede el proceso a `main.py` con `execv`, así el bot queda con un solo PID
+3. Si falta el modelo de `BECARIO_OLLAMA_MODEL`, consulta su **peso** en el
+   registro de Ollama, te muestra el **espacio libre** en el store de modelos y
+   recién ahí pregunta si lo baja:
+
+   ```
+   ⚠️  El modelo 'qwen2.5:7b' no está instalado en Ollama.
+      Peso de la descarga: 4.7 GB
+      Espacio libre en /home/vos/.ollama/models: 123.4 GB
+      ¿Lo bajo ahora con `ollama pull qwen2.5:7b`? [s/N]
+   ```
+
+   Si el modelo **no entra en disco**, corta sin bajar nada. Ese chequeo no lo
+   saltea `--yes`: esa flag aprueba la intención de bajar, no hace aparecer
+   espacio. Si el peso no se puede consultar (registro caído, sin red), avisa y
+   sigue igual — es un dato informativo, no un requisito.
+4. Le cede el proceso a `main.py` con `execv`, así el bot queda con un solo PID
    y las señales (Ctrl+C, `systemctl stop`) le llegan directo.
+
+`--yes` aprueba todo sin preguntar (instalación incluida): es para systemd y CI,
+donde no hay nadie mirando. Sin terminal, cualquier pregunta cuenta como "no".
 
 Si la URL apunta a **otra máquina**, el launcher no intenta nada: avisa qué
 falta allá y corta. No hay forma de arrancar un demonio remoto desde acá.
