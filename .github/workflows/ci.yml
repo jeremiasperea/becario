@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Un push nuevo sobre la misma rama cancela la corrida anterior: no tiene
+# sentido gastar minutos validando un commit que ya quedó viejo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # La instalación de pymatgen y sus dependencias es lo más lento del job;
+    # con el caché de pip no debería pasar de unos minutos.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.10 es el piso declarado en pyproject y la versión que fuerza el pin
+      # de emmet-core<0.86 (el 0.86.0rc1 usa typing.NotRequired, que es 3.11+).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar el proyecto y sus dependencias de desarrollo
+        run: pip install -e ".[dev]"
+
+      # La suite no toca la red ni levanta procesos: el adaptador de Ollama se
+      # mockea y el harness que sí pega contra un Ollama real vive fuera de
+      # pytest (ver testpaths en pyproject.toml).
+      - name: Tests
+        run: pytest
