@@ -99,7 +99,7 @@ class RouterParams(BaseModel):
     # description (presupuesto de schema): la guía vive en `_SYSTEM_PROMPT`.
     mp_id: Optional[str] = None
     fuente_estructura: Optional[str] = Field(
-        default=None, description="ase o mp"
+        default=None, description="ase, mp o relajado"
     )
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
@@ -195,6 +195,14 @@ _SYSTEM_PROMPT = (
     "Materials Project' -> mp; 'armala con ASE', 'estructura ideal' -> "
     "ase) poné 'ase' o 'mp' en 'fuente_estructura'. Sin pistas, dejá "
     "ambos sin completar (el sistema decide la fuente).\n"
+    "Si el pedido parte de un resultado propio anterior —'el bulk de ZrO2 "
+    "RELAJADO', 'la estructura ya relajada', 'partí del CONTCAR', 'usá el "
+    "resultado de la relajación'— poné 'relajado' en 'fuente_estructura'. "
+    "Ojo: 'relajá X' es tipo_calculo=relajacion (lo que se VA a hacer); "
+    "'de X relajado' es fuente_estructura=relajado (de dónde se PARTE), y "
+    "pueden aparecer juntos.\n"
+    "'armá un slab del ZrO2 relajado' -> tipo_estructura=slab, "
+    "formula=ZrO2, fuente_estructura=relajado\n"
     "'relajá Fe2O3 con mp-19770' -> preparar_calculo, formula=Fe2O3, "
     "mp_id=mp-19770\n"
     "'corré el script /home/ana/run.sh' -> enviar_slurm, "

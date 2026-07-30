@@ -448,6 +448,10 @@ class StructureSource(str, Enum):
     AUTO = "auto"
     ASE = "ase"
     MP = "mp"
+    # Partir del CONTCAR de la última relajación propia de ese material
+    # ("el bulk de ZrO2 relajado"). No es una fuente externa: es un
+    # resultado anterior del propio usuario.
+    RELAXED = "relajado"
 
 
 class StructureRequest(BaseModel):
