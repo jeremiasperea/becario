@@ -474,6 +474,12 @@ class VaspCalcRequest(BaseModel):
     encut: int = Field(default=520, ge=100, le=1500)  # eV
     kpoints: Optional[tuple[int, int, int]] = None  # None => grilla automática
     encut_values: Optional[list[int]] = None  # solo para ENCUT_SCAN
+    # NSW: presupuesto de pasos iónicos. None => default por tipo de cálculo
+    # (`_DEFAULT_NSW` en el generador: 180 al relajar, 0 en los tipos de un
+    # solo punto). El TIPO MANDA sobre el pedido: en un estático o un barrido
+    # de ENCUT se fuerza a 0 aunque acá venga otro valor — un cálculo de un
+    # solo punto con pasos iónicos no es un estático, es una relajación.
+    nsw: Optional[int] = Field(default=None, ge=0, le=10000)
     # ISIF: qué relaja la corrida de relajación. None => default por tipo de
     # cálculo (RELAX usa 3: iones + forma + volumen). Se puede pedir 2 para
     # relajar solo iones (típico en slabs/interfaces). Solo tiene efecto con
@@ -561,6 +567,22 @@ class VaspCalcRequest(BaseModel):
         if any(not (100 <= x <= 1500) for x in values):
             raise ValueError("cada ENCUT del barrido debe estar entre 100 y 1500 eV")
         return values
+
+
+    @model_validator(mode="after")
+    def _v_nsw_vs_kind(self) -> "VaspCalcRequest":
+        """Una relajación con NSW=0 no relaja nada: el directorio de la
+        corrida diría `relajacion` y sería un cálculo de un solo punto. El
+        cero se pide eligiendo un cálculo estático, no vaciándole los pasos
+        iónicos a una relajación. (El caso espejo — pedir pasos iónicos en un
+        estático — no se rechaza: lo fuerza a 0 el generador, porque ahí el
+        tipo de cálculo manda.)"""
+        if self.calc_kind is CalcKind.RELAX and self.nsw == 0:
+            raise ValueError(
+                "una relajación necesita NSW>=1; para un solo punto pedí un "
+                "cálculo estático"
+            )
+        return self
 
     @staticmethod
     def default_encut_values() -> list[int]:

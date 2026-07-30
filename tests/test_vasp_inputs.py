@@ -1,8 +1,10 @@
 """Tests del generador de inputs VASP (usa ASE de verdad, sin cluster)."""
+import logging
 from pathlib import Path
 
 import pytest
 from ase import Atoms
+from pydantic import ValidationError
 
 from becario.domain.models import CalcKind, VaspCalcRequest
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
@@ -37,7 +39,13 @@ class TestSingleCalc:
         incar = (Path(result.local_dir) / "INCAR").read_text()
         assert "ISIF = 3" in incar
         assert "IBRION = 2" in incar
-        assert "NSW = 60" in incar
+        assert "NSW = 180" in incar
+
+    def test_relax_uses_group_force_criterion(self, generator):
+        """EDIFFG=-0.02 eV/Å es el criterio del grupo, no el -0.01 del andamio."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "EDIFFG = -0.02" in incar
 
     def test_job_script_cds_to_own_dir_with_prelude(self, generator):
         req = VaspCalcRequest(formula="Si")
@@ -115,6 +123,64 @@ class TestIsif:
         req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, isif=3)
         incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
         assert "ISIF" not in incar
+
+
+class TestNsw:
+    """El presupuesto de pasos iónicos lo fija el TIPO de cálculo; el pedido
+    solo puede afinarlo donde tiene sentido (los tipos que relajan)."""
+
+    def test_relax_default_is_group_production_value(self, generator):
+        """180, no 60: un presupuesto corto termina con código 0 y deja un
+        CONTCAR a medio relajar que parece válido."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 180" in incar
+
+    def test_relax_override_wins(self, generator):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, nsw=300)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 300" in incar
+
+    def test_static_forces_zero_even_when_nsw_requested(self, generator):
+        """El tipo manda: un estático con pasos iónicos no es un estático.
+
+        Y al forzarlo (en vez de rechazarlo) queda inalcanzable un INCAR con
+        NSW>1 sin IBRION, que VASP leería como dinámica molecular."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=180)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 0" in incar
+        assert "IBRION" not in incar
+        assert "EDIFFG" not in incar
+        assert "ISIF" not in incar
+
+    def test_forcing_is_logged_not_silent(self, generator, caplog):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=180)
+        with caplog.at_level(logging.WARNING):
+            generator.generate(req)
+        assert "NSW=180 ignorado" in caplog.text
+
+    def test_encut_scan_points_have_no_ionic_steps(self, generator):
+        req = VaspCalcRequest(
+            formula="W", calc_kind=CalcKind.ENCUT_SCAN, encut_values=[300, 400]
+        )
+        run_dir = Path(generator.generate(req).local_dir)
+        for encut in (300, 400):
+            incar = (run_dir / f"encut_{encut}" / "INCAR").read_text()
+            assert "NSW = 0" in incar
+            assert "IBRION" not in incar
+
+    def test_relax_with_zero_nsw_is_rejected(self):
+        """Caso espejo: una `relajacion` sin pasos iónicos sería un estático
+        con el nombre equivocado. El cero se pide eligiendo el otro tipo."""
+        with pytest.raises(ValidationError, match="NSW>=1"):
+            VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, nsw=0)
+
+    def test_static_with_zero_nsw_is_consistent_not_an_error(self, generator):
+        """Pedir explícitamente NSW=0 en un estático coincide con el default:
+        no hay nada que forzar ni que avisar."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=0)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 0" in incar
 
 
 class TestProvidedAtoms:
