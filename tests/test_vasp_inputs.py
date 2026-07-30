@@ -6,7 +6,7 @@ import pytest
 from ase import Atoms
 from pydantic import ValidationError
 
-from becario.domain.models import CalcKind, VaspCalcRequest
+from becario.domain.models import CalcKind, StructureKind, VaspCalcRequest
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
 
 
@@ -261,3 +261,102 @@ class TestRequestValidation:
     def test_evil_time_limit_rejected(self):
         with pytest.raises(ValueError):
             VaspCalcRequest(formula="Zr", time_limit="1h; reboot")
+
+
+class TestSlabCalc:
+    """El generador tiene su PROPIO camino de construcción: si la losa no
+    llega hasta acá, "armá el slab y mandalo a relajar" produce inputs de
+    bulk sin que nada avise."""
+
+    def _req(self, **kw):
+        base = dict(
+            formula="ZrO2", kind=StructureKind.SLAB, crystal="fluorite",
+            lattice_a=5.14, miller=(0, 0, 1), layers=4,
+        )
+        base.update(kw)
+        return VaspCalcRequest(**base)
+
+    def test_slab_poscar_is_not_a_bulk_poscar(self, generator):
+        # calc_kind distinto a propósito: el nombre del directorio de corrida
+        # tiene resolución de un segundo y `mkdir(exist_ok=False)` choca si dos
+        # corridas del mismo material y tipo caen en el mismo segundo.
+        slab = generator.generate(self._req())
+        bulk_ = generator.generate(
+            VaspCalcRequest(
+                formula="ZrO2", crystal="fluorite", lattice_a=5.14,
+                calc_kind=CalcKind.RELAX,
+            )
+        )
+        assert slab.n_atoms > bulk_.n_atoms
+        assert "c=" in slab.cell_summary
+
+    def test_slab_keeps_vacuum_in_the_generated_cell(self, generator):
+        result = generator.generate(self._req())
+        c = float(result.cell_summary.split("c=")[1].split(" ")[0])
+        assert c > 30  # espesor + 2 x 15 Å de vacío
+
+    def test_kpoints_collapse_along_the_vacuum(self, generator):
+        """La grilla automática es n_i = round(30/a_i): sobre el eje con
+        vacío el parámetro es enorme, así que ahí tiene que dar 1 — muestrear
+        el vacío sería tirar tiempo de cómputo."""
+        result = generator.generate(self._req())
+        assert result.kpoints[2] == 1
+        assert all(k > 1 for k in result.kpoints[:2])
+
+    def test_molecule_kind_rejected_for_vasp(self):
+        with pytest.raises(ValidationError, match="moléculas"):
+            VaspCalcRequest(formula="H2O", kind=StructureKind.MOLECULE)
+
+
+class TestSlabFromProvidedCell:
+    """Una estructura ya resuelta (Materials Project o CONTCAR relajado) es
+    la celda de PARTIDA de la losa, no el resultado.
+
+    Regresión: antes se devolvía esa celda entera sin cortar — un bulk con
+    nombre de slab. Afectaba a todo compuesto, porque `source=auto` los manda
+    a Materials Project."""
+
+    def _slab_req(self):
+        return VaspCalcRequest(
+            formula="ZrO2", kind=StructureKind.SLAB, crystal="fluorite",
+            lattice_a=5.14, miller=(0, 0, 1), layers=5,
+        )
+
+    def test_surface_is_actually_cut_from_the_provided_cell(self, generator, tmp_path):
+        from ase.build import bulk
+
+        provided = bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        result = generator.generate(self._slab_req(), atoms=provided)
+        assert result.n_atoms > len(provided), "la celda entró sin cortar"
+        c = float(result.cell_summary.split("c=")[1].split(" ")[0])
+        assert c > 30, "sin vacío no es una superficie"
+
+    def test_matches_the_slab_built_from_the_formula(self, generator, tmp_path):
+        """Partir de la misma celda convencional tiene que dar la misma losa."""
+        from ase.build import bulk
+
+        other = VaspInputGenerator(workdir=str(tmp_path / "otro"))
+        from_formula = generator.generate(self._slab_req())
+        from_cell = other.generate(
+            self._slab_req(), atoms=bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        )
+        assert from_cell.n_atoms == from_formula.n_atoms
+        assert from_cell.cell_summary == from_formula.cell_summary
+
+    def test_bulk_with_provided_cell_is_untouched(self, generator):
+        from ase.build import bulk
+
+        provided = bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        result = generator.generate(
+            VaspCalcRequest(formula="ZrO2", crystal="fluorite", lattice_a=5.14),
+            atoms=provided,
+        )
+        assert result.n_atoms == len(provided)
+
+
+class TestVacuumOnlyMakesSenseForSlabs:
+    def test_bulk_calc_rejects_vacuum_instead_of_dropping_it(self):
+        """El generador solo aplica vacío al cortar una losa: en un bulk lo
+        descartaría en silencio, así que el pedido se rechaza."""
+        with pytest.raises(ValidationError, match="solo aplica a una losa"):
+            VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23, vacuum=12.0)

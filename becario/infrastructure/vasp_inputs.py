@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 
 from ..domain.models import CalcDirResult, CalcKind, VaspCalcRequest
-from .ase_builder import make_bulk_atoms
+from .ase_builder import build_structure_atoms
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +122,17 @@ class VaspInputGenerator:
         # None => se arma con ASE desde la fórmula/red del pedido. El generador
         # es agnóstico a la FUENTE de la estructura: solo la escribe. La
         # supercelda y todo lo de abajo es idéntico sea cual sea el origen.
-        if atoms is None:
-            atoms = make_bulk_atoms(req.formula, req.crystal, req.lattice_a)
-        if req.supercell != (1, 1, 1):
-            atoms = atoms.repeat(req.supercell)
+        # Una estructura ya resuelta (Materials Project, o el CONTCAR de una
+        # relajación propia) entra como `lattice`: se usa tal cual para un
+        # bulk, y como celda de partida para CORTAR la losa si el pedido es de
+        # superficie. Antes se devolvía la celda entera sin cortar — un bulk
+        # con nombre de slab, sin que nada avisara.
+        atoms = build_structure_atoms(
+            req.kind, req.formula, req.crystal, req.lattice_a,
+            miller=req.miller, layers=req.layers, vacuum=req.vacuum,
+            vacuum_axis=req.vacuum_axis, supercell=req.supercell,
+            lattice=atoms,
+        )
 
         kpoints = req.kpoints or _auto_kpoints(atoms)
         encut_values = (

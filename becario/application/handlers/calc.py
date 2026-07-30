@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ...domain.models import (
+    Axis,
     CalcKind,
     Intent,
     OutputFormat,
@@ -33,6 +34,30 @@ if TYPE_CHECKING:
     from ..services import BecarioService
 
 
+
+
+def _slab_params(params: dict, kind: StructureKind) -> dict:
+    """Parte de losa de los parámetros crudos del router.
+
+    Devuelve `{}` para lo que no es una losa: los modelos RECHAZAN miller y
+    capas en un bulk, así que un `tipo_estructura` mal extraído no arrastra
+    campos que no corresponden. Solo se traduce lo que el mensaje trajo — el
+    índice de Miller ausente lo resuelve el dominio, no un default acá.
+    """
+    if kind is not StructureKind.SLAB:
+        return {}
+    out: dict = {}
+    miller = params.get("miller")
+    if miller:
+        out["miller"] = tuple(int(x) for x in miller)
+    if params.get("capas"):
+        out["layers"] = int(params["capas"])
+    axis_raw = str(params.get("eje_vacio") or "").lower()
+    if axis_raw in Axis._value2member_map_:
+        out["vacuum_axis"] = Axis(axis_raw)
+    return out
+
+
 def _calc_fingerprint(req: VaspCalcRequest) -> str:
     """JSON canónico de un pedido de cálculo: dos pedidos con la misma
     huella son EL MISMO cálculo (el rango default del barrido se resuelve
@@ -52,9 +77,10 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             ok=False,
         )
     try:
+        kind_raw = str(params.get("tipo_estructura", "")).lower()
         kind = (
-            StructureKind.MOLECULE
-            if str(params.get("tipo_estructura", "")).lower() == "molecule"
+            StructureKind(kind_raw)
+            if kind_raw in StructureKind._value2member_map_
             else StructureKind.BULK
         )
         fmt_raw = str(params.get("formato_salida", "vasp")).lower()
@@ -69,6 +95,7 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             vacuum=params.get("vacio"),
             output_format=fmt,
             remote_dest_dir=params.get("destino_remoto"),
+            **_slab_params(params, kind),
         )
     except (ValidationError, ValueError, TypeError) as exc:
         return Reply(text=f"⚠️ Parámetros de estructura inválidos:\n{exc}", ok=False)
@@ -151,6 +178,10 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
         else StructureSource.AUTO
     )
 
+    kind_raw = str(params.get("tipo_estructura", "")).lower()
+    struct_kind = (
+        StructureKind.SLAB if kind_raw == StructureKind.SLAB.value else StructureKind.BULK
+    )
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
@@ -159,6 +190,9 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             crystal=params.get("red_cristalina"),
             lattice_a=params.get("parametro_red"),
             supercell=tuple(int(x) for x in sc),
+            kind=struct_kind,
+            vacuum=params.get("vacio"),
+            **_slab_params(params, struct_kind),
             calc_kind=calc_kind,
             encut=int(params.get("encut") or 520),
             kpoints=tuple(int(x) for x in kp) if kp else None,
