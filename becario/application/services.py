@@ -96,6 +96,12 @@ class _PendingEdit:
 
     steps: list[tuple[Intent, dict]]
     created_at: float = field(default_factory=time.time)
+    # Paso (1-based) al que le faltaba un dato, cuando el pendiente lo armó
+    # un handler vía `Reply.awaiting_params` en vez del botón ✏️ Modificar.
+    # Sabiéndolo no hace falta targetear la respuesta: ya conocemos el hueco,
+    # así que se usa el extractor simple y se evita el caso ambiguo — "la
+    # (001)" no dice a qué paso pertenece, pero nosotros sí lo sabemos.
+    awaiting_index: Optional[int] = None
 
 
 _CANCEL_RE = re.compile(r"\A\s*(cancel|descart|olvid|dejal|no,?\s*(dejalo|nada))", re.IGNORECASE)
@@ -321,7 +327,15 @@ class BecarioService:
             handler = self._intent_handlers().get(step.action)
             if handler is None:
                 return Reply(text=HELP_TEXT)
-            return handler(ctx, step.parametros)
+            reply = handler(ctx, step.parametros)
+            if reply.awaiting_params:
+                # Falta un dato que no se adivina: el pedido queda en el
+                # estante y el próximo mensaje lo completa, en vez de
+                # obligar al usuario a repetirlo entero.
+                self._arm_pending_edit(
+                    ctx.user_id, [(step.action, dict(step.parametros))]
+                )
+            return reply
 
         if self._is_batch_plan(plan):
             return self._prepare_batch(ctx, plan)
@@ -362,7 +376,11 @@ class BecarioService:
             if step.action is Intent.PREPARE_CALC:
                 req = calc._build_calc_request(self, step.parametros)
                 if isinstance(req, Reply):
-                    return req  # cálculo inválido: nada se ejecuta
+                    # Cálculo inválido: nada se ejecuta. Si lo que falta es un
+                    # dato pedible, el batch entero queda esperando en vez de
+                    # obligar a rearmar los N pasos.
+                    self._arm_if_awaiting(ctx, plan, i, req)
+                    return req
                 n_calc += 1
                 line = calc.describe_calc_request(req)
             else:
@@ -426,15 +444,29 @@ class BecarioService:
         Intent.VIEW_FILE,
     })
 
-    def _materialize_step_fn(self, ctx: _Ctx, step: PlanStep) -> Callable[[], tuple[bool, str]]:
+    def _materialize_step_fn(
+        self,
+        ctx: _Ctx,
+        step: PlanStep,
+        index: int = 1,
+        awaiting_out: Optional[list[int]] = None,
+    ) -> Callable[[], tuple[bool, str]]:
         """Envuelve un paso no destructivo en el `StepFn` que espera
-        `PlanExecutor`: sin argumentos, devuelve `(ok, línea_de_reporte)`."""
+        `PlanExecutor`: sin argumentos, devuelve `(ok, línea_de_reporte)`.
+
+        `awaiting_out` es la vía por la que sale el `awaiting_params` del
+        handler: el contrato de `StepFn` es `(ok, texto)` y no puede llevarlo,
+        así que el paso anota su índice ahí. Sin esto, un pedido de dato
+        faltante dentro de un plan multi-paso se ve como un fallo cualquiera
+        y el pedido se pierde."""
         handler = self._intent_handlers().get(step.action)
 
         def _run() -> tuple[bool, str]:
             if handler is None or step.action not in self._MATERIALIZABLE_STEP_INTENTS:
                 return False, f"el paso '{step.action.value}' no se puede combinar en un plan"
             reply = handler(ctx, step.parametros)
+            if reply.awaiting_params and awaiting_out is not None:
+                awaiting_out.append(index)
             return reply.ok, reply.text
 
         return _run
@@ -460,18 +492,37 @@ class BecarioService:
             prefix = plan.steps[:-n_calc_tail]
             if any(s.action not in self._MATERIALIZABLE_STEP_INTENTS for s in prefix):
                 return Reply(text=HELP_TEXT)
-            result = PlanExecutor().run(
-                [self._materialize_step_fn(ctx, s) for s in prefix]
-            )
+            awaiting: list[int] = []
+            result = PlanExecutor().run([
+                self._materialize_step_fn(ctx, s, i, awaiting)
+                for i, s in enumerate(prefix, start=1)
+            ])
             if prefix and not result.ok:
                 lines = result.report_lines + [
                     f"⏸ {n_calc_tail} cálculo(s) omitido(s): falló un paso previo."
                 ]
+                if awaiting:
+                    # No es un fallo: falta un dato. El plan ENTERO queda
+                    # esperando, así que el cálculo omitido corre en cuanto
+                    # la estructura se pueda armar.
+                    self._arm_pending_edit(
+                        ctx.user_id, self._plan_steps_as_requests(plan),
+                        awaiting_index=awaiting[0],
+                    )
+                    return Reply(
+                        text="\n".join(lines), ok=False, awaiting_params=True
+                    )
                 return Reply(text="\n".join(lines), ok=False)
             handler = self._intent_handlers()[Intent.PREPARE_CALC]
             followups = tuple(
                 handler(ctx, s.parametros) for s in plan.steps[-n_calc_tail:]
             )
+            for offset, followup in enumerate(followups):
+                if followup.awaiting_params:
+                    self._arm_if_awaiting(
+                        ctx, plan, len(prefix) + offset + 1, followup
+                    )
+                    break
             lines = result.report_lines + [
                 f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"
             ] if prefix else [f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"]
@@ -492,15 +543,24 @@ class BecarioService:
             # sin ejecutar nada (ver deviations, tarea 4.3).
             return Reply(text=HELP_TEXT)
 
-        step_fns = [self._materialize_step_fn(ctx, s) for s in prefix]
+        awaiting: list[int] = []
+        step_fns = [
+            self._materialize_step_fn(ctx, s, i, awaiting)
+            for i, s in enumerate(prefix, start=1)
+        ]
         result = PlanExecutor().run(step_fns)
+        if awaiting:
+            self._arm_pending_edit(
+                ctx.user_id, self._plan_steps_as_requests(plan),
+                awaiting_index=awaiting[0],
+            )
 
         if not has_destructive_tail:
-            return Reply(text=result.report)
+            return Reply(text=result.report, awaiting_params=bool(awaiting))
 
         if not result.ok:
             lines = result.report_lines + [f"{len(plan.steps)}. ⏸ omitido"]
-            return Reply(text="\n".join(lines))
+            return Reply(text="\n".join(lines), awaiting_params=bool(awaiting))
 
         return self._prepare_destructive_tail(ctx, tail, prefix, result.report_lines)
 
@@ -559,6 +619,40 @@ class BecarioService:
             return None
         return edit
 
+    def _arm_pending_edit(
+        self,
+        user_id: int,
+        steps: list[tuple[Intent, dict]],
+        awaiting_index: Optional[int] = None,
+    ) -> None:
+        """Deja un pedido esperando el próximo mensaje del usuario, con el
+        TTL renovado. Lo usan tanto ✏️ Modificar como los handlers que piden
+        un dato faltante (`Reply.awaiting_params`)."""
+        with self._edits_lock:
+            self._pending_edits[user_id] = _PendingEdit(
+                steps=steps, awaiting_index=awaiting_index
+            )
+
+    @staticmethod
+    def _plan_steps_as_requests(plan: Plan) -> list[tuple[Intent, dict]]:
+        """El plan como lista de pedidos originales, que es lo que guarda
+        `_PendingEdit`: re-armar SIEMPRE parte de acá, nunca de un payload
+        ya materializado."""
+        return [(s.action, dict(s.parametros)) for s in plan.steps]
+
+    def _arm_if_awaiting(
+        self, ctx: _Ctx, plan: Plan, index: int, reply: Reply
+    ) -> None:
+        """Si el paso `index` (1-based) pidió un dato, deja el plan ENTERO
+        esperando. Se guarda el plan completo y no solo el paso incompleto
+        porque al completarlo hay que volver a despachar todo el pedido —
+        el cálculo que quedó omitido tiene que correr cuando la estructura
+        finalmente se pueda armar."""
+        if reply.awaiting_params:
+            self._arm_pending_edit(
+                ctx.user_id, self._plan_steps_as_requests(plan), awaiting_index=index
+            )
+
     def _render_plan_context(self, steps: list[tuple[Intent, dict]]) -> str:
         """Enumeración legible del plan pendiente: se la mandamos al LLM
         de `extract_edit` como contexto para el targeting semántico, y
@@ -589,8 +683,7 @@ class BecarioService:
             new_params = self._router.extract_params(text)
             if not new_params:
                 # Devolver el plan al estante (con TTL renovado) para reintentar.
-                with self._edits_lock:
-                    self._pending_edits[ctx.user_id] = _PendingEdit(steps=edit.steps)
+                self._arm_pending_edit(ctx.user_id, edit.steps)
                 return Reply(
                     text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
                     'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
@@ -603,7 +696,20 @@ class BecarioService:
                 ctx.user_id, base_params, new_params,
             )
             handler = self._intent_handlers()[intent]
-            return handler(ctx, merged)
+            reply = handler(ctx, merged)
+            if reply.awaiting_params:
+                # Sigue faltando el dato, pero lo que SÍ trajo este mensaje ya
+                # está en `merged`: se re-arma con lo acumulado, así el llenado
+                # es progresivo y no se pierde lo respondido hasta acá.
+                self._arm_pending_edit(ctx.user_id, [(intent, merged)])
+            return reply
+
+        if edit.awaiting_index is not None:
+            # Sabemos QUÉ paso está incompleto, así que no hay nada que
+            # targetear: se usa el extractor simple y el dato va derecho al
+            # hueco. Targetear "la (001)" sería inventarse un problema que
+            # ya está resuelto — y saldría ambiguo casi siempre.
+            return self._fill_awaiting_step(ctx, edit, text)
 
         plan_context = self._render_plan_context(edit.steps)
         target_index, delta = self._router.extract_edit(plan_context, text)
@@ -611,8 +717,7 @@ class BecarioService:
         if target_index is None or not (1 <= target_index <= n) or not delta:
             # Ambiguo: NUNCA se fusiona ni se ejecuta. Plan al estante, sin
             # tocar, con TTL renovado.
-            with self._edits_lock:
-                self._pending_edits[ctx.user_id] = _PendingEdit(steps=edit.steps)
+            self._arm_pending_edit(ctx.user_id, edit.steps)
             return Reply(
                 text="🤔 No estoy seguro a qué paso del plan te referís. "
                 "Decímelo apuntando el paso (p. ej. «paso 2: usá la "
@@ -626,6 +731,38 @@ class BecarioService:
         logger.info(
             "plan modificado (paso %s) por user=%s: base=%s cambio=%s",
             target_index, ctx.user_id, base_params, delta,
+        )
+        plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
+        return self._dispatch_plan(ctx, plan)
+
+    def _fill_awaiting_step(
+        self, ctx: _Ctx, edit: _PendingEdit, text: str
+    ) -> Reply:
+        """Completa el paso que quedó esperando un dato y re-despacha el plan.
+
+        El plan se re-arma ENTERO desde los pedidos originales: los pasos que
+        se habían omitido por depender del incompleto vuelven a correr, que es
+        el punto de haber guardado el plan completo y no solo el hueco."""
+        assert edit.awaiting_index is not None
+        new_params = self._router.extract_params(text)
+        if not new_params:
+            self._arm_pending_edit(
+                ctx.user_id, edit.steps, awaiting_index=edit.awaiting_index
+            )
+            return Reply(
+                text="⚠️ No pude sacar el dato de ahí. Repetímelo solo "
+                '(p. ej. «(001)»), o escribí «cancelar» para descartar '
+                "el pedido.",
+                ok=False,
+                awaiting_params=True,
+            )
+
+        new_steps = list(edit.steps)
+        intent, base_params = new_steps[edit.awaiting_index - 1]
+        new_steps[edit.awaiting_index - 1] = (intent, {**base_params, **new_params})
+        logger.info(
+            "dato faltante completado (paso %s) por user=%s: %s",
+            edit.awaiting_index, ctx.user_id, new_params,
         )
         plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
         return self._dispatch_plan(ctx, plan)
@@ -648,8 +785,7 @@ class BecarioService:
         if not steps:
             return Reply(text="⚠️ Esta acción no admite modificación.")
         self._confirmations.pop(token)
-        with self._edits_lock:
-            self._pending_edits[requester_id] = _PendingEdit(steps=steps)
+        self._arm_pending_edit(requester_id, steps)
         if len(steps) == 1:
             return Reply(
                 text="✏️ Dale, decime qué querés cambiar (p. ej. «subí el ENCUT "

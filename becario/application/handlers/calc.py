@@ -34,6 +34,23 @@ if TYPE_CHECKING:
     from ..services import BecarioService
 
 
+def _ask_for_miller(formula: str) -> Reply:
+    """Falta la cara de la losa: se pregunta, no se adivina.
+
+    Elegir la orientación por el usuario no es un default cómodo: cambia la
+    terminación, la polaridad y los estados de superficie. Una (001) y una
+    (111) del mismo material son experimentos distintos, así que un default
+    silencioso devolvería un resultado creíble y equivocado.
+    """
+    return Reply(
+        text=(
+            f"🔭 Para armar la superficie de {formula} necesito la cara: "
+            "¿(001), (110), (111)…?\n"
+            "Es lo único que me falta — el resto del pedido lo tengo."
+        ),
+        ok=False,
+        awaiting_params=True,
+    )
 
 
 def _slab_params(params: dict, kind: StructureKind) -> dict:
@@ -83,6 +100,8 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             if kind_raw in StructureKind._value2member_map_
             else StructureKind.BULK
         )
+        if kind is StructureKind.SLAB and not params.get("miller"):
+            return _ask_for_miller(str(formula))
         fmt_raw = str(params.get("formato_salida", "vasp")).lower()
         fmt = OutputFormat(fmt_raw) if fmt_raw in OutputFormat._value2member_map_ else OutputFormat.VASP
         sc = params.get("supercelda") or [1, 1, 1]
@@ -182,6 +201,9 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
     struct_kind = (
         StructureKind.SLAB if kind_raw == StructureKind.SLAB.value else StructureKind.BULK
     )
+    if struct_kind is StructureKind.SLAB and not params.get("miller"):
+        return _ask_for_miller(str(formula))
+
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
