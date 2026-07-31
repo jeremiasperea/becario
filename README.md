@@ -52,10 +52,10 @@ Administrar el roster (dar de alta/baja a alguien) es una operación fuera
 de Telegram, con `scripts/manage_users.py`:
 
 ```bash
-python3 scripts/manage_users.py add --telegram-id 111111111 \
+.venv/bin/python scripts/manage_users.py add --telegram-id 111111111 \
     --ssh-user jperez --ssh-key /home/becario/.ssh/id_jperez --name "Juan Pérez"
-python3 scripts/manage_users.py list
-python3 scripts/manage_users.py remove --telegram-id 111111111
+.venv/bin/python scripts/manage_users.py list
+.venv/bin/python scripts/manage_users.py remove --telegram-id 111111111
 ```
 
 ### Seguridad (defensa en profundidad)
@@ -76,29 +76,39 @@ guarda en un archivo `.env` **local** (que no se sube a git, ver `.gitignore`).
 ```bash
 # 1) Entorno virtual del proyecto (ya está en .gitignore)
 python3 -m venv .venv
-source .venv/bin/activate
 
 # 2) Dependencias
-pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]"
 
 # 3) Arrancá: la primera vez, el asistente te pide token del bot, host del
 #    cluster y Ollama, y crea el .env por vos.
-python3 main.py
+.venv/bin/python main.py
 
 # 4) Registrá tu cuenta del cluster (interactivo: te pregunta los datos):
-python3 scripts/manage_users.py add
+.venv/bin/python scripts/manage_users.py add
 
 # 5) Volvé a arrancar; ya no vuelve a pedir nada.
-python3 main.py
+.venv/bin/python main.py
 ```
+
+**Invocá siempre el intérprete del venv por ruta** (`.venv/bin/python`). Es la
+forma recomendada porque no depende de que te hayas acordado de activar el
+entorno: el intérprete queda explícito en el comando, no implícito en el estado
+de tu shell.
 
 El venv no es opcional por comodidad: `pymatgen` y `mp-api` arrastran numpy,
 scipy y spglib con versiones propias. Mezclarlas con el Python del sistema es
 pedir un conflicto que después no sabés de dónde salió.
 
-Si preferís no activarlo, invocá el intérprete del venv a mano
-(`.venv/bin/python main.py`). El launcher hace `execv` con `sys.executable`, así
-que si lo corrés con el Python del venv, `main.py` arranca en el mismo entorno.
+Si preferís activar el entorno (`source .venv/bin/activate`), `python3` ya
+apunta al venv y podés usarlo en todos los comandos de arriba. Lo que **no**
+funciona es `python3` sin activar: ahí agarrás el Python del sistema, que no
+tiene las dependencias y falla con `ModuleNotFoundError: No module named
+'pymatgen'`.
+
+Esto importa más de lo que parece porque el launcher hace `execv` con
+`sys.executable`: `main.py` hereda el mismo intérprete con el que arrancaste
+`scripts/start_becario.py`. Si el de arriba está mal, el de abajo también.
 
 Los secretos y datos locales (`.env`, `users.json`, `becario.db`) están en
 `.gitignore` y **no** deben subirse a ningún repositorio. El `.env` se crea con
@@ -119,9 +129,14 @@ demonio del sistema es orquestación, no responsabilidad del composition root.
 Para eso hay un launcher una capa más afuera:
 
 ```bash
-python3 scripts/start_becario.py        # asegura Ollama y arranca el bot
-python3 scripts/start_becario.py --yes  # sin preguntas (systemd, CI)
-python3 scripts/start_becario.py --check-only   # deja Ollama listo, no arranca el bot
+# asegura Ollama y arranca el bot
+.venv/bin/python scripts/start_becario.py
+
+# sin preguntas (systemd, CI)
+.venv/bin/python scripts/start_becario.py --yes
+
+# deja Ollama listo, no arranca el bot
+.venv/bin/python scripts/start_becario.py --check-only
 ```
 
 Qué hace, en orden:
@@ -191,11 +206,70 @@ mejor que el launcher: el init system ya sabe ordenar y reiniciar servicios, y
 `main.py` mantiene su fail-fast. `start_becario.py` es para la máquina de
 escritorio, donde no hay nadie ordenando el arranque.
 
+## Cluster de pruebas local (Docker + SLURM)
+
+La suite automatizada no toca ningún cluster real: usa `FakeCluster` e
+intercepta `_run`. Para los **end-to-end** —mandar un `sbatch` de verdad y ver
+la cola moverse— hay un cluster SLURM en contenedores, en un repo aparte:
+
+```
+/home/jeremiasperea/slurm-docker-cluster
+```
+
+Es infraestructura independiente a propósito (se reusa entre proyectos), pero
+sin esta referencia nadie que clone `becario` sabría que existe.
+
+```bash
+cd /home/jeremiasperea/slurm-docker-cluster
+
+make build   # solo la primera vez, o si cambió el Dockerfile
+make up      # levanta el cluster (docker compose up -d)
+make status  # contenedores + nodos SLURM
+make down    # bajar, conservando los datos
+```
+
+`make help` lista todo. Requiere Docker Desktop con la **integración WSL
+activada** para esta distro (Settings → Resources → WSL Integration); si no,
+`docker` no existe dentro de WSL aunque esté instalado en Windows.
+
+El cluster expone `slurmctld` por SSH en el puerto **3022**, con dos nodos de
+cómputo (`c1`, `c2`) en la partición `cpu`. Para apuntar el bot ahí, en el
+`.env`:
+
+```
+BECARIO_SSH_HOST=127.0.0.1
+BECARIO_SSH_PORT=3022
+```
+
+Y registrate en el roster con el usuario del contenedor (`root`) y la clave
+que esté en `/root/.ssh/authorized_keys` dentro de `slurmctld`:
+
+```bash
+.venv/bin/python scripts/manage_users.py add --telegram-id <tu-id> \
+    --ssh-user root --ssh-key ~/.ssh/id_ed25519 --name "Pruebas locales"
+```
+
+Comprobá la conexión antes de arrancar el bot:
+
+```bash
+ssh -p 3022 root@127.0.0.1 sinfo
+```
+
+Tiene que listar la partición `cpu` con los nodos en `idle`. Si eso anda, el
+bot va a poder mandar trabajos.
+
+> **Ojo con el puerto.** El host se puede pisar por usuario del roster
+> (`manage_users.py add --ssh-host ...`, ver `ssh_gateway.py:333`:
+> `identity.ssh_host or self._default_host`), pero el **puerto no**: es global
+> (`port=self._default_port`). Es decir, no podés tener en la misma instancia
+> del bot una persona apuntando al cluster real en el 22 y otra al Docker en el
+> 3022. Para probar contra el contenedor, cambiá `BECARIO_SSH_PORT` global.
+
 ## Tests
 
 ```bash
-python3 -m pytest            # 154 tests
-python3 -m pytest --cov=becario --cov-report=term-missing
+.venv/bin/python -m pytest            # 576 tests
+.venv/bin/python -m pytest --cov=becario --cov-report=term-missing
 ```
 
 La suite cubre: sanitización contra inyección de shell y SQL, parseo
