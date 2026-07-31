@@ -340,6 +340,87 @@ class ClusterIdentity(BaseModel):
 class StructureKind(str, Enum):
     BULK = "bulk"
     MOLECULE = "molecule"
+    SLAB = "slab"  # superficie: losa con vacío, orientada por índice de Miller
+
+
+class Axis(str, Enum):
+    """Eje cartesiano. Se usa para elegir dónde queda el vacío de una losa."""
+
+    X = "x"
+    Y = "y"
+    Z = "z"
+
+    @property
+    def index(self) -> int:
+        return {"x": 0, "y": 1, "z": 2}[self.value]
+
+
+# Vacío por default de una losa, en Å. Baja del TIPO de estructura, no del
+# campo: un bulk no lleva vacío, y una losa sin vacío no es una superficie
+# (las imágenes periódicas se tocarían a través del borde de la celda).
+SLAB_DEFAULT_VACUUM = 15.0
+
+# Capas por default de una losa. Es un punto de PARTIDA, no un valor
+# convergido: el espesor hay que convergerlo por sistema, así que el
+# resultado siempre reporta cuántas capas se usaron.
+SLAB_DEFAULT_LAYERS = 5
+
+
+def _validate_miller(
+    v: Optional[tuple[int, int, int]],
+) -> Optional[tuple[int, int, int]]:
+    """Índice de Miller: tres enteros, no todos cero, en un rango sano."""
+    if v is None:
+        return None
+    if len(v) != 3:
+        raise ValueError(f"índice de Miller inválido: {v!r} (necesita 3 enteros)")
+    idx = tuple(int(x) for x in v)
+    if all(x == 0 for x in idx):
+        raise ValueError("(000) no define un plano")
+    if any(abs(x) > 9 for x in idx):
+        raise ValueError(f"índice de Miller fuera de rango: {idx!r}")
+    return idx
+
+
+def validate_slab_spec(
+    kind: StructureKind,
+    miller: Optional[tuple[int, int, int]],
+    layers: Optional[int],
+    vacuum: Optional[float],
+    supercell: tuple[int, int, int],
+) -> tuple[Optional[tuple[int, int, int]], Optional[int], Optional[float]]:
+    """Reglas de losa compartidas por `StructureRequest` y `VaspCalcRequest`.
+
+    Los dos modelos replican a propósito la parte estructural (ver el
+    docstring de `VaspCalcRequest`), así que la regla vive UNA vez acá: si se
+    duplicara, un pedido de losa por el camino de cálculo podría terminar
+    generando inputs de bulk sin que nada avise.
+
+    Devuelve la terna `(miller, layers, vacuum)` ya resuelta.
+    """
+    if kind is not StructureKind.SLAB:
+        # No se ignoran en silencio: si vienen, el pedido está mal armado.
+        if miller is not None or layers is not None:
+            raise ValueError(
+                "índice de Miller y capas solo aplican a una losa "
+                "(tipo_estructura=slab)"
+            )
+        return None, None, vacuum
+
+    if miller is None:
+        # No se adivina una orientación: elegir la cara equivocada cambia la
+        # física (terminación, polaridad, estados de superficie).
+        raise ValueError(
+            "una losa necesita índice de Miller (p. ej. 001, 110, 111)"
+        )
+    if supercell[2] != 1:
+        raise ValueError(
+            "la supercelda de una losa se repite solo en el plano: la tercera "
+            "dimensión debe ser 1 (repetirla duplicaría la losa y su vacío)"
+        )
+    resolved_layers = SLAB_DEFAULT_LAYERS if layers is None else layers
+    resolved_vacuum = SLAB_DEFAULT_VACUUM if vacuum is None else vacuum
+    return miller, resolved_layers, resolved_vacuum
 
 
 class CalcKind(str, Enum):
@@ -367,6 +448,10 @@ class StructureSource(str, Enum):
     AUTO = "auto"
     ASE = "ase"
     MP = "mp"
+    # Partir del CONTCAR de la última relajación propia de ese material
+    # ("el bulk de ZrO2 relajado"). No es una fuente externa: es un
+    # resultado anterior del propio usuario.
+    RELAXED = "relajado"
 
 
 class StructureRequest(BaseModel):
@@ -378,6 +463,12 @@ class StructureRequest(BaseModel):
     lattice_a: Optional[float] = Field(default=None, gt=0.5, lt=50.0)  # Å
     supercell: tuple[int, int, int] = (1, 1, 1)
     vacuum: Optional[float] = Field(default=None, ge=0.0, le=60.0)  # Å
+    # Losa (kind=SLAB): orientación de la cara que mira al vacío y espesor.
+    # `vacuum_axis` es solo convención de ejes — el Miller define la cara, así
+    # que pedir el vacío en otro eje devuelve la MISMA superficie acostada.
+    miller: Optional[tuple[int, int, int]] = None
+    layers: Optional[int] = Field(default=None, ge=1, le=40)
+    vacuum_axis: Axis = Axis.Z
     output_format: OutputFormat = OutputFormat.VASP
     remote_dest_dir: Optional[str] = None  # si se define, se sube por SFTP
     # Materials Project: id explícito y/o fuente forzada. Inertes por default.
@@ -426,6 +517,18 @@ class StructureRequest(BaseModel):
             return None
         return _validate_remote_dir_path(v)
 
+    @field_validator("miller")
+    @classmethod
+    def _v_miller(cls, v):
+        return _validate_miller(v)
+
+    @model_validator(mode="after")
+    def _v_slab(self) -> "StructureRequest":
+        self.miller, self.layers, self.vacuum = validate_slab_spec(
+            self.kind, self.miller, self.layers, self.vacuum, self.supercell
+        )
+        return self
+
 
 @dataclass(frozen=True)
 class StructureResult:
@@ -437,14 +540,20 @@ class StructureResult:
     n_atoms: int
     cell_summary: str
     uploaded_to: Optional[str] = None
+    # Resumen de losa. Se reporta SIEMPRE que haya: las capas y el vacío
+    # pueden venir de un default, y un espesor sin converger cambia la
+    # física — quien lo pidió tiene que ver con qué se armó.
+    slab_summary: Optional[str] = None
 
     def describe(self) -> str:
         lines = [
             f"fórmula: {self.chemical_formula}",
             f"átomos: {self.n_atoms}",
             f"celda: {self.cell_summary}",
-            f"archivo: {self.filename}",
         ]
+        if self.slab_summary:
+            lines.append(f"losa: {self.slab_summary}")
+        lines.append(f"archivo: {self.filename}")
         if self.uploaded_to:
             lines.append(f"subido a: {self.uploaded_to}")
         return "\n".join(lines)
@@ -470,10 +579,25 @@ class VaspCalcRequest(BaseModel):
     crystal: Optional[str] = None
     lattice_a: Optional[float] = Field(default=None, gt=0.5, lt=50.0)  # Å
     supercell: tuple[int, int, int] = (1, 1, 1)
+    # Parte estructural de una losa, con las MISMAS reglas que
+    # `StructureRequest` (`validate_slab_spec`). Sin esto, pedir "armá el slab
+    # y mandalo a relajar" generaría inputs de bulk: el generador tiene su
+    # propio camino de construcción y no ve el `StructureRequest`.
+    kind: StructureKind = StructureKind.BULK
+    miller: Optional[tuple[int, int, int]] = None
+    layers: Optional[int] = Field(default=None, ge=1, le=40)
+    vacuum: Optional[float] = Field(default=None, ge=0.0, le=60.0)  # Å
+    vacuum_axis: Axis = Axis.Z
     calc_kind: CalcKind = CalcKind.STATIC
     encut: int = Field(default=520, ge=100, le=1500)  # eV
     kpoints: Optional[tuple[int, int, int]] = None  # None => grilla automática
     encut_values: Optional[list[int]] = None  # solo para ENCUT_SCAN
+    # NSW: presupuesto de pasos iónicos. None => default por tipo de cálculo
+    # (`_DEFAULT_NSW` en el generador: 180 al relajar, 0 en los tipos de un
+    # solo punto). El TIPO MANDA sobre el pedido: en un estático o un barrido
+    # de ENCUT se fuerza a 0 aunque acá venga otro valor — un cálculo de un
+    # solo punto con pasos iónicos no es un estático, es una relajación.
+    nsw: Optional[int] = Field(default=None, ge=0, le=10000)
     # ISIF: qué relaja la corrida de relajación. None => default por tipo de
     # cálculo (RELAX usa 3: iones + forma + volumen). Se puede pedir 2 para
     # relajar solo iones (típico en slabs/interfaces). Solo tiene efecto con
@@ -561,6 +685,44 @@ class VaspCalcRequest(BaseModel):
         if any(not (100 <= x <= 1500) for x in values):
             raise ValueError("cada ENCUT del barrido debe estar entre 100 y 1500 eV")
         return values
+
+    @field_validator("miller")
+    @classmethod
+    def _v_miller(cls, v):
+        return _validate_miller(v)
+
+    @model_validator(mode="after")
+    def _v_slab(self) -> "VaspCalcRequest":
+        if self.kind is StructureKind.MOLECULE:
+            raise ValueError(
+                "los cálculos VASP de BECARIO son de bulk o de losa, no de "
+                "moléculas aisladas"
+            )
+        if self.kind is not StructureKind.SLAB and self.vacuum is not None:
+            # El generador de inputs solo aplica vacío al cortar una losa; en
+            # un bulk lo descartaría en silencio. Se rechaza en vez de mentir.
+            raise ValueError(
+                "el vacío solo aplica a una losa (tipo_estructura=slab)"
+            )
+        self.miller, self.layers, self.vacuum = validate_slab_spec(
+            self.kind, self.miller, self.layers, self.vacuum, self.supercell
+        )
+        return self
+
+    @model_validator(mode="after")
+    def _v_nsw_vs_kind(self) -> "VaspCalcRequest":
+        """Una relajación con NSW=0 no relaja nada: el directorio de la
+        corrida diría `relajacion` y sería un cálculo de un solo punto. El
+        cero se pide eligiendo un cálculo estático, no vaciándole los pasos
+        iónicos a una relajación. (El caso espejo — pedir pasos iónicos en un
+        estático — no se rechaza: lo fuerza a 0 el generador, porque ahí el
+        tipo de cálculo manda.)"""
+        if self.calc_kind is CalcKind.RELAX and self.nsw == 0:
+            raise ValueError(
+                "una relajación necesita NSW>=1; para un solo punto pedí un "
+                "cálculo estático"
+            )
+        return self
 
     @staticmethod
     def default_encut_values() -> list[int]:
