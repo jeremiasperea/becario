@@ -103,6 +103,12 @@ _ZVAL: dict[str, int] = {
 # NBANDS con un warning en vez de romper, así que preferimos pasarnos.
 _NBANDS_MARGIN = 1.2
 
+# Cuántos nombres de directorio se prueban antes de darse por vencido. El
+# sello de tiempo tiene resolución de un segundo: 50 corridas del MISMO
+# material y tipo dentro del mismo segundo no es un caso de uso, es un bug
+# en otro lado, y conviene que falle ruidoso en vez de girar para siempre.
+_MAX_RUN_DIR_ATTEMPTS = 50
+
 
 class VaspInputGenerator:
     def __init__(
@@ -157,10 +163,7 @@ class VaspInputGenerator:
         if nsw > 0:
             isif = req.isif if req.isif is not None else _DEFAULT_ISIF.get(req.calc_kind)
 
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        run_name = f"{req.formula}_{req.calc_kind.value}_{stamp}"
-        run_dir = self._workdir / run_name
-        run_dir.mkdir(parents=True, exist_ok=False)
+        run_name, run_dir = self._new_run_dir(req)
 
         files: list[str] = []
         if req.calc_kind is CalcKind.ENCUT_SCAN:
@@ -198,6 +201,43 @@ class VaspInputGenerator:
             run_dir, req.calc_kind.value, len(result.files),
         )
         return result
+
+    # ------------------------------------------------------------------
+    def _new_run_dir(self, req: VaspCalcRequest) -> tuple[str, Path]:
+        """Crea el directorio de la corrida y devuelve `(nombre, ruta)`.
+
+        `exist_ok=False` es deliberado y se mantiene: nunca se escribe sobre
+        una corrida que ya existe. El problema era el NOMBRE: el sello de
+        tiempo tiene resolución de un segundo, así que dos cálculos del mismo
+        material y tipo pedidos juntos —un plan multi-paso, o dos pasos de un
+        batch— caían en el mismo nombre y el segundo moría con FileExistsError.
+
+        Se reintenta con un sufijo incremental. Quien decide es el `mkdir`,
+        que es atómico: dos procesos compitiendo por el mismo nombre no pueden
+        quedarse los dos con él, uno ve el FileExistsError y sigue al
+        siguiente sufijo.
+
+        El sufijo va al FINAL, después del sello de tiempo, así el nombre
+        sigue ordenando cronológicamente. Y no toca el `job_name` de Slurm,
+        que es `{formula}_{tipo}` sin timestamp: la detección de duplicados y
+        la búsqueda de relajaciones previas siguen funcionando igual.
+        """
+        base = (
+            f"{req.formula}_{req.calc_kind.value}_"
+            f"{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+        for attempt in range(_MAX_RUN_DIR_ATTEMPTS):
+            run_name = base if attempt == 0 else f"{base}_{attempt + 1}"
+            run_dir = self._workdir / run_name
+            try:
+                run_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                continue
+            return run_name, run_dir
+        raise RuntimeError(
+            f"No pude crear un directorio de corrida para {base!r}: hay "
+            f"{_MAX_RUN_DIR_ATTEMPTS} con ese nombre en {self._workdir}."
+        )
 
     # ------------------------------------------------------------------
     def _write_point(
