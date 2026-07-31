@@ -1,0 +1,990 @@
+{
+ "fuente": "manual_vasp_2015.md",
+ "tags": {
+  "ADDGRID": {
+   "desc": "",
+   "secs": []
+  },
+  "AEXX": {
+   "desc": "",
+   "secs": [
+    "6.71.3"
+   ]
+  },
+  "AGGAC": {
+   "desc": "",
+   "secs": [
+    "6.71.3"
+   ]
+  },
+  "AGGAX": {
+   "desc": "",
+   "secs": [
+    "6.71.3"
+   ]
+  },
+  "ALDAC": {
+   "desc": "",
+   "secs": [
+    "6.71.3"
+   ]
+  },
+  "ALGO": {
+   "desc": "algorithm: Normal (Davidson) — Fast — Very Fast (RMM-DIIS)",
+   "secs": [
+    "6.46",
+    "6.73.1"
+   ]
+  },
+  "AMIN": {
+   "desc": "",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "AMIX": {
+   "desc": "tags for mixing",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "APACO": {
+   "desc": "distance and nr. of slots for P.C.",
+   "secs": [
+    "6.31"
+   ]
+  },
+  "BMIX": {
+   "desc": "tags for mixing",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "CLNT": {
+   "desc": "",
+   "secs": [
+    "6.56"
+   ]
+  },
+  "CMBJ": {
+   "desc": "",
+   "secs": []
+  },
+  "CSHIFT": {
+   "desc": "",
+   "secs": [
+    "6.72.2",
+    "6.73.5"
+   ]
+  },
+  "DEPER": {
+   "desc": "special control tags",
+   "secs": [
+    "6.50"
+   ]
+  },
+  "DIPOL": {
+   "desc": "center of cell for dipol",
+   "secs": [
+    "6.45",
+    "6.64",
+    "6.67.1"
+   ]
+  },
+  "EBREAK": {
+   "desc": "special control tags",
+   "secs": [
+    "6.50"
+   ]
+  },
+  "EDIFF": {
+   "desc": "stopping-criterion for electronic upd.",
+   "secs": [
+    "6.18"
+   ]
+  },
+  "EDIFFG": {
+   "desc": "stopping-criterion for ionic upd.",
+   "secs": [
+    "6.19"
+   ]
+  },
+  "EFIELD": {
+   "desc": "",
+   "secs": [
+    "6.64",
+    "6.67.3"
+   ]
+  },
+  "EMAX": {
+   "desc": "energy-range for DOSCAR fle",
+   "secs": [
+    "6.37"
+   ]
+  },
+  "EMIN": {
+   "desc": "energy-range for DOSCAR fle",
+   "secs": [
+    "6.37"
+   ]
+  },
+  "ENAUG": {
+   "desc": "",
+   "secs": [
+    "6.10"
+   ]
+  },
+  "ENCUT": {
+   "desc": "energy cutoff in eV",
+   "secs": [
+    "6.9"
+   ]
+  },
+  "ENCUTFOCK": {
+   "desc": "",
+   "secs": [
+    "6.71.4"
+   ]
+  },
+  "ENCUTGW": {
+   "desc": "",
+   "secs": [
+    "6.73.7"
+   ]
+  },
+  "ENCUTGWSOFT": {
+   "desc": "",
+   "secs": [
+    "6.73.8"
+   ]
+  },
+  "ENMAX": {
+   "desc": "",
+   "secs": []
+  },
+  "EPSILON": {
+   "desc": "",
+   "secs": [
+    "6.64"
+   ]
+  },
+  "EVENONLYGW": {
+   "desc": "",
+   "secs": [
+    "6.73.9"
+   ]
+  },
+  "FERDO": {
+   "desc": "",
+   "secs": [
+    "6.38"
+   ]
+  },
+  "FERWE": {
+   "desc": "",
+   "secs": [
+    "6.38"
+   ]
+  },
+  "GGA": {
+   "desc": "xc-type: e.g. PE AM or 91",
+   "secs": [
+    "6.40",
+    "6.42"
+   ]
+  },
+  "GGA_COMPAT": {
+   "desc": "§6.71 compatibilidad del modo GGA",
+   "secs": []
+  },
+  "HFLMAXF": {
+   "desc": "",
+   "secs": [
+    "6.71.6"
+   ]
+  },
+  "HFSCREEN": {
+   "desc": "",
+   "secs": [
+    "6.71.8"
+   ]
+  },
+  "IALGO": {
+   "desc": "algorithm: use only 8 (CG) or 48 (RMM-DIIS)",
+   "secs": [
+    "6.47"
+   ]
+  },
+  "IBAND": {
+   "desc": "",
+   "secs": [
+    "6.66"
+   ]
+  },
+  "IBRION": {
+   "desc": "ionic relaxation: 0-MD 1-quasi-New 2-CG",
+   "secs": [
+    "6.22",
+    "6.22.1",
+    "6.22.2",
+    "6.22.3",
+    "6.22.4",
+    "6.22.5",
+    "6.22.6",
+    "6.22.7",
+    "6.22.8",
+    "6.22.9",
+    "6.83"
+   ]
+  },
+  "ICHARG": {
+   "desc": "charge: 1-fle 2-atom 10-const",
+   "secs": [
+    "6.15"
+   ]
+  },
+  "ICHIBARE": {
+   "desc": "",
+   "secs": []
+  },
+  "ICORELEVEL": {
+   "desc": "",
+   "secs": [
+    "6.56"
+   ]
+  },
+  "IDIPOL": {
+   "desc": "",
+   "secs": [
+    "6.64"
+   ]
+  },
+  "IGPAR": {
+   "desc": "",
+   "secs": [
+    "6.67.1"
+   ]
+  },
+  "IMAGES": {
+   "desc": "",
+   "secs": [
+    "6.60"
+   ]
+  },
+  "IMIX": {
+   "desc": "",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "INIMIX": {
+   "desc": "",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "INIWAV": {
+   "desc": "initial electr wf. : 0-lowe 1-rand",
+   "secs": [
+    "6.16"
+   ]
+  },
+  "ISIF": {
+   "desc": "calculate stress and what to relax",
+   "secs": [
+    "6.22.9",
+    "6.24"
+   ]
+  },
+  "ISMEAR": {
+   "desc": "part. occupancies: -5 Bl¨ochl -4-tet -1-fermi 0-gaus ¿0 MP",
+   "secs": [
+    "6.38"
+   ]
+  },
+  "ISPIN": {
+   "desc": "spin polarized calculation (2-yes 1-no)",
+   "secs": [
+    "6.12"
+   ]
+  },
+  "ISTART": {
+   "desc": "startjob: 0-new 1-cont 2-samecut",
+   "secs": [
+    "6.14"
+   ]
+  },
+  "ISYM": {
+   "desc": "symmetry: 0-nonsym 1-usesym",
+   "secs": [
+    "6.27"
+   ]
+  },
+  "IWAVPR": {
+   "desc": "prediction of wf.: 0-non 1-charg 2-wave 3-comb",
+   "secs": [
+    "6.26"
+   ]
+  },
+  "KBLOCK": {
+   "desc": "inner block; outer block",
+   "secs": [
+    "6.21"
+   ]
+  },
+  "KGAMMA": {
+   "desc": "",
+   "secs": [
+    "6.4"
+   ]
+  },
+  "KPAR": {
+   "desc": "",
+   "secs": [
+    "6.57"
+   ]
+  },
+  "KPUSE": {
+   "desc": "",
+   "secs": [
+    "6.66"
+   ]
+  },
+  "KSPACING": {
+   "desc": "",
+   "secs": [
+    "6.4"
+   ]
+  },
+  "LANGEVIN_GAMMA": {
+   "desc": "§6.62 fricción del termostato de Langevin",
+   "secs": []
+  },
+  "LASPH": {
+   "desc": "",
+   "secs": [
+    "6.44"
+   ]
+  },
+  "LASYNC": {
+   "desc": "overlapcommuncation with calculations",
+   "secs": [
+    "6.58"
+   ]
+  },
+  "LBERRY": {
+   "desc": "",
+   "secs": [
+    "6.67.1"
+   ]
+  },
+  "LCALCEPS": {
+   "desc": "",
+   "secs": [
+    "6.67.4"
+   ]
+  },
+  "LCALCPOL": {
+   "desc": "",
+   "secs": [
+    "6.67.2"
+   ]
+  },
+  "LCHARG": {
+   "desc": "create WAVECAR/CHGCAR/LOCPOT",
+   "secs": [
+    "6.52"
+   ]
+  },
+  "LCHIMAG": {
+   "desc": "",
+   "secs": []
+  },
+  "LCORR": {
+   "desc": "Harris-correction to forces",
+   "secs": [
+    "6.28"
+   ]
+  },
+  "LDIAG": {
+   "desc": "",
+   "secs": [
+    "6.47"
+   ]
+  },
+  "LDIPOL": {
+   "desc": "",
+   "secs": [
+    "6.64"
+   ]
+  },
+  "LEFG": {
+   "desc": "",
+   "secs": []
+  },
+  "LELF": {
+   "desc": "create ELFCAR",
+   "secs": [
+    "6.55"
+   ]
+  },
+  "LEPSILON": {
+   "desc": "",
+   "secs": [
+    "6.72.4"
+   ]
+  },
+  "LHFCALC": {
+   "desc": "",
+   "secs": [
+    "6.71.2"
+   ]
+  },
+  "LHYPERFINE": {
+   "desc": "",
+   "secs": [
+    "6.79"
+   ]
+  },
+  "LMAXFOCK": {
+   "desc": "",
+   "secs": [
+    "6.71.6"
+   ]
+  },
+  "LMAXFOCKAE": {
+   "desc": "",
+   "secs": [
+    "6.71.7",
+    "6.73.2"
+   ]
+  },
+  "LMAXMIX": {
+   "desc": "",
+   "secs": [
+    "6.63"
+   ]
+  },
+  "LMAXPAW": {
+   "desc": "",
+   "secs": [
+    "6.63"
+   ]
+  },
+  "LMIXTAU": {
+   "desc": "",
+   "secs": [
+    "6.43.2"
+   ]
+  },
+  "LMONO": {
+   "desc": "",
+   "secs": [
+    "6.64"
+   ]
+  },
+  "LNABLA": {
+   "desc": "",
+   "secs": [
+    "6.72.3"
+   ]
+  },
+  "LNONCOLLINEAR": {
+   "desc": "",
+   "secs": [
+    "6.68.1"
+   ]
+  },
+  "LOPTICS": {
+   "desc": "",
+   "secs": [
+    "6.72.1"
+   ]
+  },
+  "LORBIT": {
+   "desc": "create PROOUT",
+   "secs": [
+    "6.34"
+   ]
+  },
+  "LPARD": {
+   "desc": "",
+   "secs": []
+  },
+  "LPEAD": {
+   "desc": "",
+   "secs": []
+  },
+  "LPLANE": {
+   "desc": "",
+   "secs": [
+    "6.57"
+   ]
+  },
+  "LREAL": {
+   "desc": "non-local projectors in real space",
+   "secs": [
+    "6.39"
+   ]
+  },
+  "LRPA": {
+   "desc": "",
+   "secs": [
+    "6.72.5"
+   ]
+  },
+  "LSCALAPACK": {
+   "desc": "switch off scaLAPACK",
+   "secs": []
+  },
+  "LSCALU": {
+   "desc": "switch of LU decomposition",
+   "secs": []
+  },
+  "LSELFENERGY": {
+   "desc": "",
+   "secs": [
+    "6.73.10"
+   ]
+  },
+  "LSORBIT": {
+   "desc": "",
+   "secs": [
+    "6.68.2"
+   ]
+  },
+  "LSPECTRAL": {
+   "desc": "",
+   "secs": [
+    "6.73.4"
+   ]
+  },
+  "LTHOMAS": {
+   "desc": "",
+   "secs": [
+    "6.71.8"
+   ]
+  },
+  "LULTRA": {
+   "desc": "",
+   "secs": []
+  },
+  "LVDW": {
+   "desc": "",
+   "secs": []
+  },
+  "LVHAR": {
+   "desc": "create WAVECAR/CHGCAR/LOCPOT",
+   "secs": [
+    "6.54"
+   ]
+  },
+  "LVTOT": {
+   "desc": "create WAVECAR/CHGCAR/LOCPOT",
+   "secs": [
+    "6.53"
+   ]
+  },
+  "LWAVE": {
+   "desc": "create WAVECAR/CHGCAR/LOCPOT",
+   "secs": [
+    "6.52",
+    "6.73.11"
+   ]
+  },
+  "MAGMOM": {
+   "desc": "initial mag moment / atom",
+   "secs": [
+    "6.13"
+   ]
+  },
+  "MAXMIX": {
+   "desc": "",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "MDALGO": {
+   "desc": "",
+   "secs": []
+  },
+  "METAGGA": {
+   "desc": "",
+   "secs": [
+    "6.43"
+   ]
+  },
+  "MIXPRE": {
+   "desc": "",
+   "secs": [
+    "6.49"
+   ]
+  },
+  "NBANDS": {
+   "desc": "number of bands included in the calculation",
+   "secs": [
+    "6.5"
+   ]
+  },
+  "NBANDSGW": {
+   "desc": "",
+   "secs": [
+    "6.73.6"
+   ]
+  },
+  "NBLK": {
+   "desc": "blockingfor some BLAS calls",
+   "secs": [
+    "6.6"
+   ]
+  },
+  "NBLOCK": {
+   "desc": "inner block; outer block",
+   "secs": [
+    "6.21"
+   ]
+  },
+  "NCORE": {
+   "desc": "",
+   "secs": [
+    "6.57"
+   ]
+  },
+  "NDAV": {
+   "desc": "",
+   "secs": []
+  },
+  "NEDOS": {
+   "desc": "",
+   "secs": [
+    "6.37"
+   ]
+  },
+  "NELECT": {
+   "desc": "total number of electrons",
+   "secs": [
+    "6.35",
+    "6.64"
+   ]
+  },
+  "NELM": {
+   "desc": "nr. of electronic steps",
+   "secs": [
+    "6.17"
+   ]
+  },
+  "NELMDL": {
+   "desc": "nr. of electronic steps",
+   "secs": [
+    "6.17"
+   ]
+  },
+  "NELMIN": {
+   "desc": "nr. of electronic steps",
+   "secs": [
+    "6.17"
+   ]
+  },
+  "NFREE": {
+   "desc": "",
+   "secs": [
+    "6.22"
+   ]
+  },
+  "NGX": {
+   "desc": "FFT mesh for orbitals",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NGXF": {
+   "desc": "FFT mesh for charges",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NGY": {
+   "desc": "FFT mesh for orbitals",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NGYF": {
+   "desc": "FFT mesh for charges",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NGYROMAG": {
+   "desc": "",
+   "secs": []
+  },
+  "NGZ": {
+   "desc": "FFT mesh for orbitals",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NGZF": {
+   "desc": "FFT mesh for charges",
+   "secs": [
+    "6.11",
+    "6.3"
+   ]
+  },
+  "NKRED": {
+   "desc": "",
+   "secs": [
+    "6.71.10",
+    "6.73.9"
+   ]
+  },
+  "NKREDX": {
+   "desc": "",
+   "secs": []
+  },
+  "NKREDY": {
+   "desc": "",
+   "secs": []
+  },
+  "NKREDZ": {
+   "desc": "",
+   "secs": []
+  },
+  "NLSPLINE": {
+   "desc": "",
+   "secs": []
+  },
+  "NOMEGA": {
+   "desc": "",
+   "secs": [
+    "6.73.3"
+   ]
+  },
+  "NOMEGAR": {
+   "desc": "",
+   "secs": [
+    "6.73.3"
+   ]
+  },
+  "NPACO": {
+   "desc": "distance and nr. of slots for P.C.",
+   "secs": [
+    "6.31"
+   ]
+  },
+  "NPAR": {
+   "desc": "parallelization over bands",
+   "secs": [
+    "6.57",
+    "6.83"
+   ]
+  },
+  "NPPSTR": {
+   "desc": "",
+   "secs": [
+    "6.67.1"
+   ]
+  },
+  "NSIM": {
+   "desc": "",
+   "secs": [
+    "6.48"
+   ]
+  },
+  "NSUBSYS": {
+   "desc": "",
+   "secs": []
+  },
+  "NSW": {
+   "desc": "number of steps for ionic upd.",
+   "secs": [
+    "6.20"
+   ]
+  },
+  "NUPDOWN": {
+   "desc": "fx spin moment to specifed value",
+   "secs": [
+    "6.36"
+   ]
+  },
+  "NWRITE": {
+   "desc": "verbosity write-fag (how much is written)",
+   "secs": []
+  },
+  "ODDONLYGW": {
+   "desc": "",
+   "secs": [
+    "6.73.9"
+   ]
+  },
+  "OMEGAMAX": {
+   "desc": "",
+   "secs": [
+    "6.73.5"
+   ]
+  },
+  "OMEGAMIN": {
+   "desc": "",
+   "secs": [
+    "6.73.5"
+   ]
+  },
+  "OMEGATL": {
+   "desc": "",
+   "secs": [
+    "6.73.5"
+   ]
+  },
+  "PMASS": {
+   "desc": "",
+   "secs": []
+  },
+  "POMASS": {
+   "desc": "mass of ions in am",
+   "secs": [
+    "6.32"
+   ]
+  },
+  "POTIM": {
+   "desc": "time-step for ion-motion (fs)",
+   "secs": [
+    "6.22.9",
+    "6.23"
+   ]
+  },
+  "PREC": {
+   "desc": "precession: medium, high or low",
+   "secs": [
+    "4.5",
+    "6.11"
+   ]
+  },
+  "PRECFOCK": {
+   "desc": "",
+   "secs": [
+    "6.71.5"
+   ]
+  },
+  "PSTRESS": {
+   "desc": "",
+   "secs": [
+    "6.25"
+   ]
+  },
+  "QCUT": {
+   "desc": "",
+   "secs": []
+  },
+  "QGAM": {
+   "desc": "",
+   "secs": []
+  },
+  "QPGW": {
+   "desc": "",
+   "secs": [
+    "6.73.1"
+   ]
+  },
+  "QPGW0": {
+   "desc": "",
+   "secs": [
+    "6.73.1"
+   ]
+  },
+  "RMAX": {
+   "desc": "",
+   "secs": []
+  },
+  "ROPT": {
+   "desc": "number of grid points for non-local proj in real space",
+   "secs": [
+    "6.39"
+   ]
+  },
+  "RWIGS": {
+   "desc": "Wigner-Seitz radii",
+   "secs": [
+    "6.33"
+   ]
+  },
+  "SAXIS": {
+   "desc": "",
+   "secs": []
+  },
+  "SIGMA": {
+   "desc": "broadeningin eV -4-tet -1-fermi 0-gaus",
+   "secs": [
+    "6.38"
+   ]
+  },
+  "SMASS": {
+   "desc": "Nose mass-parameter (am)",
+   "secs": [
+    "6.30"
+   ]
+  },
+  "SPRING": {
+   "desc": "",
+   "secs": [
+    "6.60"
+   ]
+  },
+  "SYMPREC": {
+   "desc": "precession in symmetry routines",
+   "secs": [
+    "6.27"
+   ]
+  },
+  "SYSTEM": {
+   "desc": "name of System",
+   "secs": [
+    "6.7",
+    "6.83"
+   ]
+  },
+  "TEBEG": {
+   "desc": "temperature during run",
+   "secs": [
+    "6.29"
+   ]
+  },
+  "TEEND": {
+   "desc": "temperature during run",
+   "secs": [
+    "6.29"
+   ]
+  },
+  "TIME": {
+   "desc": "special control tag",
+   "secs": [
+    "6.51"
+   ]
+  },
+  "TITEL": {
+   "desc": "",
+   "secs": []
+  },
+  "VOSKOWN": {
+   "desc": "use Vosko, Wilk, Nusair interpolation",
+   "secs": []
+  },
+  "WEIMIN": {
+   "desc": "special control tags",
+   "secs": [
+    "6.50"
+   ]
+  },
+  "ZVAL": {
+   "desc": "ionic valence",
+   "secs": [
+    "6.32"
+   ]
+  }
+ }
+}

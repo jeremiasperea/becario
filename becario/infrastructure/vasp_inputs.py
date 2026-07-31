@@ -18,6 +18,7 @@ from ase import Atoms
 from ase.io import write
 
 from ..domain.models import CalcDirResult, CalcKind, VaspCalcRequest
+from ..domain.vasp_tags import tags_desconocidos
 from .ase_builder import make_bulk_atoms
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,17 @@ def _render_incar(
         params["ISIF"] = isif
     if nbands is not None:
         params["NBANDS"] = nbands
+
+    # Guarda de vocabulario: un tag mal escrito no rompe VASP, lo ignora y
+    # corre con el default. Acá los tags salen de tablas nuestras, así que
+    # esto no debería dispararse nunca — si se dispara, es un typo en el
+    # generador, y el log lo delata antes de que la corrida mienta.
+    desconocidos = tags_desconocidos(params)
+    if desconocidos:
+        logger.warning(
+            "INCAR con tags que el manual no documenta: %s. VASP los ignora "
+            "en silencio; revisá la escritura.", ", ".join(desconocidos),
+        )
     return "\n".join(f"{key} = {value}" for key, value in params.items()) + "\n"
 
 
