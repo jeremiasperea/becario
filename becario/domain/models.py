@@ -431,6 +431,7 @@ class CalcKind(str, Enum):
     RELAX = "relajacion"  # ISIF=3: relaja también los parámetros de red
     STATIC = "estatico"
     ENCUT_SCAN = "convergencia_encut"
+    DOS = "dos"  # densidad de estados: punto único, tetraedros, malla densa
 
 
 class OutputFormat(str, Enum):

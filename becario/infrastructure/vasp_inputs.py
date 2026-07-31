@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 # Densidad de la grilla automática de k-points: n_i = max(1, round(RK / a_i)).
 _RK_LENGTH = 30.0  # Å — razonable para metales; el usuario puede pedir otra grilla
 
+# Densidad de la grilla por tipo de cálculo. Una DOS se muestrea bastante más
+# fino que una relajación: la relajación necesita fuerzas, que convergen
+# rápido con la malla; la DOS necesita resolver la estructura de bandas, y con
+# una malla pobre salen picos que no existen.
+_RK_POR_TIPO = {CalcKind.DOS: 50.0}
+
 # Parámetros comunes a todos los cálculos. Base tomada de un INCAR de producción
 # del grupo (interfaz ZrO2-Zr), quedándonos solo con los tags de CALIDAD que
 # valen para cualquier sistema; los específicos del sistema de origen (NBANDS,
@@ -73,6 +79,7 @@ _DEFAULT_NSW = {
     CalcKind.RELAX: 180,
     CalcKind.STATIC: 0,
     CalcKind.ENCUT_SCAN: 0,
+    CalcKind.DOS: 0,
 }
 
 # Tags que solo tienen sentido si hay pasos iónicos. Se emiten según el NSW
@@ -85,6 +92,24 @@ _DEFAULT_NSW = {
 # contra la práctica real. No se expone como override porque es un valor que
 # casi nunca se cambia; si algún día hace falta, sigue el molde de `isif`.
 _IONIC_TAGS = {"IBRION": 2, "EDIFFG": "-0.02"}
+
+# Tags propios de cada tipo de cálculo, más allá del NSW. Se aplican DESPUÉS
+# de los de calidad y ANTES de los pedidos a mano, así el usuario siempre
+# puede desviarse.
+#
+# DOS: el manual manda tetraedros para densidad de estados y energías totales
+# precisas — "for the calculations of the DOS (...) use the tetrahedron
+# method" (§6.38). NEDOS es la cantidad de puntos de la grilla de energía
+# (§6.37): el default de VASP es 301, muy grueso para mirar un pico. LORBIT=11
+# agrega la proyección por sitio y orbital (§6.34), que es lo que se quiere
+# cuando se pide "la DOS del Zr en la interfaz" y no la DOS total.
+# Un valor None QUITA el tag del template. La DOS lo usa para SIGMA: con
+# tetraedros el ancho de smearing no se usa (§6.38), y dejarlo escrito
+# sugiere que hace algo. El propio bot avisa de esa combinación cuando la
+# pide un usuario, así que no puede emitirla él mismo.
+_TAGS_POR_TIPO = {
+    CalcKind.DOS: {"ISMEAR": -5, "SIGMA": None, "NEDOS": 3001, "LORBIT": 11},
+}
 
 # Electrones de valencia (ZVAL) por elemento, para estimar NBANDS por sistema.
 # CLAVE: cada valor corresponde al POTCAR EXACTO que el cluster concatena para
@@ -141,7 +166,9 @@ class VaspInputGenerator:
             lattice=atoms,
         )
 
-        kpoints = req.kpoints or _auto_kpoints(atoms)
+        kpoints = req.kpoints or _auto_kpoints(
+            atoms, _RK_POR_TIPO.get(req.calc_kind, _RK_LENGTH)
+        )
         encut_values = (
             req.scan_values() if req.calc_kind is CalcKind.ENCUT_SCAN else [req.encut]
         )
@@ -149,6 +176,7 @@ class VaspInputGenerator:
         # NBANDS e ISIF son iguales en todos los puntos (misma estructura y
         # tipo de cálculo), así que se resuelven una sola vez acá.
         nbands = req.nbands if req.nbands is not None else _auto_nbands(atoms)
+        por_tipo = _TAGS_POR_TIPO.get(req.calc_kind)
         nsw, nsw_forced = _resolve_nsw(req.calc_kind, req.nsw)
         if nsw_forced:
             # No se corrige en silencio: queda registrado que lo pedido no es
@@ -173,13 +201,13 @@ class VaspInputGenerator:
                 subdir.mkdir()
                 files += self._write_point(
                     subdir, atoms, run_name, kpoints, encut, nsw=nsw,
-                    nbands=nbands, extra=req.incar_tags,
+                    nbands=nbands, extra=req.incar_tags, por_tipo=por_tipo,
                 )
         else:
             files += self._write_point(
                 run_dir, atoms, run_name, kpoints, req.encut,
                 nsw=nsw, nbands=nbands, isif=isif,
-                extra=req.incar_tags,
+                extra=req.incar_tags, por_tipo=por_tipo,
             )
 
         script = run_dir / "run_vasp.sh"
@@ -254,6 +282,7 @@ class VaspInputGenerator:
         nbands: int | None = None,
         isif: int | None = None,
         extra: dict[str, str] | None = None,
+        por_tipo: dict | None = None,
     ) -> list[str]:
         """POSCAR + INCAR + KPOINTS de un punto de cálculo."""
         # sort=True ordena los átomos alfabéticamente por símbolo: el orden
@@ -262,7 +291,7 @@ class VaspInputGenerator:
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
             _render_incar(run_name, encut, nsw, nbands=nbands, isif=isif,
-                          extra=extra),
+                          extra=extra, por_tipo=por_tipo),
             encoding="utf-8",
         )
         (directory / "KPOINTS").write_text(_render_kpoints(kpoints), encoding="utf-8")
@@ -294,9 +323,9 @@ class VaspInputGenerator:
 # ---------------------------------------------------------------------------
 
 
-def _auto_kpoints(atoms: Atoms) -> tuple[int, int, int]:
+def _auto_kpoints(atoms: Atoms, rk: float = _RK_LENGTH) -> tuple[int, int, int]:
     a, b, c = atoms.cell.lengths()
-    return tuple(max(1, round(_RK_LENGTH / length)) for length in (a, b, c))
+    return tuple(max(1, round(rk / length)) for length in (a, b, c))
 
 
 def _auto_nbands(atoms: Atoms) -> int | None:
@@ -337,9 +366,15 @@ def _render_incar(
     nbands: int | None = None,
     isif: int | None = None,
     extra: dict[str, str] | None = None,
+    por_tipo: dict | None = None,
 ) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
+    for tag, valor in (por_tipo or {}).items():
+        if valor is None:
+            params.pop(tag, None)
+        else:
+            params[tag] = valor
     params["NSW"] = nsw
     if nsw > 0:
         params.update(_IONIC_TAGS)
