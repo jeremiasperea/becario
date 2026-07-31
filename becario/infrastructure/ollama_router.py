@@ -67,8 +67,15 @@ class RouterParams(BaseModel):
     # estructura atómica:
     formula: Optional[str] = None
     tipo_estructura: Optional[str] = Field(
-        default=None, description="bulk o molecule"
+        default=None, description="bulk, molecule o slab"
     )
+    # Losa/superficie. `miller` NO se adivina: si el pedido habla de una
+    # superficie y no lo trae, el servicio lo pide (guía en `_SYSTEM_PROMPT`).
+    miller: Optional[list[int]] = Field(
+        default=None, description="cara de la losa [h, k, l]"
+    )
+    capas: Optional[int] = Field(default=None, description="capas de la losa")
+    eje_vacio: Optional[str] = Field(default=None, description="x, y o z")
     red_cristalina: Optional[str] = Field(
         default=None, description="diamond, fcc, bcc, hcp, rocksalt, zincblende…"
     )
@@ -92,7 +99,7 @@ class RouterParams(BaseModel):
     # description (presupuesto de schema): la guía vive en `_SYSTEM_PROMPT`.
     mp_id: Optional[str] = None
     fuente_estructura: Optional[str] = Field(
-        default=None, description="ase o mp"
+        default=None, description="ase, mp o relajado"
     )
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
@@ -168,6 +175,17 @@ _SYSTEM_PROMPT = (
     "'mostrá el historial de cálculos' -> consultar_db\n"
     "'minimizá los parámetros de red del bulk de W' -> preparar_calculo, "
     "tipo_calculo=relajacion, formula=W\n"
+    "Losas/superficies: 'slab', 'superficie', 'lámina', 'capas' -> "
+    "tipo_estructura=slab. La cara va en 'miller' ((001), '110', "
+    "'plano 111' -> [0,0,1] / [1,1,0] / [1,1,1]); el espesor en 'capas'; "
+    "una repetición 'NxM' del plano en 'supercelda' como [N,M,1]. Si el "
+    "pedido es de una superficie y NO nombra la cara, dejá 'miller' sin "
+    "completar: NUNCA la inventes.\n"
+    "'armá un slab de ZrO2 (001) de 5 capas, 2x1' -> modificar_estructura, "
+    "tipo_estructura=slab, formula=ZrO2, miller=[0,0,1], capas=5, "
+    "supercelda=[2,1,1]\n"
+    "'una superficie de Zr acostada, vacío en y' -> "
+    "modificar_estructura, tipo_estructura=slab, formula=Zr, eje_vacio=y\n"
     "'curva de convergencia de ENCUT para Zr hcp de 250 a 450' -> "
     "preparar_calculo, tipo_calculo=convergencia_encut, formula=Zr, "
     "red_cristalina=hcp, encut_min=250, encut_max=450\n"
@@ -177,6 +195,14 @@ _SYSTEM_PROMPT = (
     "Materials Project' -> mp; 'armala con ASE', 'estructura ideal' -> "
     "ase) poné 'ase' o 'mp' en 'fuente_estructura'. Sin pistas, dejá "
     "ambos sin completar (el sistema decide la fuente).\n"
+    "Si el pedido parte de un resultado propio anterior —'el bulk de ZrO2 "
+    "RELAJADO', 'la estructura ya relajada', 'partí del CONTCAR', 'usá el "
+    "resultado de la relajación'— poné 'relajado' en 'fuente_estructura'. "
+    "Ojo: 'relajá X' es tipo_calculo=relajacion (lo que se VA a hacer); "
+    "'de X relajado' es fuente_estructura=relajado (de dónde se PARTE), y "
+    "pueden aparecer juntos.\n"
+    "'armá un slab del ZrO2 relajado' -> tipo_estructura=slab, "
+    "formula=ZrO2, fuente_estructura=relajado\n"
     "'relajá Fe2O3 con mp-19770' -> preparar_calculo, formula=Fe2O3, "
     "mp_id=mp-19770\n"
     "'corré el script /home/ana/run.sh' -> enviar_slurm, "
@@ -269,11 +295,14 @@ _EDIT_PROMPT = (
     "sobre ese plan. Extraé únicamente los parámetros que el mensaje "
     "menciona (nodos, particion, tiempo_limite, encut, encut_min, "
     "encut_max, encut_paso, puntos_k, supercelda, formula, red_cristalina, "
-    "parametro_red…). No inventes valores ni completes los que no menciona.\n"
+    "parametro_red, miller, capas, eje_vacio…). No inventes valores ni "
+    "completes los que no menciona.\n"
     "Ejemplos:\n"
     "'cambiá a 2 nodos' -> nodos=2\n"
     "'subí el ENCUT máximo a 600' -> encut_max=600\n"
-    "'usá la partición gpu y 4 horas' -> particion=gpu, tiempo_limite=04:00:00"
+    "'usá la partición gpu y 4 horas' -> particion=gpu, tiempo_limite=04:00:00\n"
+    "'la (111)' -> miller=[1,1,1]\n"
+    "'que sean 8 capas' -> capas=8"
 )
 
 

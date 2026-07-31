@@ -1,10 +1,12 @@
 """Tests del generador de inputs VASP (usa ASE de verdad, sin cluster)."""
+import logging
 from pathlib import Path
 
 import pytest
 from ase import Atoms
+from pydantic import ValidationError
 
-from becario.domain.models import CalcKind, VaspCalcRequest
+from becario.domain.models import CalcKind, StructureKind, VaspCalcRequest
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
 
 
@@ -37,7 +39,13 @@ class TestSingleCalc:
         incar = (Path(result.local_dir) / "INCAR").read_text()
         assert "ISIF = 3" in incar
         assert "IBRION = 2" in incar
-        assert "NSW = 60" in incar
+        assert "NSW = 180" in incar
+
+    def test_relax_uses_group_force_criterion(self, generator):
+        """EDIFFG=-0.02 eV/Å es el criterio del grupo, no el -0.01 del andamio."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "EDIFFG = -0.02" in incar
 
     def test_job_script_cds_to_own_dir_with_prelude(self, generator):
         req = VaspCalcRequest(formula="Si")
@@ -115,6 +123,64 @@ class TestIsif:
         req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, isif=3)
         incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
         assert "ISIF" not in incar
+
+
+class TestNsw:
+    """El presupuesto de pasos iónicos lo fija el TIPO de cálculo; el pedido
+    solo puede afinarlo donde tiene sentido (los tipos que relajan)."""
+
+    def test_relax_default_is_group_production_value(self, generator):
+        """180, no 60: un presupuesto corto termina con código 0 y deja un
+        CONTCAR a medio relajar que parece válido."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 180" in incar
+
+    def test_relax_override_wins(self, generator):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, nsw=300)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 300" in incar
+
+    def test_static_forces_zero_even_when_nsw_requested(self, generator):
+        """El tipo manda: un estático con pasos iónicos no es un estático.
+
+        Y al forzarlo (en vez de rechazarlo) queda inalcanzable un INCAR con
+        NSW>1 sin IBRION, que VASP leería como dinámica molecular."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=180)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 0" in incar
+        assert "IBRION" not in incar
+        assert "EDIFFG" not in incar
+        assert "ISIF" not in incar
+
+    def test_forcing_is_logged_not_silent(self, generator, caplog):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=180)
+        with caplog.at_level(logging.WARNING):
+            generator.generate(req)
+        assert "NSW=180 ignorado" in caplog.text
+
+    def test_encut_scan_points_have_no_ionic_steps(self, generator):
+        req = VaspCalcRequest(
+            formula="W", calc_kind=CalcKind.ENCUT_SCAN, encut_values=[300, 400]
+        )
+        run_dir = Path(generator.generate(req).local_dir)
+        for encut in (300, 400):
+            incar = (run_dir / f"encut_{encut}" / "INCAR").read_text()
+            assert "NSW = 0" in incar
+            assert "IBRION" not in incar
+
+    def test_relax_with_zero_nsw_is_rejected(self):
+        """Caso espejo: una `relajacion` sin pasos iónicos sería un estático
+        con el nombre equivocado. El cero se pide eligiendo el otro tipo."""
+        with pytest.raises(ValidationError, match="NSW>=1"):
+            VaspCalcRequest(formula="W", calc_kind=CalcKind.RELAX, nsw=0)
+
+    def test_static_with_zero_nsw_is_consistent_not_an_error(self, generator):
+        """Pedir explícitamente NSW=0 en un estático coincide con el default:
+        no hay nada que forzar ni que avisar."""
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=0)
+        incar = (Path(generator.generate(req).local_dir) / "INCAR").read_text()
+        assert "NSW = 0" in incar
 
 
 class TestProvidedAtoms:
@@ -197,6 +263,103 @@ class TestRequestValidation:
             VaspCalcRequest(formula="Zr", time_limit="1h; reboot")
 
 
+class TestSlabCalc:
+    """El generador tiene su PROPIO camino de construcción: si la losa no
+    llega hasta acá, "armá el slab y mandalo a relajar" produce inputs de
+    bulk sin que nada avise."""
+
+    def _req(self, **kw):
+        base = dict(
+            formula="ZrO2", kind=StructureKind.SLAB, crystal="fluorite",
+            lattice_a=5.14, miller=(0, 0, 1), layers=4,
+        )
+        base.update(kw)
+        return VaspCalcRequest(**base)
+
+    def test_slab_poscar_is_not_a_bulk_poscar(self, generator):
+        # calc_kind distinto a propósito: el nombre del directorio de corrida
+        # tiene resolución de un segundo y `mkdir(exist_ok=False)` choca si dos
+        # corridas del mismo material y tipo caen en el mismo segundo.
+        slab = generator.generate(self._req())
+        bulk_ = generator.generate(
+            VaspCalcRequest(
+                formula="ZrO2", crystal="fluorite", lattice_a=5.14,
+                calc_kind=CalcKind.RELAX,
+            )
+        )
+        assert slab.n_atoms > bulk_.n_atoms
+        assert "c=" in slab.cell_summary
+
+    def test_slab_keeps_vacuum_in_the_generated_cell(self, generator):
+        result = generator.generate(self._req())
+        c = float(result.cell_summary.split("c=")[1].split(" ")[0])
+        assert c > 30  # espesor + 2 x 15 Å de vacío
+
+    def test_kpoints_collapse_along_the_vacuum(self, generator):
+        """La grilla automática es n_i = round(30/a_i): sobre el eje con
+        vacío el parámetro es enorme, así que ahí tiene que dar 1 — muestrear
+        el vacío sería tirar tiempo de cómputo."""
+        result = generator.generate(self._req())
+        assert result.kpoints[2] == 1
+        assert all(k > 1 for k in result.kpoints[:2])
+
+    def test_molecule_kind_rejected_for_vasp(self):
+        with pytest.raises(ValidationError, match="moléculas"):
+            VaspCalcRequest(formula="H2O", kind=StructureKind.MOLECULE)
+
+
+class TestSlabFromProvidedCell:
+    """Una estructura ya resuelta (Materials Project o CONTCAR relajado) es
+    la celda de PARTIDA de la losa, no el resultado.
+
+    Regresión: antes se devolvía esa celda entera sin cortar — un bulk con
+    nombre de slab. Afectaba a todo compuesto, porque `source=auto` los manda
+    a Materials Project."""
+
+    def _slab_req(self):
+        return VaspCalcRequest(
+            formula="ZrO2", kind=StructureKind.SLAB, crystal="fluorite",
+            lattice_a=5.14, miller=(0, 0, 1), layers=5,
+        )
+
+    def test_surface_is_actually_cut_from_the_provided_cell(self, generator, tmp_path):
+        from ase.build import bulk
+
+        provided = bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        result = generator.generate(self._slab_req(), atoms=provided)
+        assert result.n_atoms > len(provided), "la celda entró sin cortar"
+        c = float(result.cell_summary.split("c=")[1].split(" ")[0])
+        assert c > 30, "sin vacío no es una superficie"
+
+    def test_matches_the_slab_built_from_the_formula(self, generator, tmp_path):
+        """Partir de la misma celda convencional tiene que dar la misma losa."""
+        from ase.build import bulk
+
+        other = VaspInputGenerator(workdir=str(tmp_path / "otro"))
+        from_formula = generator.generate(self._slab_req())
+        from_cell = other.generate(
+            self._slab_req(), atoms=bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        )
+        assert from_cell.n_atoms == from_formula.n_atoms
+        assert from_cell.cell_summary == from_formula.cell_summary
+
+    def test_bulk_with_provided_cell_is_untouched(self, generator):
+        from ase.build import bulk
+
+        provided = bulk("ZrO2", "fluorite", a=5.14, cubic=True)
+        result = generator.generate(
+            VaspCalcRequest(formula="ZrO2", crystal="fluorite", lattice_a=5.14),
+            atoms=provided,
+        )
+        assert result.n_atoms == len(provided)
+
+
+class TestVacuumOnlyMakesSenseForSlabs:
+    def test_bulk_calc_rejects_vacuum_instead_of_dropping_it(self):
+        """El generador solo aplica vacío al cortar una losa: en un bulk lo
+        descartaría en silencio, así que el pedido se rechaza."""
+        with pytest.raises(ValidationError, match="solo aplica a una losa"):
+            VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23, vacuum=12.0)
 class TestRunDirCollision:
     """El sello de tiempo tiene resolución de UN SEGUNDO. Dos cálculos del
     mismo material y tipo pedidos juntos —un plan multi-paso, o dos pasos de
