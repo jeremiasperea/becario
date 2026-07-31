@@ -195,3 +195,44 @@ class TestRequestValidation:
     def test_evil_time_limit_rejected(self):
         with pytest.raises(ValueError):
             VaspCalcRequest(formula="Zr", time_limit="1h; reboot")
+
+
+class TestRunDirCollision:
+    """El sello de tiempo tiene resolución de UN SEGUNDO. Dos cálculos del
+    mismo material y tipo pedidos juntos —un plan multi-paso, o dos pasos de
+    un batch— caían en el mismo nombre y el segundo moría con FileExistsError.
+    """
+
+    def _req(self):
+        return VaspCalcRequest(formula="ZrO2", crystal="fluorite", lattice_a=5.14)
+
+    def test_two_identical_runs_in_the_same_second_both_succeed(self, generator):
+        first = generator.generate(self._req())
+        second = generator.generate(self._req())
+        assert first.local_dir != second.local_dir
+        assert Path(first.local_dir).exists() and Path(second.local_dir).exists()
+
+    def test_suffix_keeps_the_chronological_prefix(self, generator):
+        """El sufijo va al final: el nombre sigue ordenando por fecha, y el
+        prefijo `{formula}_{tipo}_` queda intacto."""
+        first = generator.generate(self._req())
+        second = generator.generate(self._req())
+        assert second.run_name.startswith("ZrO2_estatico_")
+        assert second.run_name == f"{first.run_name}_2"
+
+    def test_existing_run_is_never_overwritten(self, generator, tmp_path):
+        """La propiedad que hay que conservar: nunca se escribe encima."""
+        first = generator.generate(self._req())
+        marker = Path(first.local_dir) / "NO_ME_PISES"
+        marker.write_text("resultado previo")
+        generator.generate(self._req())
+        assert marker.read_text() == "resultado previo"
+
+    def test_gives_up_loudly_instead_of_looping_forever(self, generator, monkeypatch):
+        import becario.infrastructure.vasp_inputs as vi
+
+        monkeypatch.setattr(vi, "_MAX_RUN_DIR_ATTEMPTS", 2)
+        generator.generate(self._req())
+        generator.generate(self._req())
+        with pytest.raises(RuntimeError, match="directorio de corrida"):
+            generator.generate(self._req())
