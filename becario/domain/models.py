@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .vasp_tags import validar_tags_pedidos
+
 if TYPE_CHECKING:  # solo para anotar; el dominio no importa ASE en runtime
     from ase import Atoms
 
@@ -607,6 +609,13 @@ class VaspCalcRequest(BaseModel):
     # (tabla ZVAL) o, si no puede, lo deja a criterio de VASP. Se puede forzar
     # un número mayor cuando hacen falta bandas vacías (DOS, estados desocupados).
     nbands: Optional[int] = Field(default=None, ge=1, le=100000)
+    # Tags del INCAR pedidos a mano, validados contra el vocabulario del
+    # manual (`vasp_tags`). Es UN campo para los 169 tags en vez de un campo
+    # por tag: el schema del router tiene presupuesto (ADR-0006) y agregar
+    # uno por cada tag que alguien necesite lo agota en tres features.
+    # Los que decide el tipo de cálculo y los que ya tienen campo propio se
+    # rechazan acá, no se ignoran.
+    incar_tags: dict[str, str] = Field(default_factory=dict)
     # Materials Project: id explícito (fuerza fuente MP por id) y/o fuente
     # forzada (auto = el ruteo decide elemento->ASE, compuesto->MP). Inertes
     # por default, así el cambio es aditivo.
@@ -673,6 +682,11 @@ class VaspCalcRequest(BaseModel):
         if len(v) != 3 or any(not (1 <= n <= 40) for n in v):
             raise ValueError(f"puntos k inválidos: {v!r} (cada dimensión entre 1 y 40)")
         return v
+
+    @field_validator("incar_tags")
+    @classmethod
+    def _v_incar_tags(cls, v: dict) -> dict[str, str]:
+        return validar_tags_pedidos(v)
 
     @field_validator("encut_values")
     @classmethod

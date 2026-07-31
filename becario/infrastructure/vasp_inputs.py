@@ -172,12 +172,14 @@ class VaspInputGenerator:
                 subdir = run_dir / f"encut_{encut}"
                 subdir.mkdir()
                 files += self._write_point(
-                    subdir, atoms, run_name, kpoints, encut, nsw=nsw, nbands=nbands
+                    subdir, atoms, run_name, kpoints, encut, nsw=nsw,
+                    nbands=nbands, extra=req.incar_tags,
                 )
         else:
             files += self._write_point(
                 run_dir, atoms, run_name, kpoints, req.encut,
                 nsw=nsw, nbands=nbands, isif=isif,
+                extra=req.incar_tags,
             )
 
         script = run_dir / "run_vasp.sh"
@@ -251,6 +253,7 @@ class VaspInputGenerator:
         nsw: int = 0,
         nbands: int | None = None,
         isif: int | None = None,
+        extra: dict[str, str] | None = None,
     ) -> list[str]:
         """POSCAR + INCAR + KPOINTS de un punto de cálculo."""
         # sort=True ordena los átomos alfabéticamente por símbolo: el orden
@@ -258,7 +261,8 @@ class VaspInputGenerator:
         # mismo orden usa el servicio para concatenar el POTCAR.
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
-            _render_incar(run_name, encut, nsw, nbands=nbands, isif=isif),
+            _render_incar(run_name, encut, nsw, nbands=nbands, isif=isif,
+                          extra=extra),
             encoding="utf-8",
         )
         (directory / "KPOINTS").write_text(_render_kpoints(kpoints), encoding="utf-8")
@@ -332,6 +336,7 @@ def _render_incar(
     nsw: int,
     nbands: int | None = None,
     isif: int | None = None,
+    extra: dict[str, str] | None = None,
 ) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
@@ -342,6 +347,13 @@ def _render_incar(
             params["ISIF"] = isif
     if nbands is not None:
         params["NBANDS"] = nbands
+
+    # Los tags pedidos a mano van DESPUÉS de los de calidad: para eso se
+    # piden, para poder desviarse del template (p. ej. ISMEAR=-5 en un
+    # estático de DOS). No pueden pisar los del tipo de cálculo ni los que
+    # tienen campo propio porque el dominio ya los rechazó al validar.
+    if extra:
+        params.update(extra)
 
     # Guarda de vocabulario: un tag mal escrito no rompe VASP, lo ignora y
     # corre con el default. Acá los tags salen de tablas nuestras, así que
