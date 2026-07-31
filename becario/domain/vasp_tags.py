@@ -15,7 +15,9 @@ manual a mano.
 """
 from __future__ import annotations
 
+import difflib
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -28,6 +30,19 @@ _RUTA = Path(__file__).with_name('vasp_tags.json')
 # sin IBRION es dinámica molecular). Dejarlos overrideables por un pedido
 # suelto sería saltearse esas reglas por la puerta de atrás.
 TAGS_RESERVADOS = frozenset({'NSW', 'IBRION', 'ISIF', 'SYSTEM'})
+
+# Tags que ya tienen un campo dedicado en `VaspCalcRequest`. Aceptarlos
+# también por el diccionario genérico crearía dos fuentes de verdad para el
+# mismo número, y ganaría la que se escriba último — que es justo el tipo de
+# ambigüedad que no se descubre hasta mirar un INCAR raro.
+TAGS_CON_CAMPO_PROPIO = frozenset({'ENCUT', 'NBANDS'})
+
+# Un valor va tal cual al INCAR, así que se acota a lo que un valor de VASP
+# puede ser: números, .TRUE./.FALSE., palabras como Accurate o Fast, y listas
+# separadas por espacios. Lo que importa es lo que NO entra: un salto de línea
+# convertiría `{"LREAL": ".FALSE.\nNSW = 999"}` en dos asignaciones y saltearía
+# la lista de reservados; un `=` haría lo mismo dentro del renglón.
+_VALOR_RE = re.compile(r'^[A-Za-z0-9 ._+\-*/]{1,80}$')
 
 
 @lru_cache(maxsize=1)
@@ -73,3 +88,54 @@ def tags_desconocidos(nombres) -> list[str]:
 
 def total_tags() -> int:
     return len(_vocabulario())
+
+
+def sugerir(nombre: str) -> Optional[str]:
+    """El tag más parecido del vocabulario, para un '¿quisiste decir…?'.
+
+    Un typo en un tag es el error MÁS probable de este camino, y el que peor
+    falla: VASP no se queja, ignora el tag y corre con el default.
+    """
+    cerca = difflib.get_close_matches(
+        nombre.strip().upper(), list(_vocabulario()), n=1, cutoff=0.75
+    )
+    return cerca[0] if cerca else None
+
+
+def validar_tags_pedidos(crudos: dict) -> dict[str, str]:
+    """Normaliza y valida tags pedidos a mano. Devuelve `{TAG: valor}`.
+
+    Lanza `ValueError` con un mensaje ya redactado para el usuario. Se rechaza
+    en vez de descartar en silencio: un tag ignorado es una corrida que sale
+    con otros parámetros que los pedidos y no lo dice.
+    """
+    limpio: dict[str, str] = {}
+    for nombre_crudo, valor_crudo in (crudos or {}).items():
+        nombre = str(nombre_crudo).strip().upper()
+        valor = str(valor_crudo).strip()
+
+        if nombre in TAGS_RESERVADOS:
+            raise ValueError(
+                f'{nombre} lo decide el tipo de cálculo, no se pide a mano: '
+                'un estático no da pasos iónicos y una relajación sí. '
+                'Pedí el tipo de cálculo que querés.'
+            )
+        if nombre in TAGS_CON_CAMPO_PROPIO:
+            raise ValueError(
+                f'{nombre} ya tiene su propio campo en el pedido; usá ese en '
+                'vez del listado de tags, así no hay dos valores compitiendo.'
+            )
+        if not es_tag_conocido(nombre):
+            parecido = sugerir(nombre)
+            extra = f' ¿Quisiste decir {parecido}?' if parecido else ''
+            raise ValueError(
+                f'{nombre} no es un tag del INCAR que el manual documente.'
+                f'{extra} VASP ignoraría un tag mal escrito sin avisar.'
+            )
+        if not _VALOR_RE.match(valor):
+            raise ValueError(
+                f'valor inválido para {nombre}: {valor!r}. Se admiten números, '
+                '.TRUE./.FALSE., palabras y listas separadas por espacios.'
+            )
+        limpio[nombre] = valor
+    return limpio

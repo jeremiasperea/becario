@@ -163,6 +163,7 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             encut=int(params.get("encut") or 520),
             kpoints=tuple(int(x) for x in kp) if kp else None,
             encut_values=encut_values,
+            incar_tags=params.get("tags_incar") or {},
             mp_id=params.get("mp_id"),
             source=source,
             partition=params.get("particion") or "default",

@@ -105,6 +105,13 @@ class RouterParams(BaseModel):
     puntos_k: Optional[list[int]] = Field(
         default=None, description="grilla de k-points [kx, ky, kz]"
     )
+    # UN campo para los 169 tags del INCAR, en vez de uno por tag: el schema
+    # tiene presupuesto (ADR-0006) y un campo por feature lo agota en tres.
+    # El dominio valida contra el vocabulario del manual antes de emitir nada.
+    # Sin `description` a propósito, como `mp_id` y `nombre_archivo`: un dict
+    # ya cuesta `additionalProperties` en el schema, y la guía de extracción
+    # vive en `_SYSTEM_PROMPT`, que no pesa contra este presupuesto.
+    tags_incar: Optional[dict[str, str]] = None
 
 
 # Docstrings de RouterStep/RouterDecision se mantienen cortos a propósito:
@@ -171,6 +178,12 @@ _SYSTEM_PROMPT = (
     "'curva de convergencia de ENCUT para Zr hcp de 250 a 450' -> "
     "preparar_calculo, tipo_calculo=convergencia_encut, formula=Zr, "
     "red_cristalina=hcp, encut_min=250, encut_max=450\n"
+    "Si el usuario nombra tags del INCAR con su valor ('con ISMEAR=0', "
+    "'poné LORBIT 11', 'usá PREC=Normal'), extraelos en 'tags_incar' como "
+    "{'ISMEAR': '0'}. Solo los que el mensaje nombre EXPLÍCITAMENTE: no "
+    "traduzcas un pedido en prosa a tags, y no inventes valores.\n"
+    "'estático de Zr con ISMEAR=0 y SIGMA=0.05' -> preparar_calculo, "
+    "tipo_calculo=estatico, formula=Zr, tags_incar={'ISMEAR':'0','SIGMA':'0.05'}\n"
     "En 'preparar_calculo' de un compuesto, si el usuario nombra una "
     "estructura de Materials Project por su id ('mp-149', 'usá mp-19770') "
     "extraé ese id en 'mp_id'. Si pide forzar el origen ('bajala de "
