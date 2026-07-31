@@ -63,7 +63,7 @@ class TestStructureResolutionError:
 class TestStructureSource:
     def test_values_and_default(self):
         assert StructureSource.AUTO.value == "auto"
-        assert {s.value for s in StructureSource} == {"auto", "ase", "mp"}
+        assert {s.value for s in StructureSource} == {"auto", "ase", "mp", "relajado"}
 
 
 class TestFakeProvider:

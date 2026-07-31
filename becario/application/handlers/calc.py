@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ...domain.models import (
+    Axis,
     CalcKind,
     Intent,
     OutputFormat,
@@ -28,9 +29,51 @@ from ...domain.models import (
     elements_of,
 )
 from ..context import Reply, _Ctx
+from ..relaxed_source import RelaxedSourceError, resolve_relaxed_structure
 
 if TYPE_CHECKING:
     from ..services import BecarioService
+
+
+def _ask_for_miller(formula: str) -> Reply:
+    """Falta la cara de la losa: se pregunta, no se adivina.
+
+    Elegir la orientación por el usuario no es un default cómodo: cambia la
+    terminación, la polaridad y los estados de superficie. Una (001) y una
+    (111) del mismo material son experimentos distintos, así que un default
+    silencioso devolvería un resultado creíble y equivocado.
+    """
+    return Reply(
+        text=(
+            f"🔭 Para armar la superficie de {formula} necesito la cara: "
+            "¿(001), (110), (111)…?\n"
+            "Es lo único que me falta — el resto del pedido lo tengo."
+        ),
+        ok=False,
+        awaiting_params=True,
+    )
+
+
+def _slab_params(params: dict, kind: StructureKind) -> dict:
+    """Parte de losa de los parámetros crudos del router.
+
+    Devuelve `{}` para lo que no es una losa: los modelos RECHAZAN miller y
+    capas en un bulk, así que un `tipo_estructura` mal extraído no arrastra
+    campos que no corresponden. Solo se traduce lo que el mensaje trajo — el
+    índice de Miller ausente lo resuelve el dominio, no un default acá.
+    """
+    if kind is not StructureKind.SLAB:
+        return {}
+    out: dict = {}
+    miller = params.get("miller")
+    if miller:
+        out["miller"] = tuple(int(x) for x in miller)
+    if params.get("capas"):
+        out["layers"] = int(params["capas"])
+    axis_raw = str(params.get("eje_vacio") or "").lower()
+    if axis_raw in Axis._value2member_map_:
+        out["vacuum_axis"] = Axis(axis_raw)
+    return out
 
 
 def _calc_fingerprint(req: VaspCalcRequest) -> str:
@@ -52,11 +95,30 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             ok=False,
         )
     try:
+        kind_raw = str(params.get("tipo_estructura", "")).lower()
         kind = (
-            StructureKind.MOLECULE
-            if str(params.get("tipo_estructura", "")).lower() == "molecule"
+            StructureKind(kind_raw)
+            if kind_raw in StructureKind._value2member_map_
             else StructureKind.BULK
         )
+        if kind is StructureKind.SLAB and not params.get("miller"):
+            return _ask_for_miller(str(formula))
+        # Generar un archivo suelto arma la estructura IDEAL con ASE: no pasa
+        # por Materials Project ni por el CONTCAR de una corrida previa. Si el
+        # pedido nombró otra fuente hay que decirlo, porque devolver la ideal
+        # con cara de relajada es exactamente el error que no queremos.
+        src_raw = str(params.get("fuente_estructura") or "").strip().lower()
+        if src_raw in (StructureSource.RELAXED.value, StructureSource.MP.value):
+            return Reply(
+                text=(
+                    "⚠️ Para generar un archivo suelto armo la estructura ideal "
+                    "con ASE; todavía no sé partir de una relajación previa ni "
+                    "de Materials Project por este camino. Pedímelo como "
+                    "cálculo (p. ej. «relajá el slab del ZrO2 relajado») o "
+                    "sacá esa condición."
+                ),
+                ok=False,
+            )
         fmt_raw = str(params.get("formato_salida", "vasp")).lower()
         fmt = OutputFormat(fmt_raw) if fmt_raw in OutputFormat._value2member_map_ else OutputFormat.VASP
         sc = params.get("supercelda") or [1, 1, 1]
@@ -69,6 +131,7 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             vacuum=params.get("vacio"),
             output_format=fmt,
             remote_dest_dir=params.get("destino_remoto"),
+            **_slab_params(params, kind),
         )
     except (ValidationError, ValueError, TypeError) as exc:
         return Reply(text=f"⚠️ Parámetros de estructura inválidos:\n{exc}", ok=False)
@@ -151,6 +214,13 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
         else StructureSource.AUTO
     )
 
+    kind_raw = str(params.get("tipo_estructura", "")).lower()
+    struct_kind = (
+        StructureKind.SLAB if kind_raw == StructureKind.SLAB.value else StructureKind.BULK
+    )
+    if struct_kind is StructureKind.SLAB and not params.get("miller"):
+        return _ask_for_miller(str(formula))
+
     try:
         sc = params.get("supercelda") or [1, 1, 1]
         kp = params.get("puntos_k")
@@ -159,6 +229,9 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             crystal=params.get("red_cristalina"),
             lattice_a=params.get("parametro_red"),
             supercell=tuple(int(x) for x in sc),
+            kind=struct_kind,
+            vacuum=params.get("vacio"),
+            **_slab_params(params, struct_kind),
             calc_kind=calc_kind,
             encut=int(params.get("encut") or 520),
             kpoints=tuple(int(x) for x in kp) if kp else None,
@@ -184,7 +257,7 @@ def describe_calc_request(req: "VaspCalcRequest") -> str:
 
 
 def _resolve_structure(
-    svc: "BecarioService", req: "VaspCalcRequest",
+    svc: "BecarioService", ctx: _Ctx, req: "VaspCalcRequest",
 ) -> "tuple[object, str] | Reply":
     """Decide la FUENTE de la estructura y la resuelve, SIN escribir nada.
 
@@ -192,10 +265,26 @@ def _resolve_structure(
       generador arma la estructura desde la fórmula (comportamiento previo, R1).
     - Compuesto, `source=mp` o `mp_id` -> Materials Project (R2/R3/R4),
       fail-closed si falta la key (R5) o si MP falla (R6/R7).
+    - `source=relajado` -> CONTCAR de la última relajación propia, con su
+      propio preflight (ver `relaxed_source`). Necesita `ctx` porque lee del
+      cluster CON LA CUENTA DE QUIEN PIDE: la estructura de partida sale de
+      SUS corridas, no de un pozo común.
 
     Devuelve `(atoms|None, nota)` en éxito, o un `Reply` de error. La
     resolución ocurre ANTES de crear el directorio de la corrida, así un
     fallo de MP nunca deja una corrida a medias."""
+    if req.source is StructureSource.RELAXED:
+        # Partir de un resultado propio anterior. Fail-closed y ANTES de
+        # crear nada, igual que el camino de Materials Project: si no hay de
+        # dónde partir, no se arma ni un directorio.
+        try:
+            relaxed = resolve_relaxed_structure(
+                svc._calc_runs, ctx.cluster, ctx.user_id, req.formula
+            )
+        except RelaxedSourceError as exc:
+            return Reply(text=exc.message)
+        return relaxed.atoms, relaxed.note() + _cut_basis_note(req, relaxed.atoms)
+
     elements = elements_of(req.formula)
     wants_mp = (
         req.mp_id is not None
@@ -222,7 +311,28 @@ def _resolve_structure(
         resolution = svc._structure_provider.resolve(query)
     except StructureResolutionError as exc:
         return _mp_error_reply(exc)
-    return resolution.atoms, _mp_note(resolution)
+    return resolution.atoms, _mp_note(resolution) + _cut_basis_note(req, resolution.atoms)
+
+
+def _cut_basis_note(req: "VaspCalcRequest", atoms) -> str:
+    """Aviso cuando la losa se corta sobre una celda que no armamos nosotros.
+
+    Los índices de Miller se leen en la base de la celda que recibe
+    `ase.build.surface`. Cuando la celda la arma BECARIO se pide la
+    convencional y (001) significa lo que parece; cuando viene de afuera
+    (Materials Project devuelve la PRIMITIVA, y un CONTCAR es lo que haya
+    quedado tras relajar) puede no significarlo. No se estandariza sola
+    porque sobre una celda relajada el resultado depende del `symprec` y una
+    mala elección devuelve otra superficie en silencio.
+    """
+    if req.kind is not StructureKind.SLAB or atoms is None:
+        return ""
+    hkl = "".join(str(i) for i in req.miller or ())
+    return (
+        f"\n⚠️ La cara ({hkl}) se corta sobre esa celda de {len(atoms)} átomos, "
+        "no sobre la convencional que armaría yo. Si esa celda es primitiva, "
+        f"({hkl}) puede no ser la cara que tenés en mente — verificalo."
+    )
 
 
 def _mp_error_reply(exc: StructureResolutionError) -> Reply:
@@ -275,7 +385,7 @@ def _generate_and_upload(
     un `Reply` de error (fail-closed)."""
     # Resolver la estructura (ASE local vs Materials Project) ANTES de generar:
     # un fallo de MP corta acá, sin dejar directorio de corrida a medias.
-    resolved = _resolve_structure(svc, req)
+    resolved = _resolve_structure(svc, ctx, req)
     if isinstance(resolved, Reply):
         return resolved
     atoms, mp_note = resolved

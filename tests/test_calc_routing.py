@@ -52,8 +52,16 @@ class TestMpNote:
         assert "E_hull=0.008" in note
 
 
-def _svc(provider=None, key="secret"):
-    return SimpleNamespace(_structure_provider=provider, _mp_api_key=key)
+def _svc(provider=None, key="secret", calc_runs=None):
+    return SimpleNamespace(
+        _structure_provider=provider, _mp_api_key=key, _calc_runs=calc_runs
+    )
+
+
+def _ctx(cluster=None):
+    """Los caminos ASE y MP no tocan el contexto; el de `relajado` sí,
+    porque lee del cluster con la cuenta de quien pide."""
+    return SimpleNamespace(user_id=111, cluster=cluster)
 
 
 def _build_svc():
@@ -93,7 +101,7 @@ class TestBuildForwardsStructureSource:
 class TestAsePath:
     def test_single_element_uses_ase(self):
         fake = FakeStructureProvider()
-        atoms, note = _resolve_structure(_svc(fake), VaspCalcRequest(formula="Zr"))
+        atoms, note = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="Zr"))
         assert atoms is None  # ASE: el generador la arma
         assert note == ""
         assert fake.calls == []  # MP nunca se consultó
@@ -101,14 +109,14 @@ class TestAsePath:
     def test_single_element_needs_no_key(self):
         # sin provider ni key, un elemento simple sigue funcionando (R1/R5)
         atoms, note = _resolve_structure(
-            _svc(provider=None, key=""), VaspCalcRequest(formula="W")
+            _svc(provider=None, key=""), _ctx(), VaspCalcRequest(formula="W")
         )
         assert atoms is None
 
     def test_source_ase_forces_ase_even_for_compound(self):
         fake = FakeStructureProvider()
         atoms, _ = _resolve_structure(
-            _svc(fake), VaspCalcRequest(formula="Fe2O3", source="ase")
+            _svc(fake), _ctx(), VaspCalcRequest(formula="Fe2O3", source="ase")
         )
         assert atoms is None
         assert fake.calls == []
@@ -117,7 +125,7 @@ class TestAsePath:
 class TestMpPath:
     def test_compound_queries_mp_by_formula(self):
         fake = FakeStructureProvider()
-        atoms, note = _resolve_structure(_svc(fake), VaspCalcRequest(formula="Fe2O3"))
+        atoms, note = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="Fe2O3"))
         assert atoms is not None
         assert fake.calls[0].formula == "Fe2O3"
         assert "Materials Project" in note
@@ -125,14 +133,14 @@ class TestMpPath:
     def test_mp_id_forces_mp_by_id(self):
         fake = FakeStructureProvider()
         _resolve_structure(
-            _svc(fake), VaspCalcRequest(formula="Fe2O3", mp_id="mp-19770")
+            _svc(fake), _ctx(), VaspCalcRequest(formula="Fe2O3", mp_id="mp-19770")
         )
         assert fake.calls[0].mp_id == "mp-19770"
 
     def test_source_mp_on_single_element(self):
         fake = FakeStructureProvider()
         atoms, _ = _resolve_structure(
-            _svc(fake), VaspCalcRequest(formula="Fe", source="mp")
+            _svc(fake), _ctx(), VaspCalcRequest(formula="Fe", source="mp")
         )
         assert atoms is not None
         assert fake.calls[0].formula == "Fe"
@@ -141,14 +149,14 @@ class TestMpPath:
 class TestFailClosed:
     def test_missing_key_is_reply(self):
         out = _resolve_structure(
-            _svc(FakeStructureProvider(), key=""), VaspCalcRequest(formula="Fe2O3")
+            _svc(FakeStructureProvider(), key=""), _ctx(), VaspCalcRequest(formula="Fe2O3")
         )
         assert isinstance(out, Reply)
         assert "BECARIO_MP_API_KEY" in out.text
 
     def test_no_provider_is_reply(self):
         out = _resolve_structure(
-            _svc(provider=None, key="k"), VaspCalcRequest(formula="Fe2O3")
+            _svc(provider=None, key="k"), _ctx(), VaspCalcRequest(formula="Fe2O3")
         )
         assert isinstance(out, Reply)
 
@@ -156,7 +164,7 @@ class TestFailClosed:
         fake = FakeStructureProvider(
             error=StructureResolutionError(StructureResolutionReason.NETWORK)
         )
-        out = _resolve_structure(_svc(fake), VaspCalcRequest(formula="Fe2O3"))
+        out = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="Fe2O3"))
         assert isinstance(out, Reply)
         assert "conectarme" in out.text
 
@@ -164,6 +172,68 @@ class TestFailClosed:
         fake = FakeStructureProvider(
             error=StructureResolutionError(StructureResolutionReason.NO_MATCH)
         )
-        out = _resolve_structure(_svc(fake), VaspCalcRequest(formula="Fe2O3"))
+        out = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="Fe2O3"))
         assert isinstance(out, Reply)
         assert "encontré" in out.text
+
+
+class TestRelaxedPath:
+    """`fuente_estructura=relajado`: partir del CONTCAR propio anterior.
+
+    El preflight vive en `relaxed_source` (ver su test); acá se verifica el
+    empalme — que esta rama se elija, que corte ANTES de generar nada, y que
+    el aviso de no-convergencia viaje hasta el texto que el usuario confirma.
+    """
+
+    def _req(self, **kw):
+        return VaspCalcRequest(formula="Zr", source="relajado", **kw)
+
+    def test_relaxed_source_never_touches_materials_project(self):
+        from tests.test_relaxed_source import FakeCalcRuns, FakeCluster
+
+        fake = FakeStructureProvider()
+        atoms, note = _resolve_structure(
+            _svc(fake, calc_runs=FakeCalcRuns()),
+            _ctx(cluster=FakeCluster()),
+            self._req(),
+        )
+        assert atoms is not None
+        assert fake.calls == [], "es un resultado propio, no una fuente externa"
+        assert "CONTCAR" in note
+
+    def test_preflight_failure_is_a_reply_not_an_exception(self):
+        """Fail-closed: devuelve un aviso, y `_generate_and_upload` corta ahí
+        sin haber creado ningún directorio de corrida."""
+        from tests.test_relaxed_source import FakeCalcRuns, FakeCluster
+
+        out = _resolve_structure(
+            _svc(calc_runs=FakeCalcRuns(rows=[])),
+            _ctx(cluster=FakeCluster()),
+            self._req(),
+        )
+        assert isinstance(out, Reply)
+        assert "No encontré ninguna relajación" in out.text
+
+    def test_running_job_blocks_with_a_clear_message(self):
+        from tests.test_relaxed_source import FakeCalcRuns, FakeCluster
+
+        out = _resolve_structure(
+            _svc(calc_runs=FakeCalcRuns()),
+            _ctx(cluster=FakeCluster(state="RUNNING")),
+            self._req(),
+        )
+        assert isinstance(out, Reply)
+        assert "todavía está corriendo" in out.text
+
+    def test_non_converged_warning_reaches_the_note(self):
+        """No bloquea, pero el aviso tiene que llegar al texto que se confirma:
+        es ahí donde el usuario decide si igual quiere partir de esa celda."""
+        from tests.test_relaxed_source import RUN_DIR, FakeCalcRuns, FakeCluster, _oszicar
+
+        cluster = FakeCluster()
+        cluster.files[f"{RUN_DIR}/OSZICAR"] = _oszicar(180)
+        atoms, note = _resolve_structure(
+            _svc(calc_runs=FakeCalcRuns()), _ctx(cluster=cluster), self._req()
+        )
+        assert atoms is not None
+        assert "OJO" in note and "NO está relajada" in note
