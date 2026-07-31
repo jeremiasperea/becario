@@ -220,6 +220,26 @@ Soporta: bulk de elementos (estructura de referencia de ASE) y compuestos
 (indicando red + parámetro), moléculas de la base G2, superceldas hasta
 10×10×10, vacío, y salida VASP/CIF/XYZ.
 
+### Superficies (slabs)
+
+- "Armá un slab de ZrO2 (001) de 5 capas, 2x1"
+- "Una superficie de Zr acostada, con el vacío en y"
+
+La losa se corta con `ase.build.surface` sobre la celda **convencional**
+del cristal, con 15 Å de vacío por default. Pedir la convencional no es un
+detalle: `ase.build.bulk` devuelve la **primitiva**, y `surface` lee los
+índices de Miller en la base de la celda que recibe — sobre la primitiva
+de fluorita, ZrO2 (001) y (111) dan la *misma* superficie.
+
+Si el pedido no nombra la cara, el bot **la pregunta** en vez de elegir
+una: una (001) y una (111) del mismo material son experimentos distintos.
+El pedido queda esperando y se completa con la respuesta, sin repetirlo.
+
+Acostar la losa (vacío en x o y) es una permutación cíclica de las
+componentes cartesianas de los vectores de red: misma superficie, mismas
+distancias, celda derecha. La supercelda se repite **en el plano**;
+repetir en la normal duplicaría la losa y su vacío, y se rechaza.
+
 ## Cálculos VASP completos (`preparar_calculo`)
 
 Además de estructuras sueltas, el bot sabe preparar y lanzar un cálculo
@@ -232,6 +252,51 @@ Ejemplos de pedidos:
 - "Relajá los parámetros de red del bulk de W" → relajación con `ISIF=3`
 - "Energía estática de Zr hcp con ENCUT 450"
 - "Hacé la curva de convergencia de ENCUT para Zr hcp de 250 a 450"
+- "La DOS del Zr hcp" → tetraedros, malla fina, DOS proyectada
+- "Estático de Zr con ISMEAR=0 y SIGMA=0.05" → tags pedidos a mano
+
+### Densidad de estados (`tipo_calculo=dos`)
+
+Un cálculo de un solo punto con dos diferencias que importan: tetraedros
+(`ISMEAR=-5`, que es lo que el manual pide para DOS) y una malla de
+k-points bastante más fina que la de una relajación — la relajación
+necesita fuerzas, que convergen rápido con la malla; la DOS necesita
+resolver bandas, y con una malla pobre salen picos que no existen. Suma
+`NEDOS=3001` (el default de VASP, 301, es grueso para mirar un pico) y
+`LORBIT=11` para la proyección por sitio y orbital.
+
+### Tags del INCAR a mano
+
+Cualquiera de los **169 tags** que documenta el manual se puede pedir
+textualmente ("con ISMEAR=0 y LORBIT=11") y se emite en el INCAR, pisando
+el template. El bot valida contra un vocabulario extraído del manual
+(`becario/domain/vasp_tags.json`, regenerable con
+`scripts/build_vasp_tag_vocabulary.py`), porque **un tag mal escrito no
+falla en VASP**: se ignora, la corrida sale con el default silencioso y el
+resultado parece válido. Ante un typo sugiere el tag correcto.
+
+No se aceptan por esta vía los tags que decide el tipo de cálculo (`NSW`,
+`IBRION`, `ISIF`) ni los que ya tienen campo propio (`ENCUT`, `NBANDS`):
+serían dos fuentes de verdad para el mismo número.
+
+### Avisos de física
+
+Cuando una combinación de parámetros genera un INCAR válido y un resultado
+malo, el bot lo dice **antes** de confirmar, citando la sección del manual
+— por ejemplo, tetraedros para relajar da fuerzas malas (§6.38). Los
+avisos no bloquean: la decisión es de quien hace la física.
+
+### Partir de una estructura ya relajada
+
+- "Armá un slab del ZrO2 relajado"
+
+Toma el CONTCAR de tu última relajación de ese material. Antes de armar
+nada verifica que exista una corrida previa, que no siga corriendo, que no
+haya terminado mal y que el CONTCAR esté completo; si algo falla, avisa y
+no genera nada. Aparte chequea si la relajación **convergió** —comparando
+los pasos iónicos del OSZICAR contra el NSW del INCAR— y si no, avisa
+citando §6.20 y §6.19 y te deja decidir: una corrida que agota los pasos
+termina con código 0 y deja un CONTCAR que parece perfectamente válido.
 
 El barrido de ENCUT corre como **un solo job secuencial** (un
 subdirectorio `encut_NNN/` por punto). Cuando el monitor detecta que
