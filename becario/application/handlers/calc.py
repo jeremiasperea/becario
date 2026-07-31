@@ -27,6 +27,7 @@ from ...domain.models import (
     VaspCalcRequest,
     elements_of,
 )
+from ...domain.reglas_fisicas import advertencias
 from ..context import Reply, _Ctx
 
 if TYPE_CHECKING:
@@ -339,10 +340,16 @@ def _generate_and_upload(
     payload["calc_fingerprint"] = fingerprint
     payload["run_dir"] = remote_run_dir
     mp_block = f"{mp_note}\n" if mp_note else ""
+    # Avisos de física ANTES de confirmar: es el único momento en que sirven.
+    # Después del envío ya se gastaron horas de cluster en una corrida que el
+    # manual desaconseja. La grilla de k-points sale del resultado porque se
+    # calcula desde la estructura, no desde el pedido.
+    fisica = advertencias(req.calc_kind, req.incar_tags, result.kpoints)
+    fisica_block = ("\n" + "\n".join(fisica)) if fisica else ""
     description = (
         f"🧪 Enviar cálculo VASP ({req.calc_kind.value}, cuenta "
         f"{ctx.identity.ssh_user}):\n{mp_block}{result.describe()}\n"
-        f"📂 {remote_run_dir}\n{slurm_req.describe()}"
+        f"📂 {remote_run_dir}\n{slurm_req.describe()}{fisica_block}"
     )
     return _PreparedCalc(payload=payload, description=description, duplicate=duplicate)
 
