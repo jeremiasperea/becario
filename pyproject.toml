@@ -31,3 +31,9 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["becario*"]
+
+# El vocabulario de tags del INCAR es un dato, no código: sin esto viaja bien
+# en una instalación editable (que es la del README) y desaparece en una
+# normal, con el paquete importando y fallando recién al generar un INCAR.
+[tool.setuptools.package-data]
+becario = ["domain/*.json"]
