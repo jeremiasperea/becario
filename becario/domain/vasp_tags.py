@@ -67,6 +67,20 @@ def seccion_de(nombre: str) -> Optional[str]:
     return '; '.join(f'§{s}' for s in e['secs'])
 
 
+def cita(nombre: str) -> str:
+    """Cita corta para pegar al final de un aviso: `' (§6.20)'`, o ''.
+
+    Solo la sección PRINCIPAL, no todas: `IBRION` figura en once, y once
+    referencias al final de un aviso dejan de ser una cita para pasar a ser
+    ruido. La idea es que quien lee pueda verificar la afirmación en un
+    minuto, no que el bot demuestre cuánto sabe.
+    """
+    e = _vocabulario().get(nombre.strip().upper())
+    if not e or not e['secs']:
+        return ''
+    return f' (§{e["secs"][0]})'
+
+
 def describir(nombre: str) -> str:
     """Descripción corta del tag, o cadena vacía si el manual no la da."""
     e = _vocabulario().get(nombre.strip().upper())
