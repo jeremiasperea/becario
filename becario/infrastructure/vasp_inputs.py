@@ -19,7 +19,7 @@ from ase.io import write
 
 from ..domain.models import CalcDirResult, CalcKind, VaspCalcRequest
 from ..domain.vasp_tags import tags_desconocidos
-from .ase_builder import make_bulk_atoms
+from .ase_builder import build_structure_atoms
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +54,37 @@ _INCAR_COMMON = {
     "LCHARG": ".FALSE.",
 }
 
-# ISIF por tipo de cálculo cuando el pedido no lo fuerza. Solo se emite en
-# RELAX (con NSW>0 tiene efecto): 3 relaja posiciones, forma y volumen —
-# es lo que minimiza los parámetros de red. Los demás tipos no llevan ISIF.
+# ISIF por tipo de cálculo cuando el pedido no lo fuerza: 3 relaja posiciones,
+# forma y volumen — es lo que minimiza los parámetros de red. Solo se emite si
+# hay pasos iónicos (ver `_render_incar`).
 _DEFAULT_ISIF = {CalcKind.RELAX: 3}
 
-_INCAR_BY_KIND = {
-    CalcKind.RELAX: {"IBRION": 2, "NSW": 60, "EDIFFG": "-0.01"},
-    CalcKind.STATIC: {"NSW": 0},
-    CalcKind.ENCUT_SCAN: {"NSW": 0},
+# Presupuesto de pasos iónicos por tipo de cálculo. TODOS los tipos tienen
+# entrada explícita y el NSW se emite SIEMPRE, sin dejarle el default a VASP:
+# para NSW>1 sin IBRION, VASP asume IBRION=0, que es dinámica molecular.
+#
+# 180 es el valor de producción del grupo. El 60 que estuvo acá hasta ahora
+# venía del andamio inicial (commit b34991a) y sobrevivió a la migración al
+# template de producción (6cf1906) porque esa revisión auditó smearing, NBANDS
+# e ISIF pero no el presupuesto iónico. Un presupuesto corto no falla ruidoso:
+# la corrida termina con código 0 y deja un CONTCAR a medio relajar que parece
+# perfectamente válido.
+_DEFAULT_NSW = {
+    CalcKind.RELAX: 180,
+    CalcKind.STATIC: 0,
+    CalcKind.ENCUT_SCAN: 0,
 }
+
+# Tags que solo tienen sentido si hay pasos iónicos. Se emiten según el NSW
+# RESUELTO, no según el tipo de cálculo: así "sin pasos iónicos no hay tags
+# iónicos" queda dicho una sola vez y sigue valiendo para los tipos que se
+# agreguen después (bandas, DOS).
+#
+# EDIFFG=-0.02 eV/Å es el criterio de fuerzas del grupo. El -0.01 que estuvo
+# acá tenía el mismo origen que el NSW=60: andamio inicial, nunca auditado
+# contra la práctica real. No se expone como override porque es un valor que
+# casi nunca se cambia; si algún día hace falta, sigue el molde de `isif`.
+_IONIC_TAGS = {"IBRION": 2, "EDIFFG": "-0.02"}
 
 # Electrones de valencia (ZVAL) por elemento, para estimar NBANDS por sistema.
 # CLAVE: cada valor corresponde al POTCAR EXACTO que el cluster concatena para
@@ -82,6 +103,12 @@ _ZVAL: dict[str, int] = {
 # propósito: si la tabla ZVAL subestima el conteo, VASP 5.4.4 igual auto-sube
 # NBANDS con un warning en vez de romper, así que preferimos pasarnos.
 _NBANDS_MARGIN = 1.2
+
+# Cuántos nombres de directorio se prueban antes de darse por vencido. El
+# sello de tiempo tiene resolución de un segundo: 50 corridas del MISMO
+# material y tipo dentro del mismo segundo no es un caso de uso, es un bug
+# en otro lado, y conviene que falle ruidoso en vez de girar para siempre.
+_MAX_RUN_DIR_ATTEMPTS = 50
 
 
 class VaspInputGenerator:
@@ -102,10 +129,17 @@ class VaspInputGenerator:
         # None => se arma con ASE desde la fórmula/red del pedido. El generador
         # es agnóstico a la FUENTE de la estructura: solo la escribe. La
         # supercelda y todo lo de abajo es idéntico sea cual sea el origen.
-        if atoms is None:
-            atoms = make_bulk_atoms(req.formula, req.crystal, req.lattice_a)
-        if req.supercell != (1, 1, 1):
-            atoms = atoms.repeat(req.supercell)
+        # Una estructura ya resuelta (Materials Project, o el CONTCAR de una
+        # relajación propia) entra como `lattice`: se usa tal cual para un
+        # bulk, y como celda de partida para CORTAR la losa si el pedido es de
+        # superficie. Antes se devolvía la celda entera sin cortar — un bulk
+        # con nombre de slab, sin que nada avisara.
+        atoms = build_structure_atoms(
+            req.kind, req.formula, req.crystal, req.lattice_a,
+            miller=req.miller, layers=req.layers, vacuum=req.vacuum,
+            vacuum_axis=req.vacuum_axis, supercell=req.supercell,
+            lattice=atoms,
+        )
 
         kpoints = req.kpoints or _auto_kpoints(atoms)
         encut_values = (
@@ -115,16 +149,22 @@ class VaspInputGenerator:
         # NBANDS e ISIF son iguales en todos los puntos (misma estructura y
         # tipo de cálculo), así que se resuelven una sola vez acá.
         nbands = req.nbands if req.nbands is not None else _auto_nbands(atoms)
+        nsw, nsw_forced = _resolve_nsw(req.calc_kind, req.nsw)
+        if nsw_forced:
+            # No se corrige en silencio: queda registrado que lo pedido no es
+            # lo que se emitió. Cuando el NSW sea pedible desde el bot, este
+            # mismo flag es el que tiene que llegar a la respuesta del usuario.
+            logger.warning(
+                "NSW=%s ignorado: %s es un cálculo de un solo punto, se fuerza NSW=0",
+                req.nsw, req.calc_kind.value,
+            )
         # ISIF solo tiene efecto con NSW>0, así que se resuelve (default o
-        # override del pedido) únicamente para los tipos que relajan.
+        # override del pedido) únicamente cuando hay pasos iónicos.
         isif = None
-        if req.calc_kind in _DEFAULT_ISIF:
-            isif = req.isif if req.isif is not None else _DEFAULT_ISIF[req.calc_kind]
+        if nsw > 0:
+            isif = req.isif if req.isif is not None else _DEFAULT_ISIF.get(req.calc_kind)
 
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        run_name = f"{req.formula}_{req.calc_kind.value}_{stamp}"
-        run_dir = self._workdir / run_name
-        run_dir.mkdir(parents=True, exist_ok=False)
+        run_name, run_dir = self._new_run_dir(req)
 
         files: list[str] = []
         if req.calc_kind is CalcKind.ENCUT_SCAN:
@@ -132,13 +172,13 @@ class VaspInputGenerator:
                 subdir = run_dir / f"encut_{encut}"
                 subdir.mkdir()
                 files += self._write_point(
-                    subdir, atoms, run_name, kpoints, encut, nbands=nbands,
-                    extra=req.incar_tags,
+                    subdir, atoms, run_name, kpoints, encut, nsw=nsw,
+                    nbands=nbands, extra=req.incar_tags,
                 )
         else:
             files += self._write_point(
                 run_dir, atoms, run_name, kpoints, req.encut,
-                calc_kind=req.calc_kind, nbands=nbands, isif=isif,
+                nsw=nsw, nbands=nbands, isif=isif,
                 extra=req.incar_tags,
             )
 
@@ -166,6 +206,43 @@ class VaspInputGenerator:
         return result
 
     # ------------------------------------------------------------------
+    def _new_run_dir(self, req: VaspCalcRequest) -> tuple[str, Path]:
+        """Crea el directorio de la corrida y devuelve `(nombre, ruta)`.
+
+        `exist_ok=False` es deliberado y se mantiene: nunca se escribe sobre
+        una corrida que ya existe. El problema era el NOMBRE: el sello de
+        tiempo tiene resolución de un segundo, así que dos cálculos del mismo
+        material y tipo pedidos juntos —un plan multi-paso, o dos pasos de un
+        batch— caían en el mismo nombre y el segundo moría con FileExistsError.
+
+        Se reintenta con un sufijo incremental. Quien decide es el `mkdir`,
+        que es atómico: dos procesos compitiendo por el mismo nombre no pueden
+        quedarse los dos con él, uno ve el FileExistsError y sigue al
+        siguiente sufijo.
+
+        El sufijo va al FINAL, después del sello de tiempo, así el nombre
+        sigue ordenando cronológicamente. Y no toca el `job_name` de Slurm,
+        que es `{formula}_{tipo}` sin timestamp: la detección de duplicados y
+        la búsqueda de relajaciones previas siguen funcionando igual.
+        """
+        base = (
+            f"{req.formula}_{req.calc_kind.value}_"
+            f"{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+        for attempt in range(_MAX_RUN_DIR_ATTEMPTS):
+            run_name = base if attempt == 0 else f"{base}_{attempt + 1}"
+            run_dir = self._workdir / run_name
+            try:
+                run_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                continue
+            return run_name, run_dir
+        raise RuntimeError(
+            f"No pude crear un directorio de corrida para {base!r}: hay "
+            f"{_MAX_RUN_DIR_ATTEMPTS} con ese nombre en {self._workdir}."
+        )
+
+    # ------------------------------------------------------------------
     def _write_point(
         self,
         directory: Path,
@@ -173,7 +250,7 @@ class VaspInputGenerator:
         run_name: str,
         kpoints: tuple[int, int, int],
         encut: int,
-        calc_kind: CalcKind = CalcKind.ENCUT_SCAN,
+        nsw: int = 0,
         nbands: int | None = None,
         isif: int | None = None,
         extra: dict[str, str] | None = None,
@@ -184,7 +261,7 @@ class VaspInputGenerator:
         # mismo orden usa el servicio para concatenar el POTCAR.
         write(directory / "POSCAR", atoms, format="vasp", direct=True, sort=True)
         (directory / "INCAR").write_text(
-            _render_incar(run_name, calc_kind, encut, nbands=nbands, isif=isif,
+            _render_incar(run_name, encut, nsw, nbands=nbands, isif=isif,
                           extra=extra),
             encoding="utf-8",
         )
@@ -235,19 +312,39 @@ def _auto_nbands(atoms: Atoms) -> int | None:
     return math.ceil((nelect / 2) * _NBANDS_MARGIN)
 
 
+def _resolve_nsw(calc_kind: CalcKind, requested: int | None) -> tuple[int, bool]:
+    """NSW efectivo, y si hubo que forzarlo contra lo que pedía el request.
+
+    El TIPO DE CÁLCULO manda: los tipos de un solo punto llevan NSW=0 por
+    definición, así que un pedido con pasos iónicos se fuerza a 0 — pero
+    devolviendo el flag, para que quede dicho y no sea una corrección muda.
+
+    Forzar acá en vez de rechazar además vuelve INALCANZABLE la trampa del
+    IBRION: como el único tipo que admite NSW>0 es el que relaja, y ese sí
+    emite IBRION=2, nunca se puede llegar a un INCAR con NSW>1 sin IBRION
+    (que VASP interpretaría como dinámica molecular).
+    """
+    default = _DEFAULT_NSW[calc_kind]
+    if default == 0:
+        return 0, requested not in (None, 0)
+    return (default if requested is None else requested), False
+
+
 def _render_incar(
     run_name: str,
-    calc_kind: CalcKind,
     encut: int,
+    nsw: int,
     nbands: int | None = None,
     isif: int | None = None,
     extra: dict[str, str] | None = None,
 ) -> str:
     params: dict = {"SYSTEM": run_name, "ENCUT": encut}
     params.update(_INCAR_COMMON)
-    params.update(_INCAR_BY_KIND[calc_kind])
-    if isif is not None:
-        params["ISIF"] = isif
+    params["NSW"] = nsw
+    if nsw > 0:
+        params.update(_IONIC_TAGS)
+        if isif is not None:
+            params["ISIF"] = isif
     if nbands is not None:
         params["NBANDS"] = nbands
 

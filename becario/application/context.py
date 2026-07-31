@@ -33,6 +33,12 @@ class Reply:
     # una confirmación individual por cálculo (decisión de producto: nada
     # de aprobar N envíos con un solo botón).
     followups: tuple["Reply", ...] = ()
+    # El pedido está BIEN pero le falta un dato que no se puede adivinar
+    # (p. ej. el índice de Miller de una losa). La fachada deja el pedido
+    # esperando: el próximo mensaje del usuario se interpreta como el dato
+    # que falta y el pedido se re-arma con él, sin tener que repetirlo todo.
+    # Distinto de `ok=False` a secas, que es un error del que no se vuelve.
+    awaiting_params: bool = False
 
 
 @dataclass(frozen=True)

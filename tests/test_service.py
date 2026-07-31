@@ -1910,3 +1910,176 @@ class TestCompoundHeuristic:
     ])
     def test_simple_messages_are_not_flagged(self, text):
         assert BecarioService._looks_compound(text) is False
+
+
+class TestMissingMillerIsAsked:
+    """Falta la cara de la losa: se pregunta y el pedido queda esperando.
+
+    No es un error del que haya que volver a empezar — el usuario contesta
+    solo el dato que falta y el pedido se re-arma con todo lo demás intacto.
+    """
+
+    def _ask(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá un slab de ZrO2"
+        )
+
+    def test_slab_without_miller_asks_instead_of_dumping_an_error(self, env):
+        service, router, *_ = env
+        reply = self._ask(service, router, {"formula": "ZrO2", "tipo_estructura": "slab"})
+        assert reply.awaiting_params
+        assert "cara" in reply.text
+        assert "ZrO2" in reply.text
+        # No es un volcado de pydantic:
+        assert "validation error" not in reply.text.lower()
+
+    def test_answering_the_face_completes_the_original_request(self, env):
+        service, router, _cf, _h, _c, structures, *_ = env
+        self._ask(service, router, {
+            "formula": "ZrO2", "tipo_estructura": "slab",
+            "red_cristalina": "fluorite", "parametro_red": 5.14, "capas": 5,
+        })
+        # El usuario contesta SOLO la cara.
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [0, 0, 1]})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la (001)")
+
+        assert not reply.awaiting_params
+        assert structures.requests, "el pedido tenía que completarse solo con la cara"
+        req = structures.requests[-1]
+        assert req.miller == (0, 0, 1)
+        # Lo que ya había dicho sobrevive: no hay que repetir el pedido.
+        assert req.formula == "ZrO2"
+        assert req.layers == 5
+        assert req.crystal == "fluorite"
+
+    def test_an_answer_without_the_face_keeps_waiting_and_accumulates(self, env):
+        """Si contesta otra cosa, lo que dijo se guarda y se vuelve a pedir
+        la cara: el pedido NO se pierde por no acertar a la primera."""
+        service, router, *_ = env
+        self._ask(service, router, {"formula": "ZrO2", "tipo_estructura": "slab"})
+
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"capas": 8})
+        second = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="que sean 8 capas"
+        )
+        assert second.awaiting_params
+
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [1, 1, 1]})
+        third = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la 111")
+        assert not third.awaiting_params
+
+    def test_cancel_drops_the_waiting_request(self, env):
+        service, router, *_ = env
+        self._ask(service, router, {"formula": "ZrO2", "tipo_estructura": "slab"})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="cancelar"
+        )
+        assert "descartado" in reply.text.lower()
+
+    def test_bulk_request_never_asks(self, env):
+        service, router, *_ = env
+        reply = self._ask(service, router, {"formula": "Si", "red_cristalina": "diamond"})
+        assert not reply.awaiting_params
+
+    def test_calc_path_also_asks(self, env):
+        """El otro camino: 'armá el slab y mandalo a relajar'."""
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={
+            "formula": "ZrO2", "tipo_estructura": "slab", "tipo_calculo": "relajacion",
+        })
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá un slab de ZrO2"
+        )
+        assert reply.awaiting_params
+        assert "cara" in reply.text
+
+
+class TestMissingMillerInMultiStepPlans:
+    """Un plan multi-paso ("armá el slab y mandalo a relajar") también queda
+    esperando: el `Reply` no viaja por `PlanExecutor`, así que el paso anota
+    su índice y el plan ENTERO se guarda — el cálculo omitido tiene que
+    correr cuando la estructura finalmente se pueda armar."""
+
+    SLAB = {"formula": "ZrO2", "tipo_estructura": "slab", "capas": 5}
+    CALC = {"formula": "ZrO2", "tipo_estructura": "slab", "tipo_calculo": "relajacion"}
+
+    def _plan(self, *steps):
+        return Plan(steps=[PlanStep(action=a, parametros=dict(p)) for a, p in steps])
+
+    def _start(self, service, router, plan):
+        router.next_plan = plan
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="slab de ZrO2 relajado"
+        )
+        router.next_plan = None
+        return reply
+
+    def test_composite_plan_waits_and_remembers_which_step(self, env):
+        service, router, *_ = env
+        reply = self._start(service, router, self._plan(
+            (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
+        ))
+        assert reply.awaiting_params
+        assert "cara" in reply.text
+        assert "omitido" in reply.text  # el cálculo NO corrió
+        pending = service._pending_edits[ALICE.telegram_user_id]
+        assert pending.awaiting_index == 1
+        assert len(pending.steps) == 2, "se guarda el plan entero, no solo el hueco"
+
+    def test_answering_runs_the_step_and_the_one_that_was_skipped(self, env):
+        service, router, _cf, _h, _c, structures, *_ = env
+        self._start(service, router, self._plan(
+            (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
+        ))
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [0, 0, 1]})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la (001)")
+
+        assert not reply.awaiting_params
+        assert structures.requests[-1].miller == (0, 0, 1)
+        assert structures.requests[-1].layers == 5  # lo ya dicho sobrevive
+        assert len(reply.followups) == 1, "el cálculo omitido tiene que volver"
+
+    def test_unusable_answer_keeps_the_whole_plan_waiting(self, env):
+        service, router, *_ = env
+        self._start(service, router, self._plan(
+            (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
+        ))
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="mmm no sé")
+        assert reply.awaiting_params
+        pending = service._pending_edits[ALICE.telegram_user_id]
+        assert pending.awaiting_index == 1
+        assert len(pending.steps) == 2
+
+    def test_cancel_drops_the_waiting_plan(self, env):
+        service, router, *_ = env
+        self._start(service, router, self._plan(
+            (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
+        ))
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="cancelar"
+        )
+        assert "descartado" in reply.text.lower()
+        assert ALICE.telegram_user_id not in service._pending_edits
+
+    def test_batch_plan_waits_too(self, env):
+        """Dos cálculos => plan BATCH, que va por otro camino (`_prepare_batch`)."""
+        service, router, *_ = env
+        reply = self._start(service, router, self._plan(
+            (Intent.PREPARE_CALC, {"formula": "Zr", "tipo_calculo": "estatico"}),
+            (Intent.PREPARE_CALC, self.CALC),
+        ))
+        assert reply.awaiting_params
+        assert service._pending_edits[ALICE.telegram_user_id].awaiting_index == 2
+
+    def test_the_face_is_never_targeted_by_the_ambiguous_extractor(self, env):
+        """Sabiendo cuál es el hueco no hace falta targetear: `extract_edit`
+        (el que sale ambiguo con «la (001)») no se llama."""
+        service, router, *_ = env
+        self._start(service, router, self._plan(
+            (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
+        ))
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [1, 1, 1]})
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la (111)")
+        assert router.extract_edit_calls == []
