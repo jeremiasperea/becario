@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from ..domain.models import CalcKind, JobId, JobStatus
+from ..domain.vasp_tags import cita
 from ..domain.ports import ClusterGateway
 
 if TYPE_CHECKING:  # pragma: no cover - solo para anotar
@@ -189,15 +190,18 @@ def _check_convergence(
         )
     nsw_match = _NSW_RE.search(incar)
     if not nsw_match:
-        return None, "⚠️ No pude verificar si esa relajación convergió (INCAR sin NSW)."
+        return None, (
+            "⚠️ No pude verificar si esa relajación convergió: el INCAR no "
+            f"declara NSW{cita('NSW')}."
+        )
 
     nsw = int(nsw_match.group(1))
     steps = len(_IONIC_STEP_RE.findall(oszicar))
     if nsw > 0 and steps >= nsw:
         return False, (
-            f"⚠️ OJO: {job_name} agotó los {nsw} pasos iónicos ({steps} usados) "
-            "sin alcanzar el criterio de fuerzas. Terminó sin error, pero esa "
-            "estructura NO está relajada del todo. Vos decidís si igual "
-            "querés partir de ahí."
+            f"⚠️ OJO: {job_name} usó los {steps} pasos iónicos que tenía "
+            f"asignados{cita('NSW')} sin alcanzar el criterio de fuerzas"
+            f"{cita('EDIFFG')}. Terminó sin error, pero esa estructura NO "
+            "está relajada del todo. Vos decidís si igual querés partir de ahí."
         )
     return True, ""

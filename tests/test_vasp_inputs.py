@@ -399,3 +399,11 @@ class TestRunDirCollision:
         generator.generate(self._req())
         with pytest.raises(RuntimeError, match="directorio de corrida"):
             generator.generate(self._req())
+
+
+class TestElAvisoDeNswCitaElManual:
+    def test_el_forzado_a_cero_dice_de_donde_sale(self, generator, caplog):
+        req = VaspCalcRequest(formula="W", calc_kind=CalcKind.STATIC, nsw=180)
+        with caplog.at_level(logging.WARNING):
+            generator.generate(req)
+        assert "§6.20" in caplog.text
