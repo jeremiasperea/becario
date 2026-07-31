@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 
 from ..domain.models import CalcDirResult, CalcKind, VaspCalcRequest
-from ..domain.vasp_tags import tags_desconocidos
+from ..domain.vasp_tags import cita, tags_desconocidos
 from .ase_builder import build_structure_atoms
 
 logger = logging.getLogger(__name__)
@@ -183,8 +183,8 @@ class VaspInputGenerator:
             # lo que se emitió. Cuando el NSW sea pedible desde el bot, este
             # mismo flag es el que tiene que llegar a la respuesta del usuario.
             logger.warning(
-                "NSW=%s ignorado: %s es un cálculo de un solo punto, se fuerza NSW=0",
-                req.nsw, req.calc_kind.value,
+                "NSW=%s ignorado: %s es un cálculo de un solo punto, se fuerza"
+                " NSW=0%s", req.nsw, req.calc_kind.value, cita("NSW"),
             )
         # ISIF solo tiene efecto con NSW>0, así que se resuelve (default o
         # override del pedido) únicamente cuando hay pasos iónicos.

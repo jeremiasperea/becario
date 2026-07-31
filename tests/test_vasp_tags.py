@@ -105,3 +105,26 @@ class TestGeneradorContraVocabulario:
             generator.generate(VaspCalcRequest(formula="Zr", crystal="hcp", lattice_a=3.23))
         assert "ISMAER" in caplog.text
         assert "no documenta" in caplog.text
+
+
+class TestCita:
+    """La cita existe para que quien lee pueda verificar la afirmación, no
+    para que el bot demuestre erudición."""
+
+    def test_devuelve_la_seccion_lista_para_pegar(self):
+        from becario.domain.vasp_tags import cita
+
+        assert cita("NSW") == " (§6.20)"
+
+    def test_usa_solo_la_seccion_principal(self):
+        """IBRION figura en once secciones; once referencias al final de un
+        aviso dejan de ser una cita."""
+        from becario.domain.vasp_tags import cita, seccion_de
+
+        assert seccion_de("IBRION").count("§") > 5
+        assert cita("IBRION").count("§") == 1
+
+    def test_vacia_si_no_conoce_el_tag(self):
+        from becario.domain.vasp_tags import cita
+
+        assert cita("NOEXISTE") == ""

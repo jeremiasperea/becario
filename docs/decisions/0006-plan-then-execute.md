@@ -137,6 +137,23 @@ de parámetros por cada paso del plan. Un test de regresión
 falla si una fusión futura vuelve a inflar el schema por encima del
 1.15×.
 
+**Actualización — el presupuesto está prácticamente agotado.** Las features
+posteriores (losas con índice de Miller, fuente `relajado`, tags del INCAR
+a mano, tipo de cálculo `dos`) sumaron campos y el schema pasó de los
+**3897 bytes** medidos acá a **4117**: quedan ~80 de los 4197.
+
+La conclusión de diseño, que vale más que el número: **un campo del router
+por cada feature no escala.** Ese patrón funciona dos o tres veces y
+después no hay de dónde sacar bytes. Por eso los tags del INCAR entraron
+como UN campo genérico (`tags_incar`, un diccionario) validado contra el
+vocabulario del manual, y no como un campo por tag — cuesta 126 bytes una
+sola vez y sirve para los 169 tags documentados.
+
+Para lo que venga: antes de agregar un campo al schema, preguntarse si el
+dato no entra por `tags_incar`. Y si hace falta un campo nuevo, va **sin
+`description`** (como `mp_id` o `nombre_archivo`): la guía de extracción
+vive en `_SYSTEM_PROMPT`, que no pesa contra este presupuesto.
+
 **Nota de validación en vivo (AR-2): `gemma4:12b` verificado, con dos
 hallazgos.** La paridad de fixtures sobre el modelo de producción (SR8,
 diferida en el archive como AR-2) se corrió y pasa 6/6. La corrida dejó

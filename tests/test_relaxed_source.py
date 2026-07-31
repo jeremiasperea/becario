@@ -194,3 +194,20 @@ class TestTruncatedOszicarIsNotMistakenForConvergence:
         assert result.converged is None, "no puede afirmar que convergió"
         assert "demasiado grande" in result.warning
         assert result.atoms is not None  # sigue sin bloquear
+
+
+class TestLosAvisosCitanElManual:
+    """Un aviso sin fuente obliga a creerle al bot; con la sección se
+    verifica en un minuto."""
+
+    def test_el_de_no_convergencia_cita_nsw_y_ediffg(self):
+        cluster = FakeCluster()
+        cluster.files[f"{RUN_DIR}/OSZICAR"] = _oszicar(180)
+        w = _resolve(cluster=cluster).warning
+        assert "§6.20" in w   # NSW
+        assert "§6.19" in w   # EDIFFG
+
+    def test_el_de_incar_sin_nsw_tambien(self):
+        cluster = FakeCluster()
+        cluster.files[f"{RUN_DIR}/INCAR"] = "IBRION = 2\n"
+        assert "§6.20" in _resolve(cluster=cluster).warning
