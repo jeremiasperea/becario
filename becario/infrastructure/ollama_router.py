@@ -103,7 +103,7 @@ class RouterParams(BaseModel):
     )
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
-        default=None, description="relajacion, estatico o convergencia_encut"
+        default=None, description="relajacion, estatico, convergencia_encut o dos"
     )
     encut: Optional[int] = Field(default=None, description="ENCUT en eV")
     encut_min: Optional[int] = Field(default=None, description="inicio del barrido de ENCUT, en eV")
@@ -157,7 +157,8 @@ _SYSTEM_PROMPT = (
     "- 'preparar_calculo': preparar y correr un cálculo DFT/VASP completo. "
     "tipo_calculo: 'relajacion' (relajar/optimizar/minimizar estructura o "
     "parámetros de red), 'estatico' (energía de un punto), o "
-    "'convergencia_encut' (curva/barrido/convergencia de ENCUT o del cutoff)\n"
+    "'convergencia_encut' (curva/barrido/convergencia de ENCUT o del cutoff), "
+    "o 'dos' (densidad de estados, DOS, PDOS, estados proyectados)\n"
     "- 'enviar_slurm': lanzar un script de cálculo que YA existe en el cluster\n"
     "- 'consultar_db': SOLO historial de trabajos/cálculos pasados (fechas, "
     "nombres y estados) — nunca archivos ni carpetas\n"
