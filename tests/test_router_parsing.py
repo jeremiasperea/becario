@@ -264,12 +264,13 @@ class TestParseEditOutput:
 
 
 class TestBackfillStructure:
-    """Segunda pasada de estructura: bajo `preparar_calculo` todos los
-    modelos locales sueltan formula/red_cristalina (medido, model-agnóstico),
-    aunque los extraen sin el framing de intent. `_backfill_structure`
-    recupera la estructura cuando el plan tiene EXACTAMENTE un cálculo sin
-    material (donde es inequívoco, aunque venga con un crear_directorio);
-    con dos o más cálculos manda el descompositor."""
+    """Segunda pasada de estructura: cuando el mensaje trae otro eje de
+    extracción —el tipo de cálculo en `preparar_calculo`, la cara/capas en
+    una losa— todos los modelos locales sueltan formula/red_cristalina
+    (medido, model-agnóstico), aunque los extraen sin ese framing.
+    `_backfill_structure` recupera el material cuando el plan tiene
+    EXACTAMENTE un paso que lo necesita (donde es inequívoco, aunque venga
+    con un crear_directorio); con dos o más manda el descompositor."""
 
     @staticmethod
     def _router(chat_stub):
@@ -317,12 +318,57 @@ class TestBackfillStructure:
         assert router._backfill_structure("x", plan) is plan
         assert calls == []  # sin segunda llamada
 
-    def test_noop_for_non_prepare_intent(self):
+    def test_recovers_structure_for_single_modify(self):
+        # El caso de la losa: el modelo se lleva la atención a la cara/capas
+        # y suelta el material. Medido en los tres modelos locales.
+        router = self._router(lambda s, u, sc: '{"formula": "ZrO2"}')
+        plan = Plan(steps=[PlanStep(
+            action=Intent.MODIFY_STRUCTURE,
+            parametros={"tipo_estructura": "slab", "miller": [0, 0, 1], "capas": 5},
+        )])
+        result = router._backfill_structure("armá un slab de ZrO2 (001) de 5 capas", plan)
+        assert result.single_step.parametros == {
+            "tipo_estructura": "slab", "miller": [0, 0, 1], "capas": 5,
+            "formula": "ZrO2",
+        }
+
+    def test_noop_for_intent_without_structure(self):
         calls = []
         router = self._router(lambda s, u, sc: calls.append(u) or "{}")
-        plan = Plan(steps=[PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={})])
+        plan = Plan(steps=[PlanStep(action=Intent.CREATE_DIR, parametros={})])
         assert router._backfill_structure("x", plan) is plan
         assert calls == []
+
+    def test_noop_when_calc_and_structure_steps_coexist(self):
+        # Dos pasos que necesitan material: cuál lleva cuál es ambiguo.
+        calls = []
+        router = self._router(lambda s, u, sc: calls.append(u) or "{}")
+        plan = Plan(steps=[
+            PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={}),
+        ])
+        assert router._backfill_structure("x", plan) is plan
+        assert calls == []
+
+    def test_empty_crystal_is_dropped_not_backfilled(self):
+        # El modelo emite "" (no null) para lo que no encontró, y un
+        # crystal="" REBOTA en StructureRequest: colarlo cambiaría una
+        # repregunta clara por un error de validación.
+        router = self._router(lambda s, u, sc: '{"formula": "ZrO2", "red_cristalina": ""}')
+        plan = Plan(steps=[PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={})])
+        result = router._backfill_structure("x", plan)
+        assert result.single_step.parametros == {"formula": "ZrO2"}
+
+    def test_invented_calc_params_are_filtered_out(self):
+        # Medido: en pedidos de losa los modelos inventan encut/puntos_k/
+        # tags_incar. La segunda pasada solo puede aportar el material.
+        router = self._router(
+            lambda s, u, sc: '{"formula": "Zr", "encut": 520, "puntos_k": [1, 1, 1],'
+            ' "tags_incar": {"LORBIT": "-1"}}'
+        )
+        plan = Plan(steps=[PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={})])
+        result = router._backfill_structure("x", plan)
+        assert result.single_step.parametros == {"formula": "Zr"}
 
     def test_recovers_structure_with_accompanying_create_dir(self):
         # Cada instrucción del descompositor rutea a [calc, crear_directorio]:
