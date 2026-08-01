@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from ...domain.models import (
     Axis,
     CalcKind,
+    CRYSTAL_SYSTEM_ES,
     Intent,
     OutputFormat,
     PendingAction,
@@ -22,12 +23,14 @@ from ...domain.models import (
     StructureKind,
     StructureQuery,
     StructureRequest,
+    StructureResolution,
     StructureResolutionError,
     StructureResolutionReason,
     StructureSource,
     VaspCalcRequest,
     elements_of,
     needs_explicit_lattice,
+    normalize_crystal_system,
 )
 from ...domain.reglas_fisicas import advertencias
 from ..context import Reply, _Ctx
@@ -331,10 +334,19 @@ def _resolve_structure(
             "configurar la API key (BECARIO_MP_API_KEY)."
         )
 
+    # La fase viaja en `red_cristalina`: en un compuesto ese campo nombra el
+    # sistema cristalino ("la ZrO2 tetragonal"), no un prototipo de ASE. No
+    # se agregó un campo propio al router a propósito — el schema tiene
+    # presupuesto (ADR-0006) y este sentido no colisiona: un prototipo de
+    # compuesto (fluorite, rocksalt) no es un sistema cristalino.
+    system = normalize_crystal_system(req.crystal) if req.crystal else None
+
     if req.mp_id:
         query = StructureQuery(mp_id=req.mp_id)
     elif len(elements) > 1:
-        query = StructureQuery(formula=req.formula, elements=tuple(elements))
+        query = StructureQuery(
+            formula=req.formula, elements=tuple(elements), crystal_system=system
+        )
     else:
         query = StructureQuery(formula=req.formula)
 
@@ -342,7 +354,57 @@ def _resolve_structure(
         resolution = svc._structure_provider.resolve(query)
     except StructureResolutionError as exc:
         return _mp_error_reply(exc)
+
+    # Sin fase pedida y con polimorfos a la vista: se pregunta. Resolver
+    # calla la ambigüedad devolviendo el del hull, que para ZrO2 es la
+    # monoclínica — la fase de ambiente, y la equivocada si el usuario
+    # estaba pensando en la tetragonal de un recubrimiento.
+    if system is None and not req.mp_id:
+        phases = _other_phases(resolution)
+        if phases:
+            return _ask_for_phase(req.formula, resolution, phases)
+
     return resolution.atoms, _mp_note(resolution) + _cut_basis_note(req, resolution.atoms)
+
+
+def _other_phases(resolution: "StructureResolution") -> list[str]:
+    """Fases DISTINTAS de la elegida que MP ofrece para ese material.
+
+    Solo cuentan las que tienen sistema conocido: una alternativa sin
+    simetría no se puede nombrar, y ofrecer "la otra" sin decir cuál no
+    ayuda a elegir."""
+    chosen = resolution.crystal_system
+    seen: list[str] = []
+    for alt in resolution.alternatives:
+        if alt.crystal_system and alt.crystal_system != chosen and alt.crystal_system not in seen:
+            seen.append(alt.crystal_system)
+    return seen
+
+
+def _ask_for_phase(
+    formula: str, resolution: "StructureResolution", others: list[str]
+) -> Reply:
+    """Varias fases disponibles y ninguna pedida: se pregunta.
+
+    Se nombra la elegida como la más estable y se ofrecen las otras por su
+    nombre en castellano, que es como se las pide ("la tetragonal"). Sigue
+    la misma política que la cara de la losa: elegir por el usuario devuelve
+    un resultado creíble que puede no ser el experimento que tenía en mente.
+    """
+    estable = CRYSTAL_SYSTEM_ES.get(
+        resolution.crystal_system, resolution.crystal_system or "?"
+    )
+    otras = ", ".join(CRYSTAL_SYSTEM_ES.get(s, s) for s in others)
+    return Reply(
+        text=(
+            f"🔬 {formula} tiene varias fases en Materials Project. La más "
+            f"estable es la **{estable}**; también hay: {otras}.\n"
+            "¿Con cuál voy? (respondé solo la fase, p. ej. «tetragonal»; "
+            f"o «la {estable}» para la estable)"
+        ),
+        ok=False,
+        awaiting_params=True,
+    )
 
 
 def _cut_basis_note(req: "VaspCalcRequest", atoms) -> str:

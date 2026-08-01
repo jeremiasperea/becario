@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from .vasp_tags import validar_tags_pedidos
 
@@ -161,34 +161,113 @@ _CRYSTAL_ALIASES: dict[str, str] = {
 }
 
 
+# Los 7 sistemas cristalinos, con el valor EXACTO que devuelve Materials
+# Project (`SummaryDoc.symmetry.crystal_system`). Son otra cosa que
+# `ASE_CRYSTALS`: un prototipo de ASE ('fluorite') dice cómo se decoran los
+# sitios; un sistema cristalino ('Tetragonal') nombra una FASE. Un compuesto
+# con polimorfos —ZrO2 es monoclínica a ambiente, tetragonal >1170 °C y
+# cúbica >2370 °C— se pide por fase, que es como se lo nombra en materiales.
+CRYSTAL_SYSTEMS: dict[str, str] = {
+    "triclinic": "Triclinic",
+    "monoclinic": "Monoclinic",
+    "orthorhombic": "Orthorhombic",
+    "tetragonal": "Tetragonal",
+    "trigonal": "Trigonal",
+    "hexagonal": "Hexagonal",
+    "cubic": "Cubic",
+}
+
+_SYSTEM_ALIASES: dict[str, str] = {
+    "triclinica": "triclinic",
+    "monoclinica": "monoclinic",
+    "ortorrombica": "orthorhombic",
+    "rombica": "orthorhombic",
+    "trigonal": "trigonal",
+    "romboedrica": "trigonal",
+    "cubica": "cubic",
+    "hexagonal": "hexagonal",
+    # 'tetragonal' y 'orthorhombic' ya coinciden con la clave en inglés.
+}
+
+# Nombre en castellano de cada fase, para hablarle al usuario.
+CRYSTAL_SYSTEM_ES: dict[str, str] = {
+    "Triclinic": "triclínica",
+    "Monoclinic": "monoclínica",
+    "Orthorhombic": "ortorrómbica",
+    "Tetragonal": "tetragonal",
+    "Trigonal": "trigonal",
+    "Hexagonal": "hexagonal",
+    "Cubic": "cúbica",
+}
+
+
+def _plain(raw: str) -> str:
+    """Minúsculas, sin acentos y sin separadores: la forma en la que se
+    comparan los nombres que llegan dictados o escritos por un LLM."""
+    text = unicodedata.normalize("NFKD", raw.strip().lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[\s_-]+", "", text)
+
+
+def normalize_crystal_system(raw: str) -> Optional[str]:
+    """Sistema cristalino en el valor que usa Materials Project, o `None`.
+
+    'monoclínica' -> 'Monoclinic'. Se acepta el castellano porque es como se
+    nombra la fase en el pedido ("la ZrO2 tetragonal"), no en inglés.
+    """
+    plain = _plain(raw)
+    key = _SYSTEM_ALIASES.get(plain, plain)
+    return CRYSTAL_SYSTEMS.get(key)
+
+
 def normalize_crystal(raw: str) -> Optional[str]:
     """Nombre de red en la forma que entiende ASE, o `None` si no existe.
 
     Tolera acentos, mayúsculas y separadores ('Sal de Roca' -> 'rocksalt')
     porque el texto viene de un dictado por voz o de un LLM, no de un menú.
     """
-    plain = unicodedata.normalize("NFKD", raw.strip().lower())
-    plain = "".join(c for c in plain if not unicodedata.combining(c))
-    plain = re.sub(r"[\s_-]+", "", plain)
+    plain = _plain(raw)
     if plain in ASE_CRYSTALS:
         return plain
     return _CRYSTAL_ALIASES.get(plain)
 
 
-def _validate_crystal(v: Optional[str]) -> Optional[str]:
+def resolve_crystal(v: Optional[str], formula: str) -> Optional[str]:
     """Política única de red cristalina, compartida por `StructureRequest` y
     `VaspCalcRequest` para que no diverjan.
 
-    Rechazar acá lo que ASE no conoce es fail-closed a propósito: el camino
-    largo es generar el INCAR, subirlo y que el cálculo muera en el cluster
-    por una red mal escrita."""
+    El campo carga DOS sentidos y cuál aplica depende del material:
+
+    - **Elemento** -> prototipo de ASE. 'monoclínica' es `mcl`, una red de
+      Bravais de un átomo, que es exactamente lo que hace falta para armar
+      un elemento con `ase.build.bulk`.
+    - **Compuesto** -> sistema cristalino, o sea una FASE ('Monoclinic').
+      Acá `mcl` no sirve para nada: pide un solo átomo y un compuesto tiene
+      varios. Un compuesto con polimorfos se resuelve por Materials Project,
+      que indexa las fases por sistema.
+
+    Por eso la resolución mira la fórmula en vez de decidirse sola: sin ese
+    contexto, 'monoclínica' se iría siempre al prototipo de ASE y la fase
+    quedaría muda. Los nombres que solo existen en un vocabulario
+    ('fluorita', 'fcc') no dependen del contexto y se resuelven igual.
+
+    Rechazar lo que no está en ninguno de los dos es fail-closed a propósito:
+    el camino largo es generar el INCAR, subirlo y que el cálculo muera en el
+    cluster por una red mal escrita."""
     if v is None:
         return None
-    crystal = normalize_crystal(v)
-    if crystal is None:
-        opciones = ", ".join(sorted(ASE_CRYSTALS))
-        raise ValueError(f"red cristalina inválida: {v!r} (conocidas: {opciones})")
-    return crystal
+    es_compuesto = len(elements_of(formula)) > 1
+    orden = (
+        (normalize_crystal_system, normalize_crystal)
+        if es_compuesto
+        else (normalize_crystal, normalize_crystal_system)
+    )
+    for resolver in orden:
+        resolved = resolver(v)
+        if resolved is not None:
+            return resolved
+    conocidas = ", ".join(sorted(ASE_CRYSTALS | set(CRYSTAL_SYSTEMS.values())))
+    raise ValueError(f"red cristalina inválida: {v!r} (conocidas: {conocidas})")
 
 
 def needs_explicit_lattice(
@@ -575,8 +654,11 @@ class StructureRequest(BaseModel):
 
     @field_validator("crystal")
     @classmethod
-    def _v_crystal(cls, v: Optional[str]) -> Optional[str]:
-        return _validate_crystal(v)
+    def _v_crystal(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
+        # `formula` se declara antes que `crystal`, así que para cuando corre
+        # esto ya está validada y disponible: es lo que decide si el valor es
+        # un prototipo de ASE o una fase (ver `resolve_crystal`).
+        return resolve_crystal(v, str(info.data.get("formula") or ""))
 
     @field_validator("supercell")
     @classmethod
@@ -718,8 +800,11 @@ class VaspCalcRequest(BaseModel):
 
     @field_validator("crystal")
     @classmethod
-    def _v_crystal(cls, v: Optional[str]) -> Optional[str]:
-        return _validate_crystal(v)
+    def _v_crystal(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
+        # `formula` se declara antes que `crystal`, así que para cuando corre
+        # esto ya está validada y disponible: es lo que decide si el valor es
+        # un prototipo de ASE o una fase (ver `resolve_crystal`).
+        return resolve_crystal(v, str(info.data.get("formula") or ""))
 
     @field_validator("supercell")
     @classmethod
@@ -904,6 +989,22 @@ class StructureQuery(BaseModel):
     formula: Optional[str] = None
     mp_id: Optional[str] = None
     qualifier: Optional[str] = None
+    # Fase pedida, en el valor de MP ('Tetragonal'). Sin esto, resolver un
+    # compuesto con polimorfos devuelve SIEMPRE el más estable, que para
+    # ZrO2 es la monoclínica — correcto a temperatura ambiente y equivocado
+    # si el usuario quería la tetragonal.
+    crystal_system: Optional[str] = None
+
+    @field_validator("crystal_system")
+    @classmethod
+    def _v_crystal_system(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        system = normalize_crystal_system(v)
+        if system is None:
+            conocidos = ", ".join(CRYSTAL_SYSTEMS.values())
+            raise ValueError(f"sistema cristalino inválido: {v!r} ({conocidos})")
+        return system
 
     @field_validator("mp_id")
     @classmethod
@@ -940,6 +1041,10 @@ class StructureAlternative:
     mp_id: str
     formula: str
     energy_above_hull: float
+    # Fase del candidato ('Tetragonal'). Es lo que permite ofrecer la
+    # elección en el idioma en que se nombra la fase, en vez de listar ids
+    # de MP que no le dicen nada a nadie.
+    crystal_system: str = ""
 
 
 @dataclass(frozen=True)
@@ -956,6 +1061,10 @@ class StructureResolution:
     mp_id: str
     formula: str
     spacegroup: str
+    # Fase de la estructura elegida ('Tetragonal'). Separado del grupo
+    # espacial porque es lo que el usuario nombra y compara entre polimorfos;
+    # 'P4_2/nmc' es exacto y no le dice nada a nadie en una conversación.
+    crystal_system: str = ""
     # `None` cuando la estructura se pidió por su mp-id: `get_structure_by_
     # material_id` no trae el summary, así que el hull es desconocido. No se
     # inventa 0.0 — la nota humana omite la afirmación de estabilidad si es None.

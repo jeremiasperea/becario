@@ -339,7 +339,11 @@ _EDIT_PROMPT = (
     # red, así que sin esto la repregunta no sirve para nada.
     "'fluorita a=5.07' -> red_cristalina=fluorita, parametro_red=5.07\n"
     "'rocksalt con parámetro 4.21' -> red_cristalina=rocksalt, "
-    "parametro_red=4.21"
+    "parametro_red=4.21\n"
+    # Respuesta a la repregunta de fase de un compuesto. Va con ejemplo por
+    # la misma razón que la red: enumerar el campo no alcanza.
+    "'la tetragonal' -> red_cristalina=tetragonal\n"
+    "'monoclínica' -> red_cristalina=monoclinica"
 )
 
 

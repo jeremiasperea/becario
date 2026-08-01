@@ -29,6 +29,11 @@ _SUMMARY_FIELDS = [
     "structure",
     "energy_above_hull",
     "formula_pretty",
+    # Trae `crystal_system`, que es como se nombra una fase en materiales
+    # ("la ZrO2 tetragonal"). Se pide a MP en vez de calcularlo con
+    # `SpacegroupAnalyzer` sobre cada candidato: analizar N estructuras para
+    # después descartar N-1 es trabajo tirado.
+    "symmetry",
 ]
 # Cuántas alternativas ofrecer cuando el nombre era ambiguo.
 _MAX_ALTERNATIVES = 5
@@ -61,7 +66,7 @@ class MaterialsProjectProvider:
                     docs = self._search(mpr, chemsys=_chemsys(query.elements))
                     if query.qualifier:
                         docs = [d for d in docs if _contains(d, query.qualifier)]
-                return self._select(docs)
+                return self._select(docs, query.crystal_system)
         except StructureResolutionError:
             raise
         except (RequestsConnectionError, RequestsTimeout, ConnectionError, TimeoutError) as exc:
@@ -100,9 +105,23 @@ class MaterialsProjectProvider:
             alternatives=(),
         )
 
-    def _select(self, docs: list) -> StructureResolution:
+    def _select(
+        self, docs: list, crystal_system: Optional[str] = None
+    ) -> StructureResolution:
         if not docs:
             raise StructureResolutionError(StructureResolutionReason.NO_MATCH)
+        if crystal_system:
+            # Fase pedida: se filtra ANTES de ordenar por estabilidad. Sin
+            # esto ganaba siempre el polimorfo del hull, o sea que pedir "la
+            # tetragonal" devolvía la monoclínica sin decir nada.
+            matching = [d for d in docs if _system_of(d) == crystal_system]
+            if not matching:
+                disponibles = sorted({_system_of(d) for d in docs if _system_of(d)})
+                raise StructureResolutionError(
+                    StructureResolutionReason.NO_MATCH,
+                    f"sin fase {crystal_system}; hay: {', '.join(disponibles) or 'ninguna'}",
+                )
+            docs = matching
         # Menor energy_above_hull = más estable; None va al final.
         ordered = sorted(
             docs, key=lambda d: (d.energy_above_hull is None, d.energy_above_hull or 0.0)
@@ -113,6 +132,7 @@ class MaterialsProjectProvider:
                 mp_id=str(d.material_id),
                 formula=d.formula_pretty,
                 energy_above_hull=float(d.energy_above_hull or 0.0),
+                crystal_system=_system_of(d),
             )
             for d in ordered[1 : 1 + _MAX_ALTERNATIVES]
         )
@@ -122,6 +142,7 @@ class MaterialsProjectProvider:
             formula=chosen.formula_pretty,
             energy_above_hull=float(chosen.energy_above_hull or 0.0),
             alternatives=alternatives,
+            crystal_system=_system_of(chosen),
         )
 
 
@@ -133,6 +154,20 @@ class MaterialsProjectProvider:
 def _chemsys(elements) -> str:
     """Sistema químico en el formato de MP: elementos ordenados, con guiones."""
     return "-".join(sorted(elements))
+
+
+def _system_of(doc) -> str:
+    """Sistema cristalino del documento, o "" si MP no lo trae.
+
+    `symmetry.crystal_system` viene como enum de emmet; `str()` sobre él da
+    el valor ('Tetragonal'). Un doc sin simetría NO se descarta acá: se le
+    da "" y, si había una fase pedida, el filtro lo deja afuera solo.
+    """
+    symmetry = getattr(doc, "symmetry", None)
+    system = getattr(symmetry, "crystal_system", None)
+    if system is None:
+        return ""
+    return getattr(system, "value", None) or str(system)
 
 
 def _contains(doc, element: str) -> bool:
@@ -151,6 +186,7 @@ def _to_resolution(
     formula: str,
     energy_above_hull: Optional[float],
     alternatives: tuple,
+    crystal_system: str = "",
 ) -> StructureResolution:
     sga = SpacegroupAnalyzer(structure)
     primitive = sga.get_primitive_standard_structure()
@@ -160,6 +196,10 @@ def _to_resolution(
         mp_id=mp_id,
         formula=formula,
         spacegroup=sga.get_space_group_symbol(),
+        # Sin el dato de MP (camino por mp-id, que no trae summary) se deriva
+        # del análisis que ya se hizo para el grupo espacial. `pymatgen` lo
+        # devuelve en minúscula; MP lo usa capitalizado.
+        crystal_system=crystal_system or sga.get_crystal_system().capitalize(),
         energy_above_hull=energy_above_hull,
         alternatives=alternatives,
     )
