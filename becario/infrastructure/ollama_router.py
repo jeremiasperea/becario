@@ -284,23 +284,39 @@ _DECOMPOSE_PROMPT = (
 )
 
 
-# Segunda pasada de extracción de estructura para preparar_calculo. Bajo
-# ESE intent todos los modelos locales sueltan formula/red_cristalina
-# (medido, model-agnóstico: qwen2.5:7b, gemma4:e4b y gemma3:4b, 0/3),
-# aunque los extraen 3/3 sin el framing de intent. Este prompt no clasifica
-# ni menciona acciones: pide SOLO la estructura del material a calcular, y
-# así el modelo ya no la asocia a `modificar_estructura` ni la descarta.
+# Segunda pasada de extracción de estructura. Cuando el mensaje trae otro
+# eje de extracción, todos los modelos locales sueltan formula: bajo
+# preparar_calculo (medido: qwen2.5:7b, gemma4:e4b y gemma3:4b, 0/3) y en
+# los pedidos de losa, donde la cara/capas/supercelda se llevan la atención
+# (medido: qwen2.5:7b, gemma4:12b y qwen2.5-coder:14b, 0/3 — los dos
+# grandes sí sacan miller/capas/supercelda, pero ninguno el material).
+# Sin el framing de intent lo extraen. Este prompt no clasifica ni menciona
+# acciones: pide SOLO el material.
 _STRUCT_PROMPT = (
     "Sos el extractor de estructura de B.E.C.A.R.I.O., un asistente HPC. "
-    "El mensaje pide un cálculo DFT/VASP sobre una estructura atómica. "
-    "Extraé SOLO la estructura sobre la que se calcula: 'formula' (símbolo "
+    "El mensaje pide un cálculo DFT/VASP sobre una estructura atómica, o "
+    "generar el archivo de una estructura atómica. "
+    "Extraé SOLO el material: 'formula' (símbolo "
     "químico: zirconio->Zr, tungsteno/wolframio->W, silicio->Si) y "
     "'red_cristalina' (bcc, fcc, hcp, diamond…). No inventes valores; si el "
     "mensaje no menciona uno, dejalo sin completar.\n"
     "Ejemplos:\n"
     "'relajá el bulk de W bcc' -> formula=W, red_cristalina=bcc\n"
-    "'convergencia de ENCUT para Zr hcp' -> formula=Zr, red_cristalina=hcp"
+    "'convergencia de ENCUT para Zr hcp' -> formula=Zr, red_cristalina=hcp\n"
+    "'armá un slab de ZrO2 (001) de 5 capas' -> formula=ZrO2"
 )
+
+
+# Intents cuyo handler necesita el material para poder hacer algo. Los dos
+# lo repreguntan si falta, así que un backfill que no encuentra nada no
+# rompe: solo deja el pedido como estaba.
+_STRUCTURE_INTENTS = frozenset({Intent.PREPARE_CALC, Intent.MODIFY_STRUCTURE})
+
+# Lo único que la segunda pasada tiene permitido devolver. El prompt pide
+# estas dos y nada más, pero el modelo igual inventa parámetros de cálculo
+# cuando el mensaje habla de una losa (medido: encut, puntos_k, tags_incar
+# aparecidos de la nada). Filtrar acá evita que esa basura entre al plan.
+_STRUCTURE_KEYS = ("formula", "red_cristalina")
 
 
 _EDIT_PROMPT = (
@@ -458,12 +474,22 @@ class OllamaRouter:
 
     def extract_structure(self, user_text: str) -> dict:
         """Segunda pasada enfocada: extrae SOLO la estructura (formula/
-        red_cristalina) de un pedido de cálculo, sin clasificar intención.
+        red_cristalina) del pedido, sin clasificar intención.
 
-        Necesaria porque bajo el intent `preparar_calculo` el modelo asocia
-        la estructura a `modificar_estructura` y la descarta; una llamada
-        sin ese framing la recupera de forma confiable (ver `_STRUCT_PROMPT`).
-        `{}` si Ollama no respondió o la salida quedó fuera de schema."""
+        Necesaria porque cuando el mensaje trae OTRO eje de extracción —el
+        tipo de cálculo en `preparar_calculo`, la cara/capas/supercelda en
+        una losa— el modelo se lleva la atención a ese eje y suelta el
+        material; una llamada sin ese framing lo recupera de forma
+        confiable (ver `_STRUCT_PROMPT`). Medido en qwen2.5:7b, gemma4:12b
+        y qwen2.5-coder:14b: los tres pierden `formula` en los pedidos de
+        losa, así que es del prompt, no del modelo.
+
+        Devuelve solo las claves de estructura y descarta los vacíos: el
+        modelo emite `""` (no `null`) para lo que no encontró, y un
+        `red_cristalina=""` que llegue a `StructureRequest` no queda
+        ignorado sino que REBOTA (`_v_crystal`), cambiando una repregunta
+        clara por un error de validación. `{}` si Ollama no respondió o la
+        salida quedó fuera de schema."""
         raw = self._chat(_STRUCT_PROMPT, user_text, self._params_schema)
         if raw is None:
             return {}
@@ -472,31 +498,36 @@ class OllamaRouter:
         except ValidationError:
             logger.warning("Extracción de estructura fuera de schema: %r", (raw or "")[:200])
             return {}
-        return params.model_dump(exclude_none=True)
+        extracted = params.model_dump(exclude_none=True)
+        return {
+            k: v for k in _STRUCTURE_KEYS
+            if (v := extracted.get(k)) not in (None, "", [], {})
+        }
 
     def _backfill_structure(self, user_text: str, plan: Plan) -> Plan:
-        """Recupera formula/red_cristalina en un cálculo vía la segunda
-        pasada de `extract_structure`.
+        """Recupera formula/red_cristalina vía la segunda pasada de
+        `extract_structure`.
 
-        Se aplica cuando el plan tiene EXACTAMENTE UN paso `preparar_calculo`
-        sin formula: ahí el material del texto es inequívoco, sin importar si
-        además hay pasos no-cálculo (p. ej. el `crear_directorio` que
-        acompaña al cálculo en cada instrucción que emite el descompositor).
-        Con dos o más cálculos el material deja de ser inequívoco y el caso
-        lo cubre el descompositor (capa de aplicación), que primero parte el
-        pedido para que cada instrucción tenga un solo material antes de
+        Se aplica cuando el plan tiene EXACTAMENTE UN paso que necesita
+        material (`_STRUCTURE_INTENTS`) y ese paso no lo trae: ahí el
+        material del texto es inequívoco, sin importar si además hay pasos
+        que no lo necesitan (p. ej. el `crear_directorio` que acompaña al
+        cálculo en cada instrucción que emite el descompositor). Con dos o
+        más el material deja de ser inequívoco y el caso lo cubre el
+        descompositor (capa de aplicación), que primero parte el pedido
+        para que cada instrucción tenga un solo material antes de
         re-rutear — cada instrucción vuelve por acá y se completa.
 
         Fail-open: si la segunda pasada no devuelve nada se conserva el plan
-        original, y el handler de `preparar_calculo` repregunta el material
-        faltante. Lo ya extraído por el router gana sobre el backfill."""
-        calcs = [s for s in plan.steps if s.action is Intent.PREPARE_CALC]
-        if len(calcs) != 1 or calcs[0].parametros.get("formula"):
+        original, y el handler repregunta el material faltante. Lo ya
+        extraído por el router gana sobre el backfill."""
+        targets = [s for s in plan.steps if s.action in _STRUCTURE_INTENTS]
+        if len(targets) != 1 or targets[0].parametros.get("formula"):
             return plan
         structure = self.extract_structure(user_text)
         if not structure:
             return plan
-        target = calcs[0]
+        target = targets[0]
         steps = [
             PlanStep(action=s.action, parametros={**structure, **s.parametros})
             if s is target else s
