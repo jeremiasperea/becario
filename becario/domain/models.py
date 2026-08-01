@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -126,6 +127,82 @@ def elements_of(formula: str) -> list[str]:
             out.append(symbol)
         pos = match.end()
     return out
+
+
+# Redes que `ase.build.bulk` sabe construir. Se listan acá, en el dominio, en
+# vez de importarlas de ASE: el dominio no depende de infraestructura. El test
+# `test_ase_crystals_matches_ase` chequea que la lista no se desincronice.
+ASE_CRYSTALS: frozenset[str] = frozenset({
+    "sc", "fcc", "bcc", "tetragonal", "bct", "hcp", "rhombohedral",
+    "orthorhombic", "mcl", "diamond", "zincblende", "rocksalt",
+    "cesiumchloride", "fluorite", "wurtzite",
+})
+
+# El usuario dicta en castellano y ASE espera el nombre en inglés. Sin este
+# mapeo, "fluorita" pasa la validación de forma y explota recién adentro de
+# ASE, con un error que no dice qué corregir.
+_CRYSTAL_ALIASES: dict[str, str] = {
+    "fluorita": "fluorite",
+    "diamante": "diamond",
+    "wurtzita": "wurtzite",
+    "zincblenda": "zincblende",
+    "blenda": "zincblende",
+    "salderoca": "rocksalt",
+    "salgema": "rocksalt",
+    "halita": "rocksalt",
+    "clorurodecesio": "cesiumchloride",
+    "cubicasimple": "sc",
+    "cubicacentradaenelcuerpo": "bcc",
+    "cubicacentradaenlascaras": "fcc",
+    "hexagonalcompacta": "hcp",
+    "romboedrica": "rhombohedral",
+    "ortorrombica": "orthorhombic",
+    "monoclinica": "mcl",
+}
+
+
+def normalize_crystal(raw: str) -> Optional[str]:
+    """Nombre de red en la forma que entiende ASE, o `None` si no existe.
+
+    Tolera acentos, mayúsculas y separadores ('Sal de Roca' -> 'rocksalt')
+    porque el texto viene de un dictado por voz o de un LLM, no de un menú.
+    """
+    plain = unicodedata.normalize("NFKD", raw.strip().lower())
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    plain = re.sub(r"[\s_-]+", "", plain)
+    if plain in ASE_CRYSTALS:
+        return plain
+    return _CRYSTAL_ALIASES.get(plain)
+
+
+def _validate_crystal(v: Optional[str]) -> Optional[str]:
+    """Política única de red cristalina, compartida por `StructureRequest` y
+    `VaspCalcRequest` para que no diverjan.
+
+    Rechazar acá lo que ASE no conoce es fail-closed a propósito: el camino
+    largo es generar el INCAR, subirlo y que el cálculo muera en el cluster
+    por una red mal escrita."""
+    if v is None:
+        return None
+    crystal = normalize_crystal(v)
+    if crystal is None:
+        opciones = ", ".join(sorted(ASE_CRYSTALS))
+        raise ValueError(f"red cristalina inválida: {v!r} (conocidas: {opciones})")
+    return crystal
+
+
+def needs_explicit_lattice(
+    formula: str, crystal: Optional[str], lattice_a: Optional[float]
+) -> bool:
+    """¿Hay que pedirle al usuario la red y el parámetro antes de construir?
+
+    ASE trae la estructura de referencia de cada ELEMENTO, así que 'W' o 'Si'
+    se arman solos. Un compuesto no: `bulk('ZrO2')` falla con "no suitable
+    reference data" salvo que se le den red y parámetro. Preguntarlos es lo
+    mismo que ya se hace con la cara de una losa — el parámetro de red no se
+    adivina, y uno inventado da una estructura creíble y equivocada.
+    """
+    return len(elements_of(formula)) > 1 and not (crystal and lattice_a)
 
 
 def _validate_remote_dir_path(v: str) -> str:
@@ -499,12 +576,7 @@ class StructureRequest(BaseModel):
     @field_validator("crystal")
     @classmethod
     def _v_crystal(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        v = v.strip().lower()
-        if not re.fullmatch(r"[a-z]{2,20}", v):
-            raise ValueError(f"red cristalina inválida: {v!r}")
-        return v
+        return _validate_crystal(v)
 
     @field_validator("supercell")
     @classmethod
@@ -647,12 +719,7 @@ class VaspCalcRequest(BaseModel):
     @field_validator("crystal")
     @classmethod
     def _v_crystal(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        v = v.strip().lower()
-        if not re.fullmatch(r"[a-z]{2,20}", v):
-            raise ValueError(f"red cristalina inválida: {v!r}")
-        return v
+        return _validate_crystal(v)
 
     @field_validator("supercell")
     @classmethod

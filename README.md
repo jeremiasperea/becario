@@ -222,7 +222,8 @@ Soporta: bulk de elementos (estructura de referencia de ASE) y compuestos
 
 ### Superficies (slabs)
 
-- "Armá un slab de ZrO2 (001) de 5 capas, 2x1"
+- "Armá un slab de ZrO2 (001) de 5 capas, 2x1" → pregunta la red (ZrO2 es
+  un compuesto); se contesta "fluorita a=5.07" y sigue
 - "Una superficie de Zr acostada, con el vacío en y"
 
 La losa se corta con `ase.build.surface` sobre la celda **convencional**
@@ -234,6 +235,17 @@ de fluorita, ZrO2 (001) y (111) dan la *misma* superficie.
 Si el pedido no nombra la cara, el bot **la pregunta** en vez de elegir
 una: una (001) y una (111) del mismo material son experimentos distintos.
 El pedido queda esperando y se completa con la respuesta, sin repetirlo.
+
+Lo mismo con la red de un **compuesto**. ASE trae la estructura de
+referencia de cada elemento —`Zr` o `Si` se arman solos— pero no la de un
+compuesto: `bulk('ZrO2')` falla salvo que se le den red y parámetro. En vez
+de devolver el error de ASE ("no suitable reference data"), que habla de la
+biblioteca y no de lo que falta, el bot pide los dos datos. Un parámetro de
+red inventado no falla: da una estructura creíble con las distancias mal.
+
+La red se acepta en castellano y se normaliza al nombre que entiende ASE
+("fluorita" → `fluorite`, "sal de roca" → `rocksalt`), y se **rechaza** la
+que ASE no conoce, en vez de dejar que reviente al construir.
 
 Acostar la losa (vacío en x o y) es una permutación cíclica de las
 componentes cartesianas de los vectores de red: misma superficie, mismas

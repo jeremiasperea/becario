@@ -18,8 +18,12 @@ from becario.domain.models import (
     PlanStep,
     RemoteDirRequest,
     SlurmJobRequest,
+    StructureRequest,
     ViewFileRequest,
+    ASE_CRYSTALS,
     is_plausible_formula,
+    needs_explicit_lattice,
+    normalize_crystal,
 )
 
 
@@ -346,6 +350,78 @@ class TestIsPlausibleFormula:
     )
     def test_implausible_formulas(self, formula):
         assert is_plausible_formula(formula) is False
+
+
+class TestNormalizeCrystal:
+    """La red se dicta por voz o la escribe un LLM, así que llega en
+    castellano, con acentos y con separadores. `normalize_crystal` la deja
+    en el nombre que entiende ASE, o dice que no existe."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("fcc", "fcc"),
+            ("FCC", "fcc"),
+            ("  Fluorite ", "fluorite"),
+            ("fluorita", "fluorite"),
+            ("diamante", "diamond"),
+            ("sal de roca", "rocksalt"),
+            ("Sal-De-Roca", "rocksalt"),
+            ("cloruro de cesio", "cesiumchloride"),
+            ("hexagonal compacta", "hcp"),
+            ("romboédrica", "rhombohedral"),
+            ("ortorrómbica", "orthorhombic"),
+        ],
+    )
+    def test_known_names(self, raw, expected):
+        assert normalize_crystal(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["", "perovskita", "fluorit", "xyz", "42"])
+    def test_unknown_names(self, raw):
+        assert normalize_crystal(raw) is None
+
+    def test_ase_crystals_matches_ase(self):
+        """El dominio no importa ASE, así que la lista está copiada a mano.
+        Este test es el que avisa si ASE agrega o saca una red."""
+        import inspect
+        import re
+
+        from ase.build import bulk
+
+        # `bulk` valida contra este literal en su cuerpo.
+        source = inspect.getsource(bulk)
+        declared = set(re.findall(r"'([a-z]+)'", source))
+        assert ASE_CRYSTALS <= declared, ASE_CRYSTALS - declared
+
+    def test_request_normalizes_and_rejects(self):
+        req = StructureRequest(formula="ZrO2", crystal="Fluorita", lattice_a=5.07)
+        assert req.crystal == "fluorite"
+        with pytest.raises(ValidationError, match="red cristalina inválida"):
+            StructureRequest(formula="ZrO2", crystal="perovskita", lattice_a=5.07)
+
+
+class TestNeedsExplicitLattice:
+    """ASE tiene datos de referencia por ELEMENTO: 'W' se arma solo, un
+    compuesto no. Distinguirlo es lo que permite preguntar en vez de dejar
+    que ASE reviente con 'no suitable reference data'."""
+
+    @pytest.mark.parametrize("formula", ["W", "Si", "Zr", "Au"])
+    def test_elements_build_alone(self, formula):
+        assert needs_explicit_lattice(formula, None, None) is False
+
+    @pytest.mark.parametrize("formula", ["ZrO2", "NaCl", "TiO2", "Fe2O3"])
+    def test_compounds_need_lattice(self, formula):
+        assert needs_explicit_lattice(formula, None, None) is True
+
+    def test_compound_with_both_is_buildable(self):
+        assert needs_explicit_lattice("ZrO2", "fluorite", 5.07) is False
+
+    @pytest.mark.parametrize(
+        "crystal,lattice_a", [("fluorite", None), (None, 5.07)]
+    )
+    def test_half_the_data_is_not_enough(self, crystal, lattice_a):
+        # `bulk` de un compuesto exige LAS DOS: con una sola falla igual.
+        assert needs_explicit_lattice("ZrO2", crystal, lattice_a) is True
 
 
 class TestViewFileRequest:

@@ -332,7 +332,14 @@ _EDIT_PROMPT = (
     "'subí el ENCUT máximo a 600' -> encut_max=600\n"
     "'usá la partición gpu y 4 horas' -> particion=gpu, tiempo_limite=04:00:00\n"
     "'la (111)' -> miller=[1,1,1]\n"
-    "'que sean 8 capas' -> capas=8"
+    "'que sean 8 capas' -> capas=8\n"
+    # La enumeración de campos de arriba NO alcanza: medido, el modelo
+    # devolvía {} para 'fluorita a=5.07' mientras acertaba miller y capas,
+    # que son los que tenían ejemplo. Es la respuesta a la repregunta de la
+    # red, así que sin esto la repregunta no sirve para nada.
+    "'fluorita a=5.07' -> red_cristalina=fluorita, parametro_red=5.07\n"
+    "'rocksalt con parámetro 4.21' -> red_cristalina=rocksalt, "
+    "parametro_red=4.21"
 )
 
 

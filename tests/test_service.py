@@ -1912,6 +1912,73 @@ class TestCompoundHeuristic:
         assert BecarioService._looks_compound(text) is False
 
 
+class TestMissingLatticeIsAsked:
+    """Falta la red de un compuesto: se pregunta, igual que la cara.
+
+    ASE solo tiene datos de referencia por elemento. Sin esta repregunta el
+    pedido llegaba hasta ASE y volvía con "no suitable reference data", que
+    habla de la biblioteca y no de lo que el usuario tiene que decir.
+    """
+
+    def _ask(self, service, router, params, text="armá un slab de ZrO2"):
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text=text
+        )
+
+    def test_compound_without_lattice_asks(self, env):
+        service, router, *_ = env
+        reply = self._ask(service, router, {
+            "formula": "ZrO2", "tipo_estructura": "slab",
+            "miller": [0, 0, 1], "capas": 5,
+        })
+        assert reply.awaiting_params
+        assert "red" in reply.text.lower()
+        assert "ZrO2" in reply.text
+        assert "validation error" not in reply.text.lower()
+
+    def test_answering_the_lattice_completes_the_request(self, env):
+        service, router, _cf, _h, _c, structures, *_ = env
+        self._ask(service, router, {
+            "formula": "ZrO2", "tipo_estructura": "slab",
+            "miller": [0, 0, 1], "capas": 5,
+        })
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"red_cristalina": "fluorita", "parametro_red": 5.07},
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="fluorita a=5.07"
+        )
+        assert not reply.awaiting_params
+        # El resto del pedido sobrevivió a la repregunta, y "fluorita" quedó
+        # normalizada al nombre que entiende ASE.
+        built = structures.requests[-1]
+        assert built.crystal == "fluorite"
+        assert built.lattice_a == 5.07
+        assert built.miller == (0, 0, 1)
+        assert built.layers == 5
+
+    def test_element_does_not_ask(self, env):
+        service, router, *_ = env
+        reply = self._ask(
+            service, router,
+            {"formula": "Zr", "tipo_estructura": "slab", "miller": [0, 0, 1]},
+            text="armá un slab de Zr (001)",
+        )
+        assert not reply.awaiting_params
+
+    def test_molecule_does_not_ask(self, env):
+        # H2O tiene dos elementos pero sale de la base G2, no de `bulk()`.
+        service, router, *_ = env
+        reply = self._ask(
+            service, router,
+            {"formula": "H2O", "tipo_estructura": "molecule", "vacio": 12.0},
+            text="creá una molécula de H2O con 12 Å de vacío",
+        )
+        assert not reply.awaiting_params
+
+
 class TestMissingMillerIsAsked:
     """Falta la cara de la losa: se pregunta y el pedido queda esperando.
 
@@ -1957,7 +2024,12 @@ class TestMissingMillerIsAsked:
         """Si contesta otra cosa, lo que dijo se guarda y se vuelve a pedir
         la cara: el pedido NO se pierde por no acertar a la primera."""
         service, router, *_ = env
-        self._ask(service, router, {"formula": "ZrO2", "tipo_estructura": "slab"})
+        # Con red y parámetro: ZrO2 es un compuesto y sin eso el pedido se
+        # frenaría antes, en la repregunta de la red (ASE no lo sabe armar).
+        self._ask(service, router, {
+            "formula": "ZrO2", "tipo_estructura": "slab",
+            "red_cristalina": "fluorite", "parametro_red": 5.07,
+        })
 
         router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"capas": 8})
         second = service.handle_text(
@@ -2001,8 +2073,15 @@ class TestMissingMillerInMultiStepPlans:
     su índice y el plan ENTERO se guarda — el cálculo omitido tiene que
     correr cuando la estructura finalmente se pueda armar."""
 
-    SLAB = {"formula": "ZrO2", "tipo_estructura": "slab", "capas": 5}
-    CALC = {"formula": "ZrO2", "tipo_estructura": "slab", "tipo_calculo": "relajacion"}
+    # ZrO2 es un compuesto: sin red ni parámetro, ASE no lo sabe armar y el
+    # pedido se frena antes de llegar a la cara. Van explícitos para que el
+    # escenario bajo prueba sea la cara faltante y nada más.
+    _FLUORITA = {"red_cristalina": "fluorite", "parametro_red": 5.07}
+    SLAB = {"formula": "ZrO2", "tipo_estructura": "slab", "capas": 5, **_FLUORITA}
+    CALC = {
+        "formula": "ZrO2", "tipo_estructura": "slab",
+        "tipo_calculo": "relajacion", **_FLUORITA,
+    }
 
     def _plan(self, *steps):
         return Plan(steps=[PlanStep(action=a, parametros=dict(p)) for a, p in steps])

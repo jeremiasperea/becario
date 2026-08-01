@@ -27,6 +27,7 @@ from ...domain.models import (
     StructureSource,
     VaspCalcRequest,
     elements_of,
+    needs_explicit_lattice,
 )
 from ...domain.reglas_fisicas import advertencias
 from ..context import Reply, _Ctx
@@ -48,6 +49,27 @@ def _ask_for_miller(formula: str) -> Reply:
         text=(
             f"🔭 Para armar la superficie de {formula} necesito la cara: "
             "¿(001), (110), (111)…?\n"
+            "Es lo único que me falta — el resto del pedido lo tengo."
+        ),
+        ok=False,
+        awaiting_params=True,
+    )
+
+
+def _ask_for_lattice(formula: str) -> Reply:
+    """Falta la red de un compuesto: se pregunta, no se adivina.
+
+    ASE solo tiene datos de referencia por elemento, así que un compuesto sin
+    red ni parámetro revienta adentro de ASE con "no suitable reference data",
+    un error que habla de la biblioteca y no de lo que falta. Se pregunta por
+    la misma razón que la cara de la losa: un parámetro de red inventado no
+    falla, da una estructura creíble con las distancias equivocadas.
+    """
+    return Reply(
+        text=(
+            f"🔬 {formula} es un compuesto, y para armarlo necesito la red "
+            "cristalina y el parámetro de red: p. ej. «fluorita a=5.07» o "
+            "«rocksalt a=4.21».\n"
             "Es lo único que me falta — el resto del pedido lo tengo."
         ),
         ok=False,
@@ -104,6 +126,14 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         )
         if kind is StructureKind.SLAB and not params.get("miller"):
             return _ask_for_miller(str(formula))
+        # Las moléculas salen de la base G2 por nombre, no de `bulk()`: H2O
+        # tiene dos elementos y NO necesita red. Solo el cristal la pide.
+        if kind is not StructureKind.MOLECULE and needs_explicit_lattice(
+            str(formula),
+            params.get("red_cristalina"),
+            params.get("parametro_red"),
+        ):
+            return _ask_for_lattice(str(formula))
         # Generar un archivo suelto arma la estructura IDEAL con ASE: no pasa
         # por Materials Project ni por el CONTCAR de una corrida previa. Si el
         # pedido nombró otra fuente hay que decirlo, porque devolver la ideal
