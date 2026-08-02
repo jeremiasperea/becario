@@ -207,6 +207,22 @@ construcción de comandos SSH (sin conexión real, interceptando `_run`) y
 generación de estructuras con ASE real (bulk, moléculas G2, superceldas,
 POSCAR válidos releídos con `ase.io.read`).
 
+### Consola local (sin Telegram)
+
+```bash
+.venv/bin/python scripts/consola.py [user_id]
+```
+
+`BecarioService` no sabe nada de Telegram —recibe `(chat_id, user_id, texto)`
+y devuelve un `Reply`—, así que se lo puede manejar desde la terminal. Sirve
+para probar ruteo, repreguntas y generación de inputs sin el ida y vuelta del
+chat, con los logs en la misma pantalla. Sin `user_id` usa el primero del
+roster.
+
+**No reemplaza la prueba en Telegram**: los botones ✅ ❌ ✏️ viajan por
+callbacks, así que todo lo que dependa de apretar uno —confirmar un envío,
+modificar un plan— hay que probarlo en el chat.
+
 ## Estructuras atómicas (ASE)
 
 `modificar_estructura` construye la estructura **localmente** con ASE y la
@@ -266,6 +282,33 @@ Ejemplos de pedidos:
 - "Hacé la curva de convergencia de ENCUT para Zr hcp de 250 a 450"
 - "La DOS del Zr hcp" → tetraedros, malla fina, DOS proyectada
 - "Estático de Zr con ISMEAR=0 y SIGMA=0.05" → tags pedidos a mano
+
+### Fases de un compuesto (polimorfos)
+
+Un compuesto puede cristalizar en varias fases, y cuál corresponde depende
+del experimento. ZrO₂ es monoclínica a temperatura ambiente, tetragonal por
+encima de 1170 °C y cúbica por encima de 2370 °C — y la cúbica es
+justamente la de tipo fluorita.
+
+Cuando Materials Project ofrece más de una fase y el pedido no dice cuál,
+el bot **pregunta**, ofreciéndolas por su nombre:
+
+> 🔬 ZrO2 tiene varias fases en Materials Project. La más estable es la
+> **monoclínica**; también hay: tetragonal, cúbica.
+
+Se contesta "la tetragonal" y sigue. Sin esa pregunta ganaba siempre el
+polimorfo del *hull* (el más estable), que es una respuesta razonable y
+silenciosamente equivocada para quien busca otra fase.
+
+La fase viaja en el mismo campo que la red cristalina, y el sentido lo
+decide el material: en un **elemento** es el prototipo de ASE ("monoclínica"
+→ `mcl`, una red de Bravais de un átomo); en un **compuesto** es el sistema
+cristalino ("monoclínica" → fase `Monoclinic`, que se busca en Materials
+Project). No se agregó un campo nuevo al router a propósito: el schema tiene
+presupuesto (ADR-0006).
+
+Esto necesita `BECARIO_MP_API_KEY` configurada. Sin key, los compuestos
+siguen el camino de ASE, que solo sabe armar prototipos.
 
 ### Densidad de estados (`tipo_calculo=dos`)
 

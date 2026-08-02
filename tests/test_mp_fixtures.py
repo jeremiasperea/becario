@@ -19,13 +19,64 @@ from becario.domain.models import (
 from becario.infrastructure.materials_project import MaterialsProjectProvider
 from becario.infrastructure.vasp_inputs import VaspInputGenerator
 
-from .mp_fixtures import FixtureRester, fe_o_docs
+from .mp_fixtures import FixtureRester, fe_o_docs, zro2_polymorph_docs
 
 
 def _provider() -> MaterialsProjectProvider:
     return MaterialsProjectProvider(
         api_key="dummy", rester_factory=lambda: FixtureRester(fe_o_docs())
     )
+
+
+def _zro2_provider() -> MaterialsProjectProvider:
+    return MaterialsProjectProvider(
+        api_key="dummy", rester_factory=lambda: FixtureRester(zro2_polymorph_docs())
+    )
+
+
+class TestPhaseSelection:
+    """Un compuesto con polimorfos: sin fase pedida gana el del hull, y con
+    fase pedida gana ESA. Antes solo existía lo primero, así que pedir «la
+    tetragonal» devolvía la monoclínica sin decirlo."""
+
+    def test_without_phase_picks_the_most_stable(self):
+        res = _zro2_provider().resolve(StructureQuery(formula="ZrO2"))
+        assert res.mp_id == "mp-2858"
+        assert res.crystal_system == "Monoclinic"
+
+    def test_requested_phase_wins_over_stability(self):
+        res = _zro2_provider().resolve(
+            StructureQuery(formula="ZrO2", crystal_system="Tetragonal")
+        )
+        assert res.mp_id == "mp-1565"
+        assert res.crystal_system == "Tetragonal"
+
+    def test_phase_accepts_spanish(self):
+        res = _zro2_provider().resolve(
+            StructureQuery(formula="ZrO2", crystal_system="cúbica")
+        )
+        assert res.crystal_system == "Cubic"
+
+    def test_absent_phase_says_which_ones_exist(self):
+        with pytest.raises(StructureResolutionError) as exc:
+            _zro2_provider().resolve(
+                StructureQuery(formula="ZrO2", crystal_system="hexagonal")
+            )
+        assert exc.value.reason is StructureResolutionReason.NO_MATCH
+        # El mensaje tiene que decir qué hay, no solo que no encontró.
+        assert "Monoclinic" in str(exc.value)
+        assert "Tetragonal" in str(exc.value)
+
+    def test_alternatives_carry_their_phase(self):
+        res = _zro2_provider().resolve(StructureQuery(formula="ZrO2"))
+        systems = {a.crystal_system for a in res.alternatives}
+        assert systems == {"Tetragonal", "Cubic"}
+
+    def test_phase_comes_from_the_real_structure(self):
+        # El fixture Fe-O deriva su simetría de la estructura de verdad:
+        # mp-19770 (Fe2O3) es C2/m, o sea monoclínica.
+        res = _provider().resolve(StructureQuery(formula="Fe2O3"))
+        assert res.crystal_system == "Monoclinic"
 
 
 class TestFormulaFixture:

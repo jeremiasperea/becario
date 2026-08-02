@@ -86,7 +86,15 @@ def resolve_relaxed_structure(
     _reject_if_unfinished(cluster, run, job_name)
 
     contcar_path = f"{run_dir}/CONTCAR"
-    if not cluster.file_exists(contcar_path):
+    exists = cluster.file_exists(contcar_path)
+    if exists is None:
+        # No se pudo preguntar. Decir "no tiene CONTCAR" mandaría a mirar una
+        # corrida que puede estar perfecta, cuando el problema es el acceso.
+        raise RelaxedSourceError(
+            f"⚠️ No pude consultar {run_dir}: no llegué al cluster. No sé si "
+            f"la corrida {job_name} tiene CONTCAR. No armé nada."
+        )
+    if not exists:
         raise RelaxedSourceError(
             f"⚠️ La corrida {job_name} no tiene CONTCAR en {run_dir}. "
             "Puede que VASP nunca haya llegado a escribirlo. No armé nada."

@@ -10,10 +10,18 @@ import json
 from pathlib import Path
 
 from pymatgen.core import Structure
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 _FIXTURE = (
     Path(__file__).parent / "fixtures" / "materials_project" / "fe_o_system.json"
 )
+
+
+class _Symmetry:
+    """La parte de `SymmetryData` que el adaptador mira."""
+
+    def __init__(self, crystal_system: str) -> None:
+        self.crystal_system = crystal_system
 
 
 class FixtureDoc:
@@ -24,6 +32,50 @@ class FixtureDoc:
         self.formula_pretty = data["formula_pretty"]
         self.energy_above_hull = data["energy_above_hull"]
         self.structure = Structure.from_dict(data["structure"])
+        # El sistema cristalino se DERIVA de la estructura del fixture en vez
+        # de guardarse en el JSON: así no puede quedar desincronizado de los
+        # átomos que lo acompañan.
+        self.symmetry = _Symmetry(
+            SpacegroupAnalyzer(self.structure).get_crystal_system().capitalize()
+        )
+
+
+class PolymorphDoc:
+    """Doc con la fase declarada a mano, para ejercitar la SELECCIÓN entre
+    polimorfos.
+
+    OJO: `structure` es de relleno —se reusa una del fixture Fe-O— y NO se
+    corresponde con `crystal_system`. Estos docs sirven para probar el
+    filtrado y el orden por estabilidad, no la física de ninguna fase. Un
+    fixture con las tres fases reales de ZrO2 haría falta recién para probar
+    la construcción, que acá no se toca.
+    """
+
+    def __init__(
+        self,
+        mp_id: str,
+        formula: str,
+        energy_above_hull: float,
+        crystal_system: str,
+        structure: Structure,
+    ) -> None:
+        self.material_id = mp_id
+        self.formula_pretty = formula
+        self.energy_above_hull = energy_above_hull
+        self.symmetry = _Symmetry(crystal_system)
+        self.structure = structure
+
+
+def zro2_polymorph_docs() -> list[PolymorphDoc]:
+    """Las tres fases de ZrO2 por estabilidad: monoclínica (la de ambiente,
+    en el hull), tetragonal y cúbica. Los `energy_above_hull` reflejan ese
+    orden; las estructuras son de relleno (ver `PolymorphDoc`)."""
+    filler = fe_o_docs()[0].structure
+    return [
+        PolymorphDoc("mp-2858", "ZrO2", 0.0, "Monoclinic", filler),
+        PolymorphDoc("mp-1565", "ZrO2", 0.045, "Tetragonal", filler),
+        PolymorphDoc("mp-1018721", "ZrO2", 0.089, "Cubic", filler),
+    ]
 
 
 def fe_o_docs() -> list[FixtureDoc]:

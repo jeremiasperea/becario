@@ -15,6 +15,7 @@ from becario.application.handlers.calc import (
     _resolve_structure,
 )
 from becario.domain.models import (
+    StructureAlternative,
     StructureResolution,
     StructureResolutionError,
     StructureResolutionReason,
@@ -50,6 +51,99 @@ class TestMpNote:
         note = _mp_note(_resolution(0.008))
         assert "más estable" in note
         assert "E_hull=0.008" in note
+
+
+def _zro2_resolution(chosen="Monoclinic", others=("Tetragonal", "Cubic")):
+    """Resolución de un compuesto con polimorfos, como la devuelve MP: gana
+    el del hull y los demás viajan en `alternatives`."""
+    return StructureResolution(
+        atoms=None,
+        mp_id="mp-2858",
+        formula="ZrO2",
+        spacegroup="P2_1/c",
+        crystal_system=chosen,
+        energy_above_hull=0.0,
+        alternatives=tuple(
+            StructureAlternative(
+                mp_id=f"mp-{i}", formula="ZrO2",
+                energy_above_hull=0.04 * (i + 1), crystal_system=s,
+            )
+            for i, s in enumerate(others)
+        ),
+        # `phases` las trae todas; `alternatives` viene recortada por
+        # estabilidad. La pregunta se arma con las primeras.
+        phases=(chosen,) + tuple(others),
+    )
+
+
+class TestPhaseIsAsked:
+    """Un compuesto con varias fases: se pregunta en vez de devolver la del
+    hull sin avisar. Para ZrO2 la del hull es la monoclínica —correcta a
+    temperatura ambiente— pero quien busca la tetragonal de un recubrimiento
+    recibiría otra estructura sin enterarse."""
+
+    def test_asks_when_there_are_other_phases(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution())
+        out = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="ZrO2"))
+        assert isinstance(out, Reply)
+        assert out.awaiting_params
+        # Las fases se ofrecen por su nombre, que es como se las pide.
+        assert "monoclínica" in out.text
+        assert "tetragonal" in out.text
+        assert "cúbica" in out.text
+
+    def test_requested_phase_travels_to_the_query(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution("Tetragonal", ()))
+        out = _resolve_structure(
+            _svc(fake), _ctx(), VaspCalcRequest(formula="ZrO2", crystal="tetragonal")
+        )
+        assert not isinstance(out, Reply)
+        assert fake.calls[0].crystal_system == "Tetragonal"
+
+    def test_single_phase_does_not_ask(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution("Monoclinic", ()))
+        out = _resolve_structure(_svc(fake), _ctx(), VaspCalcRequest(formula="ZrO2"))
+        assert not isinstance(out, Reply)
+
+    def test_mp_id_is_an_explicit_choice_and_never_asks(self):
+        # Pedir un polimorfo por su id ya ES elegir la fase.
+        fake = FakeStructureProvider(resolution=_zro2_resolution())
+        out = _resolve_structure(
+            _svc(fake), _ctx(), VaspCalcRequest(formula="ZrO2", mp_id="mp-1565")
+        )
+        assert not isinstance(out, Reply)
+
+    def test_offers_phases_that_the_alternatives_would_hide(self):
+        """Las fases salen de `phases`, no de `alternatives`.
+
+        Caso real de MP: ZrO2 tiene 20 estructuras y la cúbica es la 16ª por
+        energía, así que no entra en las 5 alternativas. Si la pregunta se
+        armara con ellas, escondería justo la fase tipo fluorita."""
+        res = StructureResolution(
+            atoms=None, mp_id="mp-2858", formula="ZrO2", spacegroup="P2_1/c",
+            crystal_system="Monoclinic", energy_above_hull=0.0,
+            alternatives=(
+                StructureAlternative("mp-776404", "ZrO2", 0.0095, "Orthorhombic"),
+            ),
+            phases=("Cubic", "Monoclinic", "Orthorhombic", "Tetragonal"),
+        )
+        out = _resolve_structure(
+            _svc(FakeStructureProvider(resolution=res)), _ctx(),
+            VaspCalcRequest(formula="ZrO2"),
+        )
+        assert isinstance(out, Reply)
+        assert "cúbica" in out.text      # no está entre las alternativas
+        assert "tetragonal" in out.text  # tampoco
+
+    def test_prototype_is_not_a_phase_filter(self):
+        # 'fluorita' es un prototipo de ASE, no un sistema cristalino: no
+        # debe viajar como filtro de fase a MP.
+        fake = FakeStructureProvider(resolution=_zro2_resolution("Cubic", ()))
+        _resolve_structure(
+            _svc(fake), _ctx(),
+            VaspCalcRequest(formula="ZrO2", crystal="fluorita", lattice_a=5.07),
+        )
+        assert fake.calls[0].crystal_system is None
 
 
 def _svc(provider=None, key="secret", calc_runs=None):

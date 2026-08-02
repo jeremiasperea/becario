@@ -18,12 +18,14 @@ from becario.domain.models import (
     PlanStep,
     RemoteDirRequest,
     SlurmJobRequest,
+    StructureQuery,
     StructureRequest,
     ViewFileRequest,
     ASE_CRYSTALS,
     is_plausible_formula,
     needs_explicit_lattice,
     normalize_crystal,
+    normalize_crystal_system,
 )
 
 
@@ -398,6 +400,58 @@ class TestNormalizeCrystal:
         assert req.crystal == "fluorite"
         with pytest.raises(ValidationError, match="red cristalina inválida"):
             StructureRequest(formula="ZrO2", crystal="perovskita", lattice_a=5.07)
+
+
+class TestNormalizeCrystalSystem:
+    """El sistema cristalino es OTRO vocabulario que el prototipo de ASE: en
+    materiales una fase se nombra por su sistema ("la ZrO2 tetragonal"), y
+    los nombres mineralógicos (fluorita, rocksalt) son de química."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("monoclínica", "Monoclinic"),
+            ("monoclinica", "Monoclinic"),
+            ("Monoclinic", "Monoclinic"),
+            ("tetragonal", "Tetragonal"),
+            ("cúbica", "Cubic"),
+            ("cubic", "Cubic"),
+            ("ortorrómbica", "Orthorhombic"),
+            ("romboédrica", "Trigonal"),
+            ("hexagonal", "Hexagonal"),
+            ("triclínica", "Triclinic"),
+        ],
+    )
+    def test_known_systems(self, raw, expected):
+        assert normalize_crystal_system(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["", "fluorita", "rocksalt", "perovskita", "fcc"])
+    def test_not_a_crystal_system(self, raw):
+        assert normalize_crystal_system(raw) is None
+
+    def test_query_normalizes_and_rejects(self):
+        q = StructureQuery(formula="ZrO2", crystal_system="tetragonal")
+        assert q.crystal_system == "Tetragonal"
+        with pytest.raises(ValidationError, match="sistema cristalino inválido"):
+            StructureQuery(formula="ZrO2", crystal_system="fluorita")
+
+    def test_the_formula_decides_which_vocabulary_wins(self):
+        """'monoclínica' es ambigua: prototipo `mcl` de ASE o fase
+        monoclínica. La fórmula desempata, porque `mcl` pide UN átomo y no
+        sirve para un compuesto."""
+        assert StructureRequest(
+            formula="Si", crystal="monoclínica"
+        ).crystal == "mcl"
+        assert StructureRequest(
+            formula="ZrO2", crystal="monoclínica", lattice_a=5.2
+        ).crystal == "Monoclinic"
+
+    def test_unambiguous_names_do_not_depend_on_the_formula(self):
+        # 'fluorita' solo existe como prototipo; 'triclínica' solo como fase.
+        assert StructureRequest(
+            formula="ZrO2", crystal="fluorita", lattice_a=5.07
+        ).crystal == "fluorite"
+        assert StructureRequest(formula="Si", crystal="diamante").crystal == "diamond"
 
 
 class TestNeedsExplicitLattice:

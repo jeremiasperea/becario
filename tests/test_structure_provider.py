@@ -145,7 +145,12 @@ class TestConfigMpApiKey:
         monkeypatch.setenv("BECARIO_MP_API_KEY", "secret123")
         assert Settings.from_env().mp_api_key == "secret123"
 
-    def test_from_env_defaults_empty_when_absent(self, monkeypatch):
+    def test_from_env_defaults_empty_when_absent(self, monkeypatch, tmp_path):
+        # `from_env` carga el `.env` del repo, así que sin aislarlo este test
+        # dependía de que la máquina de quien lo corre NO tuviera la key
+        # configurada: pasaba por ausencia, no por comportamiento. Se apunta
+        # `ENV_PATH` a un archivo inexistente (`load_local_env` retorna).
+        monkeypatch.setattr("becario.config.ENV_PATH", tmp_path / "no.env")
         monkeypatch.setenv("BECARIO_BOT_TOKEN", "token")
         monkeypatch.setenv("BECARIO_SSH_HOST", "host")
         monkeypatch.delenv("BECARIO_MP_API_KEY", raising=False)

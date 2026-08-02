@@ -252,7 +252,13 @@ class SSHClusterGateway:
                 self._home_dir = result.stdout.strip()
         return self._home_dir
 
-    def file_exists(self, remote_path: str) -> bool:
+    def file_exists(self, remote_path: str) -> Optional[bool]:
+        """`True`/`False` si se pudo preguntar; `None` si no (ver el puerto).
+
+        `FileNotFoundError` es una respuesta del servidor: el archivo no
+        está. Un `SSHException`/`OSError` es otra cosa —no hubo conversación—
+        y devolver `False` ahí equivalía a afirmar "no existe" sin haber
+        podido mirar."""
         try:
             client = self._connection()
             sftp = client.open_sftp()
@@ -265,7 +271,7 @@ class SSHClusterGateway:
             return False
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SFTP (stat %s): %s", remote_path, exc)
-            return False
+            return None
 
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
         try:
