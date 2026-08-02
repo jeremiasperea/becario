@@ -116,7 +116,16 @@ class ClusterGateway(Protocol):
         """Home remoto de la cuenta, para resolver rutas absolutas."""
         ...
 
-    def file_exists(self, remote_path: str) -> bool: ...
+    def file_exists(self, remote_path: str) -> Optional[bool]:
+        """¿Existe el archivo remoto? `None` si NO SE PUDO AVERIGUAR.
+
+        Los tres desenlaces son distintos y quien llama necesita separarlos:
+        'no está' se arregla poniendo el archivo, 'no pude preguntar' se
+        arregla levantando el cluster. Colapsarlos en `False` mandaba al
+        usuario a revisar el lugar equivocado.
+
+        Misma convención que `list_dir`: `None` es 'no se pudo'."""
+        ...
 
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
         """Nombres dentro de un directorio remoto; None si no se pudo leer."""

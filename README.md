@@ -207,6 +207,22 @@ construcción de comandos SSH (sin conexión real, interceptando `_run`) y
 generación de estructuras con ASE real (bulk, moléculas G2, superceldas,
 POSCAR válidos releídos con `ase.io.read`).
 
+### Consola local (sin Telegram)
+
+```bash
+.venv/bin/python scripts/consola.py [user_id]
+```
+
+`BecarioService` no sabe nada de Telegram —recibe `(chat_id, user_id, texto)`
+y devuelve un `Reply`—, así que se lo puede manejar desde la terminal. Sirve
+para probar ruteo, repreguntas y generación de inputs sin el ida y vuelta del
+chat, con los logs en la misma pantalla. Sin `user_id` usa el primero del
+roster.
+
+**No reemplaza la prueba en Telegram**: los botones ✅ ❌ ✏️ viajan por
+callbacks, así que todo lo que dependa de apretar uno —confirmar un envío,
+modificar un plan— hay que probarlo en el chat.
+
 ## Estructuras atómicas (ASE)
 
 `modificar_estructura` construye la estructura **localmente** con ASE y la

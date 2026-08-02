@@ -163,7 +163,10 @@ class FakeCluster:
     def home_dir(self) -> Optional[str]:
         return f"/home/{self.ssh_user}"
 
-    def file_exists(self, remote_path: str) -> bool:
+    def file_exists(self, remote_path: str) -> Optional[bool]:
+        # `None` = no se pudo averiguar (cluster caído): distinto de "no está".
+        if getattr(self, "unreachable", False):
+            return None
         return remote_path in self.existing_files
 
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
@@ -939,7 +942,26 @@ class TestPrepareCalc:
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
         assert not reply.needs_confirmation
         assert "POTCAR" in reply.text
+        assert "No encontré" in reply.text
         assert factory.gateways["alice"].uploaded_dirs == []
+
+    def test_unreachable_cluster_is_not_reported_as_missing_potcar(self, env):
+        """Un cluster caído decía "No encontré POTCAR para Si": mandaba a
+        revisar la biblioteca de pseudopotenciales cuando lo que había que
+        hacer era levantar el cluster. Son dos arreglos distintos."""
+        service, router, factory, *_ = env
+        factory.gateways  # fuerza la creación del gateway de alice
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"formula": "Zr"})
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        gw = factory.gateways["alice"]
+        gw.unreachable = True
+
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"formula": "Zr"})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert "no llegué al cluster" in reply.text
+        # Y NO afirma que falte el pseudopotencial, que no pudo mirar.
+        assert "No encontré POTCAR" not in reply.text
+        assert not reply.needs_confirmation
 
     def test_confirm_submits_and_tracks_workflow(self, env):
         service, router, factory, *_, tracker = env

@@ -51,7 +51,8 @@ class FakeCalcRuns:
 class FakeCluster:
     """Cluster con archivos en memoria. `state` es lo que devuelve sacct."""
 
-    def __init__(self, files=None, state="COMPLETED"):
+    def __init__(self, files=None, state="COMPLETED", unreachable=False):
+        self.unreachable = unreachable
         self.files = files if files is not None else {
             f"{RUN_DIR}/CONTCAR": _contcar_text(),
             f"{RUN_DIR}/INCAR": "NSW = 180\nIBRION = 2\n",
@@ -63,6 +64,9 @@ class FakeCluster:
         return self.state
 
     def file_exists(self, path):
+        # `None` = no se pudo averiguar (cluster caído), distinto de False.
+        if self.unreachable:
+            return None
         return path in self.files
 
     def read_file(self, path, max_bytes=None):
@@ -211,3 +215,27 @@ class TestLosAvisosCitanElManual:
         cluster = FakeCluster()
         cluster.files[f"{RUN_DIR}/INCAR"] = "IBRION = 2\n"
         assert "§6.20" in _resolve(cluster=cluster).warning
+
+
+class TestUnreachableClusterIsNotAMissingFile:
+    """"No pude preguntar" y "no está" son diagnósticos distintos.
+
+    Antes `file_exists` devolvía False en los dos casos, así que un cluster
+    caído se reportaba como "la corrida no tiene CONTCAR": mandaba a revisar
+    una corrida que puede estar perfecta.
+    """
+
+    def test_says_it_could_not_ask(self):
+        with pytest.raises(RelaxedSourceError) as exc:
+            _resolve(cluster=FakeCluster(unreachable=True))
+        msg = exc.value.message
+        assert "no llegué al cluster" in msg
+        # Y NO afirma nada sobre el CONTCAR, que no pudo mirar.
+        assert "no tiene CONTCAR" not in msg
+
+    def test_a_real_absence_still_says_missing(self):
+        cluster = FakeCluster()
+        del cluster.files[f"{RUN_DIR}/CONTCAR"]
+        with pytest.raises(RelaxedSourceError) as exc:
+            _resolve(cluster=cluster)
+        assert "no tiene CONTCAR" in exc.value.message

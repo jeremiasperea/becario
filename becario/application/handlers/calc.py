@@ -495,7 +495,28 @@ def _generate_and_upload(
             f"{svc._potcar_dir}/{element}{suffix}/POTCAR"
             for suffix in svc._POTCAR_VARIANTS
         ]
-        found = next((c for c in candidates if ctx.cluster.file_exists(c)), None)
+        found = None
+        unreachable = False
+        for candidate in candidates:
+            exists = ctx.cluster.file_exists(candidate)
+            if exists:
+                found = candidate
+                break
+            if exists is None:
+                # No se pudo preguntar. Se sigue probando las otras variantes
+                # —el cluster puede volver— pero se recuerda, porque si
+                # ninguna aparece la conclusión NO es "no está".
+                unreachable = True
+        if found is None and unreachable:
+            return Reply(
+                text=(
+                    f"⚠️ No pude consultar la biblioteca de POTCAR en "
+                    f"{svc._potcar_dir}: no llegué al cluster.\n"
+                    "No es que falte el pseudopotencial — no pude ni "
+                    "preguntar. Revisá que el cluster esté levantado y "
+                    "volvé a intentar."
+                )
+            )
         if found is None:
             tried = ", ".join(f"{element}{s}" for s in svc._POTCAR_VARIANTS)
             return Reply(
