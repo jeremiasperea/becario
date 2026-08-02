@@ -13,10 +13,17 @@ Uso:  .venv/bin/python scripts/consola.py [user_id]
 Se corre desde la raíz del repo (necesita `main.py` y el `.env`).
 """
 import logging
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Antes de leer la config: `build_bot` construye el transcriptor de voz, que
+# baja el modelo de Whisper la primera vez. Acá se escribe, no se dicta, así
+# que esa descarga es puro tiempo perdido — y colgó este script 33 minutos
+# antes de que existiera esta línea. El entorno gana sobre el `.env`.
+os.environ["BECARIO_WHISPER_MODEL"] = "off"
 
 from becario.config import Settings  # noqa: E402
 
