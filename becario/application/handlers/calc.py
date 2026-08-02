@@ -368,17 +368,17 @@ def _resolve_structure(
 
 
 def _other_phases(resolution: "StructureResolution") -> list[str]:
-    """Fases DISTINTAS de la elegida que MP ofrece para ese material.
+    """Fases DISTINTAS de la elegida que la fuente ofrece para ese material.
 
-    Solo cuentan las que tienen sistema conocido: una alternativa sin
-    simetría no se puede nombrar, y ofrecer "la otra" sin decir cuál no
-    ayuda a elegir."""
+    Sale de `resolution.phases` y NO de `alternatives`: las alternativas
+    vienen ordenadas por estabilidad y recortadas, así que una fase poco
+    estable queda afuera aunque exista. Medido contra MP: de las 20
+    estructuras de ZrO2, la cúbica —la de tipo fluorita— es la 16ª por
+    energía; listarla desde las alternativas la habría escondido justo en la
+    pregunta que existe para no esconder fases.
+    """
     chosen = resolution.crystal_system
-    seen: list[str] = []
-    for alt in resolution.alternatives:
-        if alt.crystal_system and alt.crystal_system != chosen and alt.crystal_system not in seen:
-            seen.append(alt.crystal_system)
-    return seen
+    return [p for p in resolution.phases if p and p != chosen]
 
 
 def _ask_for_phase(

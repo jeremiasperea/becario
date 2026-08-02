@@ -1070,6 +1070,14 @@ class StructureResolution:
     # inventa 0.0 — la nota humana omite la afirmación de estabilidad si es None.
     energy_above_hull: Optional[float] = None
     alternatives: tuple[StructureAlternative, ...] = ()
+    # TODOS los sistemas cristalinos que ese material tiene en la fuente.
+    # Separado de `alternatives` porque responden preguntas distintas:
+    # `alternatives` es "¿no querrías otro material?" (ordenadas por
+    # estabilidad y recortadas), y esto es "¿qué fases hay de ESTE?". Medido
+    # contra MP: ZrO2 tiene 20 estructuras en 5 sistemas y la cúbica —la de
+    # tipo fluorita— queda 16ª por energía, o sea afuera del recorte. Listar
+    # las fases desde las alternativas la habría escondido.
+    phases: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------

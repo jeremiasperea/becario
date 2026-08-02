@@ -110,6 +110,9 @@ class MaterialsProjectProvider:
     ) -> StructureResolution:
         if not docs:
             raise StructureResolutionError(StructureResolutionReason.NO_MATCH)
+        # Se calcula ANTES de filtrar y sin recortar: son todas las fases que
+        # existen, no las que sobrevivieron al recorte por estabilidad.
+        phases = tuple(sorted({_system_of(d) for d in docs if _system_of(d)}))
         if crystal_system:
             # Fase pedida: se filtra ANTES de ordenar por estabilidad. Sin
             # esto ganaba siempre el polimorfo del hull, o sea que pedir "la
@@ -143,6 +146,7 @@ class MaterialsProjectProvider:
             energy_above_hull=float(chosen.energy_above_hull or 0.0),
             alternatives=alternatives,
             crystal_system=_system_of(chosen),
+            phases=phases,
         )
 
 
@@ -187,6 +191,7 @@ def _to_resolution(
     energy_above_hull: Optional[float],
     alternatives: tuple,
     crystal_system: str = "",
+    phases: tuple = (),
 ) -> StructureResolution:
     sga = SpacegroupAnalyzer(structure)
     primitive = sga.get_primitive_standard_structure()
@@ -202,4 +207,5 @@ def _to_resolution(
         crystal_system=crystal_system or sga.get_crystal_system().capitalize(),
         energy_above_hull=energy_above_hull,
         alternatives=alternatives,
+        phases=phases,
     )

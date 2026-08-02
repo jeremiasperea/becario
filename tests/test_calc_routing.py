@@ -70,6 +70,9 @@ def _zro2_resolution(chosen="Monoclinic", others=("Tetragonal", "Cubic")):
             )
             for i, s in enumerate(others)
         ),
+        # `phases` las trae todas; `alternatives` viene recortada por
+        # estabilidad. La pregunta se arma con las primeras.
+        phases=(chosen,) + tuple(others),
     )
 
 
@@ -109,6 +112,28 @@ class TestPhaseIsAsked:
             _svc(fake), _ctx(), VaspCalcRequest(formula="ZrO2", mp_id="mp-1565")
         )
         assert not isinstance(out, Reply)
+
+    def test_offers_phases_that_the_alternatives_would_hide(self):
+        """Las fases salen de `phases`, no de `alternatives`.
+
+        Caso real de MP: ZrO2 tiene 20 estructuras y la cúbica es la 16ª por
+        energía, así que no entra en las 5 alternativas. Si la pregunta se
+        armara con ellas, escondería justo la fase tipo fluorita."""
+        res = StructureResolution(
+            atoms=None, mp_id="mp-2858", formula="ZrO2", spacegroup="P2_1/c",
+            crystal_system="Monoclinic", energy_above_hull=0.0,
+            alternatives=(
+                StructureAlternative("mp-776404", "ZrO2", 0.0095, "Orthorhombic"),
+            ),
+            phases=("Cubic", "Monoclinic", "Orthorhombic", "Tetragonal"),
+        )
+        out = _resolve_structure(
+            _svc(FakeStructureProvider(resolution=res)), _ctx(),
+            VaspCalcRequest(formula="ZrO2"),
+        )
+        assert isinstance(out, Reply)
+        assert "cúbica" in out.text      # no está entre las alternativas
+        assert "tetragonal" in out.text  # tampoco
 
     def test_prototype_is_not_a_phase_filter(self):
         # 'fluorita' es un prototipo de ASE, no un sistema cristalino: no
