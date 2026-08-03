@@ -100,7 +100,7 @@ def build_bot(settings: Settings) -> TelegramBot:
         potcar_dir=settings.potcar_dir,
         remote_base=settings.remote_base,
         calc_runs=calc_runs,
-        edit_ttl_seconds=settings.confirmation_ttl_seconds,
+        edit_ttl_seconds=settings.pending_ttl_seconds,
         decision_log=decision_log,
         structure_provider=structure_provider,
         mp_api_key=settings.mp_api_key,

@@ -233,7 +233,7 @@ class TelegramBot:
         elif action == "modify":
             reply = await self._run_blocking(
                 chat, self._service.start_modification, token,
-                requester_id=query.from_user.id,
+                requester_id=query.from_user.id, chat_id=chat,
             )
         else:
             reply = Reply(text="⚠️ Acción desconocida.")
@@ -258,6 +258,16 @@ class TelegramBot:
     # Cierre del loop: aviso proactivo cuando un trabajo termina
     # ------------------------------------------------------------------
     async def _on_monitor_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Pedidos que se quedaron esperando una respuesta que no llegó. Va
+        # ANTES de los trabajos y fuera del guard del monitor: cerrar una
+        # consulta abierta no depende de que haya seguimiento configurado.
+        for chat_id, text in self._service.sweep_expired_pendings():
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+                await self._log_chat(chat_id, "bot", text)
+            except Exception as exc:
+                logger.error("No pude avisar el vencimiento a chat_id=%s: %s", chat_id, exc)
+
         if self._job_monitor is None:  # pragma: no cover - guard defensivo
             return
         for note in self._job_monitor.poll_and_notify():

@@ -57,9 +57,14 @@ class FakeService:
         self.calls.append(("reject", token, requester_id))
         return self._reply
 
-    def start_modification(self, token: str, requester_id: int) -> Reply:
+    def start_modification(self, token: str, requester_id: int, chat_id: int) -> Reply:
         self.calls.append(("modify", token, requester_id))
         return self._reply
+
+    def sweep_expired_pendings(self) -> list[tuple[int, str]]:
+        """Pedidos vencidos a avisar. Los tests que no lo ejercitan devuelven
+        vacío; `TestExpiryNotice` lo sobreescribe."""
+        return list(getattr(self, "expired", []))
 
 
 class FakeVoiceFile:
