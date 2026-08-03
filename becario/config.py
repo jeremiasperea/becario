@@ -96,6 +96,13 @@ class Settings:
     db_path: str = "becario.db"
     structures_dir: str = "./structures"
     confirmation_ttl_seconds: float = 600.0
+    # TTL de los pedidos que quedaron esperando un dato, SEPARADO del de las
+    # confirmaciones. Miden cosas distintas: una confirmación pendiente es
+    # una acción destructiva a un botón de distancia y conviene que caduque
+    # pronto; una repregunta («¿qué fase?») es una decisión de física que
+    # nadie contesta con el reloj corriendo. Atarlos era hacer que alargar
+    # la segunda aflojara la primera.
+    pending_ttl_seconds: float = 1800.0
     monitor_interval_seconds: float = 60.0
     # Cálculos VASP: biblioteca de POTCAR en el cluster (ruta absoluta,
     # con un subdirectorio por elemento: Zr_sv/POTCAR, W/POTCAR…),
@@ -129,6 +136,7 @@ class Settings:
             db_path=os.environ.get("BECARIO_DB_PATH", "becario.db"),
             structures_dir=os.environ.get("BECARIO_STRUCTURES_DIR", "./structures"),
             confirmation_ttl_seconds=_float_env("BECARIO_CONFIRM_TTL", "600"),
+            pending_ttl_seconds=_float_env("BECARIO_PENDING_TTL", "1800"),
             monitor_interval_seconds=_float_env("BECARIO_MONITOR_INTERVAL", "60"),
             potcar_dir=os.environ.get("BECARIO_POTCAR_DIR", "").strip(),
             mp_api_key=os.environ.get("BECARIO_MP_API_KEY", "").strip(),

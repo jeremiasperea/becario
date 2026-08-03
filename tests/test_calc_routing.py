@@ -331,3 +331,41 @@ class TestRelaxedPath:
         )
         assert atoms is not None
         assert "OJO" in note and "NO está relajada" in note
+
+
+class TestMpNoteDoesNotOverclaimStability:
+    """Con una fase pedida, lo elegido es lo más estable DE ESA FASE.
+
+    Decir "la más estable" a secas se contradice con su propio número: si lo
+    fuera, E_hull sería 0. Y es la última pantalla antes de confirmar un
+    cálculo de días — el lugar donde una afirmación falsa sobre la física
+    cuesta más caro.
+    """
+
+    def test_with_a_requested_phase_it_scopes_the_claim(self):
+        note = _mp_note(_zro2_resolution("Tetragonal", ()), "Tetragonal")
+        assert "la más estable de la fase tetragonal" in note
+
+    def test_a_phase_above_the_hull_is_flagged(self):
+        res = StructureResolution(
+            atoms=None, mp_id="mp-2574", formula="ZrO2", spacegroup="P4_2/nmc",
+            crystal_system="Tetragonal", energy_above_hull=0.027,
+        )
+        note = _mp_note(res, "Tetragonal")
+        assert "no es el estado fundamental" in note
+        assert "0.027" in note
+
+    def test_the_ground_state_of_the_phase_is_not_flagged(self):
+        res = StructureResolution(
+            atoms=None, mp_id="mp-2858", formula="ZrO2", spacegroup="P2_1/c",
+            crystal_system="Monoclinic", energy_above_hull=0.0,
+        )
+        assert "no es el estado fundamental" not in _mp_note(res, "Monoclinic")
+
+    def test_without_a_phase_the_old_wording_stays(self):
+        res = StructureResolution(
+            atoms=None, mp_id="mp-19770", formula="Fe2O3", spacegroup="C2/m",
+            energy_above_hull=0.0,
+        )
+        note = _mp_note(res)
+        assert "la más estable (E_hull=0.000 eV/át.)" in note

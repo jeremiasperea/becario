@@ -96,6 +96,10 @@ class _PendingEdit:
 
     steps: list[tuple[Intent, dict]]
     created_at: float = field(default_factory=time.time)
+    # A qué chat avisarle cuando venza. Sin esto el vencimiento solo se
+    # podría contar cuando el usuario vuelve a escribir, que es tarde: ya
+    # se quedó esperando una respuesta que nunca iba a llegar.
+    chat_id: int = 0
     # Paso (1-based) al que le faltaba un dato, cuando el pendiente lo armó
     # un handler vía `Reply.awaiting_params` en vez del botón ✏️ Modificar.
     # Sabiéndolo no hace falta targetear la respuesta: ya conocemos el hueco,
@@ -176,7 +180,7 @@ class BecarioService:
         )
 
         # ¿Está describiendo un cambio a un plan que pidió modificar?
-        edit = self._pop_pending_edit(user_id)
+        edit, expired = self._pop_pending_edit(user_id)
         if edit is not None:
             return self._apply_edit(ctx, edit, text)
 
@@ -193,6 +197,15 @@ class BecarioService:
             ctx = replace(ctx, decision_id=decision_id)
 
         reply = self._dispatch_plan(ctx, plan)
+        if expired is not None and reply.text == HELP_TEXT:
+            # El mensaje no se entendió Y había un pedido vencido: casi
+            # seguro estaba contestando la repregunta («tetragonal»), que
+            # sola no significa nada. Decir "no te entendí" es cierto pero
+            # inútil — el usuario cree que se explicó mal cuando en realidad
+            # nos olvidamos de lo que le habíamos preguntado. Solo se pisa
+            # el HELP_TEXT: un pedido nuevo que SÍ se entiende se ejecuta
+            # normalmente, sin avisos sobre lo que caducó.
+            reply = Reply(text=self._expired_pending_text(expired), ok=False)
         # Un paso que falló al ejecutarse marca la decisión como 'error':
         # señal débil (pudo fallar el cluster, no el ruteo) pero separa
         # estos casos de los 'routed' limpios al armar el dataset.
@@ -333,7 +346,7 @@ class BecarioService:
                 # estante y el próximo mensaje lo completa, en vez de
                 # obligar al usuario a repetirlo entero.
                 self._arm_pending_edit(
-                    ctx.user_id, [(step.action, dict(step.parametros))]
+                    ctx.user_id, ctx.chat_id, [(step.action, dict(step.parametros))]
                 )
             return reply
 
@@ -506,7 +519,7 @@ class BecarioService:
                     # esperando, así que el cálculo omitido corre en cuanto
                     # la estructura se pueda armar.
                     self._arm_pending_edit(
-                        ctx.user_id, self._plan_steps_as_requests(plan),
+                        ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan),
                         awaiting_index=awaiting[0],
                     )
                     return Reply(
@@ -551,7 +564,7 @@ class BecarioService:
         result = PlanExecutor().run(step_fns)
         if awaiting:
             self._arm_pending_edit(
-                ctx.user_id, self._plan_steps_as_requests(plan),
+                ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan),
                 awaiting_index=awaiting[0],
             )
 
@@ -612,25 +625,82 @@ class BecarioService:
     # ------------------------------------------------------------------
     # Modificación de un plan pendiente
     # ------------------------------------------------------------------
-    def _pop_pending_edit(self, user_id: int) -> Optional[_PendingEdit]:
+    def _pop_pending_edit(
+        self, user_id: int
+    ) -> tuple[Optional[_PendingEdit], Optional[_PendingEdit]]:
+        """`(vigente, vencido)`: a lo sumo uno de los dos.
+
+        Se devuelven separados porque "no había nada esperando" y "lo que
+        esperaba se venció" son cosas distintas para quien contesta. Con un
+        solo `None` para ambas, un mensaje que respondía una repregunta
+        —«tetragonal»— se ruteaba en frío y volvía como "no pude interpretar
+        tu pedido": el usuario cree que no lo entendieron cuando en realidad
+        se olvidaron de lo que había preguntado."""
         with self._edits_lock:
             edit = self._pending_edits.pop(user_id, None)
-        if edit is None or (time.time() - edit.created_at) > self._edit_ttl:
-            return None
-        return edit
+        if edit is None:
+            return None, None
+        if (time.time() - edit.created_at) > self._edit_ttl:
+            return None, edit
+        return edit, None
+
+    def _minutos_ttl(self) -> int:
+        return max(1, round(self._edit_ttl / 60))
+
+    def _expired_pending_text(self, edit: _PendingEdit) -> str:
+        """Qué se venció y qué había pedido, para que se pueda retomar.
+
+        Se repite el plan anotado a propósito: quien contestó «tetragonal»
+        20 minutos después ya no se acuerda de con qué venía."""
+        return (
+            f"⌛ Cerré la consulta anterior: no recibí respuesta en "
+            f"{self._minutos_ttl()} minutos.\n\n"
+            f"Lo que tenía anotado era:\n{self._render_plan_context(edit.steps)}\n\n"
+            "Si querés seguir, pedímelo de nuevo completo."
+        )
+
+    def sweep_expired_pendings(self) -> list[tuple[int, str]]:
+        """Cierra los pedidos vencidos y devuelve `(chat_id, aviso)`.
+
+        La llama el tick del monitor, así que el aviso sale SOLO, cuando
+        vence, en vez de esperar a que el usuario escriba. Sin esto el
+        silencio es ambiguo: quien preguntó algo y no contestó a tiempo no
+        tiene forma de distinguir "sigue esperando" de "se olvidó".
+
+        Solo avisa de los que tienen `chat_id`: los armados antes de que
+        existiera este campo no tienen a dónde ir, y se cierran callados."""
+        vencidos: list[tuple[int, _PendingEdit]] = []
+        ahora = time.time()
+        with self._edits_lock:
+            for user_id, edit in list(self._pending_edits.items()):
+                if (ahora - edit.created_at) > self._edit_ttl:
+                    del self._pending_edits[user_id]
+                    vencidos.append((user_id, edit))
+        avisos = []
+        for user_id, edit in vencidos:
+            logger.info("Pedido pendiente vencido para user=%s", user_id)
+            if edit.chat_id:
+                avisos.append((edit.chat_id, self._expired_pending_text(edit)))
+        return avisos
 
     def _arm_pending_edit(
         self,
         user_id: int,
+        chat_id: int,
         steps: list[tuple[Intent, dict]],
         awaiting_index: Optional[int] = None,
     ) -> None:
         """Deja un pedido esperando el próximo mensaje del usuario, con el
         TTL renovado. Lo usan tanto ✏️ Modificar como los handlers que piden
-        un dato faltante (`Reply.awaiting_params`)."""
+        un dato faltante (`Reply.awaiting_params`).
+
+        Pide el `chat_id` además del `user_id` porque cuando el TTL vence
+        el aviso se MANDA (ver `sweep_expired_pendings`), y para eso hay
+        que saber a qué chat. Van como ids sueltos y no como `_Ctx`
+        porque el botón ✏️ (`start_modification`) no tiene contexto."""
         with self._edits_lock:
             self._pending_edits[user_id] = _PendingEdit(
-                steps=steps, awaiting_index=awaiting_index
+                steps=steps, awaiting_index=awaiting_index, chat_id=chat_id
             )
 
     @staticmethod
@@ -650,7 +720,7 @@ class BecarioService:
         finalmente se pueda armar."""
         if reply.awaiting_params:
             self._arm_pending_edit(
-                ctx.user_id, self._plan_steps_as_requests(plan), awaiting_index=index
+                ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan), awaiting_index=index
             )
 
     def _render_plan_context(self, steps: list[tuple[Intent, dict]]) -> str:
@@ -683,7 +753,7 @@ class BecarioService:
             new_params = self._router.extract_params(text)
             if not new_params:
                 # Devolver el plan al estante (con TTL renovado) para reintentar.
-                self._arm_pending_edit(ctx.user_id, edit.steps)
+                self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
                 return Reply(
                     text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
                     'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
@@ -701,7 +771,7 @@ class BecarioService:
                 # Sigue faltando el dato, pero lo que SÍ trajo este mensaje ya
                 # está en `merged`: se re-arma con lo acumulado, así el llenado
                 # es progresivo y no se pierde lo respondido hasta acá.
-                self._arm_pending_edit(ctx.user_id, [(intent, merged)])
+                self._arm_pending_edit(ctx.user_id, ctx.chat_id, [(intent, merged)])
             return reply
 
         if edit.awaiting_index is not None:
@@ -717,7 +787,7 @@ class BecarioService:
         if target_index is None or not (1 <= target_index <= n) or not delta:
             # Ambiguo: NUNCA se fusiona ni se ejecuta. Plan al estante, sin
             # tocar, con TTL renovado.
-            self._arm_pending_edit(ctx.user_id, edit.steps)
+            self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
             return Reply(
                 text="🤔 No estoy seguro a qué paso del plan te referís. "
                 "Decímelo apuntando el paso (p. ej. «paso 2: usá la "
@@ -747,7 +817,7 @@ class BecarioService:
         new_params = self._router.extract_params(text)
         if not new_params:
             self._arm_pending_edit(
-                ctx.user_id, edit.steps, awaiting_index=edit.awaiting_index
+                ctx.user_id, ctx.chat_id, edit.steps, awaiting_index=edit.awaiting_index
             )
             return Reply(
                 text="⚠️ No pude sacar el dato de ahí. Repetímelo solo "
@@ -767,7 +837,7 @@ class BecarioService:
         plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
         return self._dispatch_plan(ctx, plan)
 
-    def start_modification(self, token: str, requester_id: int) -> Reply:
+    def start_modification(self, token: str, requester_id: int, chat_id: int) -> Reply:
         """Botón ✏️ Modificar: descarta el plan pendiente y espera que el
         próximo mensaje del usuario describa el cambio."""
         plan = self._confirmations.peek(token)
@@ -785,7 +855,7 @@ class BecarioService:
         if not steps:
             return Reply(text="⚠️ Esta acción no admite modificación.")
         self._confirmations.pop(token)
-        self._arm_pending_edit(requester_id, steps)
+        self._arm_pending_edit(requester_id, chat_id, steps)
         if len(steps) == 1:
             return Reply(
                 text="✏️ Dale, decime qué querés cambiar (p. ej. «subí el ENCUT "

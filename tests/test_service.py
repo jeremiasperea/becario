@@ -1114,7 +1114,7 @@ class TestPlanModification:
     def test_modify_then_message_merges_params(self, env):
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
-        ask = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        ask = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
         assert "qué querés cambiar" in ask.text
 
         # El próximo mensaje solo trae el cambio; el resto se mantiene.
@@ -1128,14 +1128,14 @@ class TestPlanModification:
     def test_modify_consumes_the_pending_action(self, env):
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
         reply = service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
         assert "expiró" in reply.text
 
     def test_foreign_modification_is_blocked(self, env):
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
-        reply = service.start_modification(prep.confirmation_token, requester_id=BOB.telegram_user_id)
+        reply = service.start_modification(prep.confirmation_token, requester_id=BOB.telegram_user_id, chat_id=1)
         assert "no te pertenece" in reply.text.lower()
         # La acción de Alice sigue viva:
         assert service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
@@ -1145,7 +1145,7 @@ class TestPlanModification:
         router.next = RoutedRequest(intent=Intent.CANCEL_JOB, params={"job_id": "777"})
         prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777")
         assert not prep.allow_modify
-        reply = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        reply = service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
         assert "no admite" in reply.text
 
     def test_unintelligible_change_keeps_the_plan_for_retry(self, env):
@@ -1153,7 +1153,7 @@ class TestPlanModification:
         usuario cancele explícitamente."""
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ehh")
@@ -1171,7 +1171,7 @@ class TestPlanModification:
     def test_explicit_cancel_discards_the_plan(self, env):
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelalo")
         assert "descartado" in reply.text
@@ -1182,7 +1182,7 @@ class TestPlanModification:
 
     def test_expired_token_cannot_start_modification(self, env):
         service, *_ = env
-        reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id)
+        reply = service.start_modification("nope", requester_id=ALICE.telegram_user_id, chat_id=1)
         assert "expiró" in reply.text
 
 
@@ -1203,7 +1203,7 @@ class TestMultiStepPlanModification:
     def test_semantic_targeting_updates_the_destructive_step_and_rematerializes_prefix(self, env):
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
         assert len(factory.gateways["alice"].made_dirs) == 1  # materializado al armar el plan
 
         # El LLM identifica semánticamente el paso destructivo (2), sin
@@ -1220,7 +1220,7 @@ class TestMultiStepPlanModification:
     def test_explicit_step_targeting_edits_a_prefix_step(self, env):
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next_edit = (1, {"destino_remoto": "/home/alice/other"})
         reply = service.handle_text(
@@ -1233,7 +1233,7 @@ class TestMultiStepPlanModification:
     def test_ambiguous_edit_reprompts_without_changing_the_plan(self, env):
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next_edit = (None, {"nodos": 4})  # el LLM no está seguro de a qué paso
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cambialo")
@@ -1250,7 +1250,7 @@ class TestMultiStepPlanModification:
     def test_out_of_range_target_index_is_ambiguous(self, env):
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next_edit = (5, {"nodos": 4})  # el plan solo tiene 2 pasos
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cambialo")
@@ -1260,7 +1260,7 @@ class TestMultiStepPlanModification:
     def test_empty_delta_with_target_index_is_ambiguous(self, env):
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next_edit = (2, {})  # target sin cambio real: nada que aplicar
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: algo")
@@ -1275,7 +1275,7 @@ class TestMultiStepPlanModification:
         pedido nuevo, no queda un payload corrupto a mitad de camino."""
         service, router, factory, *_ = env
         prep = self._prepare_composite(service, router)
-        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+        service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
 
         router.next_edit = (2, {"nodos": "no-es-un-numero"})
         reply = service.handle_text(
@@ -2184,3 +2184,83 @@ class TestMissingMillerInMultiStepPlans:
         router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [1, 1, 1]})
         service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la (111)")
         assert router.extract_edit_calls == []
+
+
+class TestExpiredPendingIsExplained:
+    """Un pedido que venció y otro que nunca existió son cosas distintas.
+
+    Antes las dos daban `None` y el mensaje salía por el camino genérico:
+    quien contestaba «tetragonal» tarde recibía "no pude interpretar tu
+    pedido" y creía que se había explicado mal, cuando lo que pasó es que
+    nos olvidamos de lo que le habíamos preguntado.
+    """
+
+    def _arm_expired(self, service, user_id=None):
+        uid = user_id or ALICE.telegram_user_id
+        service._arm_pending_edit(
+            uid, 1, [(Intent.PREPARE_CALC, {"formula": "ZrO2", "tipo_calculo": "relajacion"})],
+            awaiting_index=1,
+        )
+        # Envejecerlo más allá del TTL sin esperar.
+        service._pending_edits[uid].created_at -= service._edit_ttl + 1
+
+    def test_unintelligible_answer_after_expiry_says_so(self, env):
+        service, router, *_ = env
+        self._arm_expired(service)
+        router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="tetragonal"
+        )
+        assert "Cerré la consulta anterior" in reply.text
+        assert "ZrO2" in reply.text, "tiene que recordar de qué venía"
+        assert "No pude interpretar" not in reply.text
+
+    def test_a_new_valid_request_after_expiry_just_runs(self, env):
+        """Lo vencido no debe entrometerse en un pedido que SÍ se entiende."""
+        service, router, *_ = env
+        self._arm_expired(service)
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"formula": "Zr", "red_cristalina": "hcp"}
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el Zr hcp"
+        )
+        assert "Cerré la consulta" not in reply.text
+        assert reply.needs_confirmation
+
+    def test_unintelligible_without_any_pending_keeps_the_help(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.UNKNOWN, params={})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="asdf")
+        assert "No pude interpretar" in reply.text
+
+
+class TestExpirySweepNotifies:
+    """El aviso sale SOLO al vencer, sin esperar a que el usuario escriba:
+    el silencio es ambiguo — no se distingue "sigue esperando" de "se
+    olvidó"."""
+
+    def test_sweep_returns_the_notice_with_its_chat(self, env):
+        service, *_ = env
+        service._arm_pending_edit(
+            ALICE.telegram_user_id, 4242,
+            [(Intent.PREPARE_CALC, {"formula": "ZrO2"})], awaiting_index=1,
+        )
+        service._pending_edits[ALICE.telegram_user_id].created_at -= service._edit_ttl + 1
+        avisos = service.sweep_expired_pendings()
+        assert len(avisos) == 1
+        chat_id, texto = avisos[0]
+        assert chat_id == 4242
+        assert "no recibí respuesta" in texto.lower()
+        assert "ZrO2" in texto
+        # Y se cerró: no se avisa dos veces.
+        assert ALICE.telegram_user_id not in service._pending_edits
+        assert service.sweep_expired_pendings() == []
+
+    def test_a_live_pending_is_not_swept(self, env):
+        service, *_ = env
+        service._arm_pending_edit(
+            ALICE.telegram_user_id, 1, [(Intent.PREPARE_CALC, {"formula": "Zr"})],
+        )
+        assert service.sweep_expired_pendings() == []
+        assert ALICE.telegram_user_id in service._pending_edits

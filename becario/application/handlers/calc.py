@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
 
@@ -364,7 +364,7 @@ def _resolve_structure(
         if phases:
             return _ask_for_phase(req.formula, resolution, phases)
 
-    return resolution.atoms, _mp_note(resolution) + _cut_basis_note(req, resolution.atoms)
+    return resolution.atoms, _mp_note(resolution, system) + _cut_basis_note(req, resolution.atoms)
 
 
 def _other_phases(resolution: "StructureResolution") -> list[str]:
@@ -439,33 +439,49 @@ def _mp_error_reply(exc: StructureResolutionError) -> Reply:
     return Reply(text=text)
 
 
-def _mp_note(resolution) -> str:
-    """Nota humana con el material elegido (el más estable). Las alternativas
-    se listan con su mp-id: el router ya extrae `mp_id`/`fuente_estructura`
-    y `_build_calc_request` los reenvía, así que pedir otro polimorfo por su
-    id es una interacción real — la nota puede ofrecerla honestamente."""
+def _mp_note(resolution, phase: Optional[str] = None) -> str:
+    """Nota humana con el material elegido. Las alternativas se listan con su
+    mp-id: el router ya extrae `mp_id`/`fuente_estructura` y
+    `_build_calc_request` los reenvía, así que pedir otro polimorfo por su id
+    es una interacción real — la nota puede ofrecerla honestamente.
+
+    `phase` es la fase que pidió el usuario, si pidió alguna. Importa para no
+    mentir: con una fase pedida, lo elegido es lo más estable DE ESA FASE, no
+    del material. Sin esta distinción la nota decía "la más estable
+    (E_hull=0.027)", que se contradice sola — si lo fuera, E_hull sería 0.
+    """
     head = (
         f"🧬 Estructura de Materials Project: {resolution.formula} "
         f"({resolution.mp_id}, {resolution.spacegroup})"
     )
-    if resolution.energy_above_hull is None:
+    hull = resolution.energy_above_hull
+    if hull is None:
         # Pedida por su mp-id: no conocemos el hull, así que no afirmamos
         # estabilidad — el usuario eligió este polimorfo a propósito.
         lines = [f"{head} — elegida por su mp-id."]
+    elif phase:
+        fase_es = CRYSTAL_SYSTEM_ES.get(phase, phase)
+        lines = [f"{head} — la más estable de la fase {fase_es} (E_hull={hull:.3f} eV/át.)."]
+        if hull > 0:
+            # El dato que decide si el cálculo tiene sentido: esta fase NO es
+            # el estado fundamental, y a temperatura ambiente el material no
+            # cristaliza así salvo que algo la estabilice.
+            lines.append(
+                f"⚠️ Ojo: no es el estado fundamental (está {hull:.3f} eV/át. "
+                "por encima del convex hull). Es la fase que pediste."
+            )
     else:
-        lines = [
-            f"{head} — la más estable "
-            f"(E_hull={resolution.energy_above_hull:.3f} eV/át.)."
-        ]
+        lines = [f"{head} — la más estable (E_hull={hull:.3f} eV/át.)."]
     if resolution.alternatives:
         alts = "; ".join(
             f"{a.formula} {a.mp_id} (E_hull={a.energy_above_hull:.3f} eV/át.)"
             for a in resolution.alternatives
         )
+        ambito = f"dentro de la fase {CRYSTAL_SYSTEM_ES.get(phase, phase)}" if phase else ""
         lines.append(
-            f"Otras opciones que devolvió MP: {alts}. Se usa automáticamente "
-            "la más estable; si querés otra, pedímela por su mp-id "
-            "(p. ej. «usá mp-19770»)."
+            f"Otras opciones que devolvió MP{' ' + ambito if ambito else ''}: "
+            f"{alts}. Se usa automáticamente la más estable de ellas; si "
+            "querés otra, pedímela por su mp-id (p. ej. «usá mp-19770»)."
         )
     return "\n".join(lines)
 

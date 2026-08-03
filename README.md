@@ -64,7 +64,8 @@ python3 scripts/manage_users.py remove --telegram-id 111111111
 2. **Validación semántica** en el dominio: `SlurmJobRequest`, `JobId`, `HistoryFilter`, `ClusterIdentity` con regexes ancladas en `\A...\Z` (¡no `$`, que permite `\n` final!).
 3. **Quoting sintáctico** en el gateway: todo argumento pasa por `shlex.quote`; el script sbatch viaja por heredoc quoteado.
 4. **SQL siempre parametrizado** (placeholders `?`), y el historial se filtra por `owner_id` asignado por el servicio — nunca por un valor que el LLM pueda sugerir.
-5. **Confirmación humana** con botones inline para `sbatch` y `scancel`; los tokens se consumen una sola vez, expiran (TTL 10 min) y **solo puede confirmarlos quien las pidió** (`requester_id`), aunque el bot se usara en un chat compartido.
+5. **Confirmación humana** con botones inline para `sbatch` y `scancel`; los tokens se consumen una sola vez, expiran (`BECARIO_CONFIRM_TTL`, 10 min) y **solo puede confirmarlos quien las pidió** (`requester_id`), aunque el bot se usara en un chat compartido.
+6. **Pedidos que esperan un dato** (la cara de una losa, la fase de un compuesto) tienen su propio TTL, más largo (`BECARIO_PENDING_TTL`, 30 min): elegir una fase es una decisión de física, no algo que se conteste con el reloj corriendo. Son plazos separados a propósito — una confirmación pendiente es una acción destructiva a un botón de distancia y conviene que caduque pronto; atarlos hacía que alargar una aflojara la otra. Cuando vence, el bot **avisa** («no recibí respuesta en 30 minutos») y repite lo que tenía anotado, en vez de dejar al usuario esperando una respuesta que ya no va a llegar.
 
 ## Setup
 
