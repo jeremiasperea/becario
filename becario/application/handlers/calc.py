@@ -203,18 +203,18 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
     tocar nada) como para el camino que después genera y sube."""
     if svc._calc_inputs is None:
         return Reply(
-            text="⚠️ La preparación de cálculos VASP no está configurada en este bot."
+            text="⚠️ La preparación de cálculos VASP no está configurada en este bot.", ok=False
         )
     formula = params.get("formula") or params.get("formula_quimica")
     if not formula:
         return Reply(
             text="⚠️ Decime qué material querés calcular, p. ej.: "
-            '"relajá los parámetros de red del bulk de W".'
+            '"relajá los parámetros de red del bulk de W".', ok=False
         )
     if not svc._potcar_dir or not svc._potcar_dir.startswith("/"):
         return Reply(
             text="⚠️ Falta configurar la biblioteca de POTCAR del cluster "
-            "(BECARIO_POTCAR_DIR, ruta absoluta) para preparar cálculos VASP."
+            "(BECARIO_POTCAR_DIR, ruta absoluta) para preparar cálculos VASP.", ok=False
         )
 
     kind_raw = str(params.get("tipo_calculo") or "").strip().lower()
@@ -234,7 +234,7 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
     if calc_kind is CalcKind.ENCUT_SCAN and lo and hi:
         step = int(params.get("encut_paso") or 50)
         if step <= 0:
-            return Reply(text="⚠️ El paso del barrido de ENCUT debe ser positivo.")
+            return Reply(text="⚠️ El paso del barrido de ENCUT debe ser positivo.", ok=False)
         encut_values = list(range(int(lo), int(hi) + 1, step))
 
     # Fuente de estructura (Materials Project): el router puede extraer un
@@ -278,7 +278,7 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
             time_limit=params.get("tiempo_limite") or "01:00:00",
         )
     except (ValidationError, ValueError, TypeError) as exc:
-        return Reply(text=f"⚠️ Parámetros de cálculo inválidos:\n{exc}")
+        return Reply(text=f"⚠️ Parámetros de cálculo inválidos:\n{exc}", ok=False)
 
 
 def describe_calc_request(req: "VaspCalcRequest") -> str:
@@ -331,7 +331,7 @@ def _resolve_structure(
     if svc._structure_provider is None or not svc._mp_api_key:
         return Reply(
             text="⚠️ Para calcular compuestos uso Materials Project, pero falta "
-            "configurar la API key (BECARIO_MP_API_KEY)."
+            "configurar la API key (BECARIO_MP_API_KEY).", ok=False
         )
 
     # La fase viaja en `red_cristalina`: en un compuesto ese campo nombra el
@@ -502,7 +502,7 @@ def _generate_and_upload(
     try:
         result = svc._calc_inputs.generate(req, atoms)
     except Exception as exc:  # StructureBuildError y afines
-        return Reply(text=f"⚠️ No pude generar los inputs:\n{exc}")
+        return Reply(text=f"⚠️ No pude generar los inputs:\n{exc}", ok=False)
 
     # POTCAR: una variante por elemento, en el orden de especies del POSCAR.
     potcar_sources: list[str] = []
@@ -531,13 +531,14 @@ def _generate_and_upload(
                     "No es que falte el pseudopotencial — no pude ni "
                     "preguntar. Revisá que el cluster esté levantado y "
                     "volvé a intentar."
-                )
+                ),
+                ok=False,
             )
         if found is None:
             tried = ", ".join(f"{element}{s}" for s in svc._POTCAR_VARIANTS)
             return Reply(
                 text=f"⚠️ No encontré POTCAR para {element} en "
-                f"{svc._potcar_dir} (busqué {tried})."
+                f"{svc._potcar_dir} (busqué {tried}).", ok=False
             )
         potcar_sources.append(found)
 
@@ -547,18 +548,18 @@ def _generate_and_upload(
         if not home:
             return Reply(
                 text="⚠️ No pude resolver el home remoto para ubicar la corrida. "
-                "Revisá la conexión al cluster."
+                "Revisá la conexión al cluster.", ok=False
             )
         base = f"{home}/{base}"
     remote_run_dir = f"{base}/{result.run_name}"
 
     up = ctx.cluster.upload_dir(result.local_dir, remote_run_dir)
     if not up.ok:
-        return Reply(text=f"⚠️ Falló la subida de los inputs: {up.message}")
+        return Reply(text=f"⚠️ Falló la subida de los inputs: {up.message}", ok=False)
 
     cat = ctx.cluster.concat_files(potcar_sources, f"{remote_run_dir}/POTCAR")
     if not cat.ok:
-        return Reply(text=f"⚠️ No pude armar el POTCAR en el cluster: {cat.message}")
+        return Reply(text=f"⚠️ No pude armar el POTCAR en el cluster: {cat.message}", ok=False)
 
     try:
         slurm_req = SlurmJobRequest(
@@ -569,7 +570,7 @@ def _generate_and_upload(
             script_path=f"{remote_run_dir}/run_vasp.sh",
         )
     except (ValidationError, ValueError) as exc:
-        return Reply(text=f"⚠️ Parámetros inválidos para el envío:\n{exc}")
+        return Reply(text=f"⚠️ Parámetros inválidos para el envío:\n{exc}", ok=False)
 
     fingerprint = _calc_fingerprint(req)
     duplicate = duplicate_note(svc, ctx.user_id, slurm_req.job_name, fingerprint)

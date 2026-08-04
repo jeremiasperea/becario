@@ -22,6 +22,7 @@ from becario.domain.models import (
     StructureRequest,
     ViewFileRequest,
     ASE_CRYSTALS,
+    descartar_numeros_inventados,
     is_plausible_formula,
     needs_explicit_lattice,
     normalize_crystal,
@@ -509,3 +510,55 @@ class TestViewFileRequest:
             ViewFileRequest()  # ninguna
         with pytest.raises((ValidationError, ValueError)):
             ViewFileRequest(path="/x/CONTCAR", filename="CONTCAR")  # ambas
+
+
+class TestDescartarNumerosInventados:
+    """Frontera anti-alucinación: un número que no está escrito en el
+    mensaje no entra al pedido.
+
+    Los dos casos que la motivaron llegaron hasta la pantalla de
+    confirmación en producción: un `parametro_red=5.63` inventado al
+    responder una PREGUNTA (que no traía ningún número), y un
+    `puntos_k=[1,1,1]` agregado a un pedido que hablaba de ENCUT, nodos y
+    tiempo. Ninguno de los dos falla solo: entran al INCAR/KPOINTS y la
+    corrida sale con otra física.
+    """
+
+    def test_drops_the_kpoints_nobody_asked_for(self):
+        limpio, fuera = descartar_numeros_inventados(
+            {"encut": 600, "nodos": 2, "puntos_k": [1, 1, 1]},
+            "aumenta el encut a 600, los nodos a 2 y el tiempo 2hs",
+        )
+        assert limpio == {"encut": 600, "nodos": 2}
+        assert fuera == ["puntos_k"]
+
+    def test_drops_a_lattice_parameter_that_was_asked_not_given(self):
+        limpio, fuera = descartar_numeros_inventados(
+            {"red_cristalina": "tetragonal", "parametro_red": 5.63},
+            "segun Materials Project cual es el parametro de red del ZrO2 tetragonal",
+        )
+        assert "parametro_red" not in limpio
+        assert limpio["red_cristalina"] == "tetragonal", "lo no numérico no se toca"
+
+    @pytest.mark.parametrize(
+        "params,texto",
+        [
+            ({"parametro_red": 5.07}, "fluorita a=5.07"),
+            ({"capas": 8}, "que sean 8 capas"),
+            ({"nodos": 2}, "usá 2 nodos"),
+            ({"encut": 600}, "subí el ENCUT a 600"),
+            ({"supercelda": [2, 2, 2]}, "supercelda 2x2x2"),
+        ],
+    )
+    def test_a_number_that_was_written_survives(self, params, texto):
+        limpio, fuera = descartar_numeros_inventados(params, texto)
+        assert limpio == params and fuera == []
+
+    def test_reformatted_and_glued_fields_are_left_alone(self):
+        """`tiempo_limite` se re-formatea ("2hs" -> "02:00:00") y `miller` se
+        escribe pegado ("(001)"): en los dos el chequeo de cifras no
+        distinguiría nada, así que quedan fuera del guard a propósito."""
+        limpio, fuera = descartar_numeros_inventados(
+            {"tiempo_limite": "02:00:00", "miller": [0, 0, 1]}, "la (001) por 2hs"
+        )
+        assert fuera == []
