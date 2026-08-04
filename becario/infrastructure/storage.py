@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -293,6 +294,9 @@ class InMemoryConfirmationStore:
     def __init__(self, ttl_seconds: float = 600.0) -> None:
         self._ttl = ttl_seconds
         self._items: dict[str, PendingPlan] = {}
+        # Ids de tokens ya consumidos, acotado: alcanza para reconocer un
+        # doble toque (segundos) sin crecer sin límite en un proceso largo.
+        self._consumed: deque[str] = deque(maxlen=256)
         self._lock = threading.Lock()
 
     def put(self, plan: PendingPlan) -> str:
@@ -307,9 +311,26 @@ class InMemoryConfirmationStore:
             return None
         return plan
 
+    def status(self, token: str) -> str:
+        """Ver el puerto. Cuatro respuestas, no tres: hay tokens que este
+        proceso no vio nunca —el store es en memoria, así que un reinicio
+        los borra— y de esos NO se puede afirmar que se usaron. Decir "ya
+        se hizo" sobre algo que no nos consta es la clase de mentira
+        creíble que este código viene evitando."""
+        with self._lock:
+            plan = self._items.get(token)
+            consumido = token in self._consumed
+        if plan is not None:
+            return "vencido" if plan.expired(self._ttl) else "vigente"
+        return "consumido" if consumido else "desconocido"
+
     def pop(self, token: str) -> Optional[PendingPlan]:
         with self._lock:
             plan = self._items.pop(token, None)
+            if plan is not None:
+                # Lápida acotada: solo para poder distinguir después "ya se
+                # usó" de "no lo conozco". No guarda el plan, solo el id.
+                self._consumed.append(token)
         if plan is None or plan.expired(self._ttl):
             return None
         return plan

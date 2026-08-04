@@ -81,7 +81,19 @@ NOT_REGISTERED_TEXT = (
 )
 
 FOREIGN_CONFIRMATION_TEXT = "⚠️ Esta confirmación no te pertenece."
+# Se conserva el texto histórico para el caso genérico; los casos que sí se
+# pueden distinguir tienen el suyo (ver `_stale_confirmation_reply`).
 EXPIRED_CONFIRMATION_TEXT = "⌛ Esta confirmación expiró o ya fue usada."
+USED_CONFIRMATION_TEXT = (
+    "✔️ Ese botón ya se usó — la acción se hizo con el primer toque. "
+    "Si no viste la respuesta, pudo perderse en el camino: mirá el chat un "
+    "momento antes de repetir el pedido."
+)
+ALREADY_MODIFYING_TEXT = (
+    "✏️ Ya estás modificando ese plan: apretaste ✏️ y quedó esperando tu "
+    "cambio. Decímelo y sigo (p. ej. «usá 2 nodos», «subí el ENCUT a 600»), "
+    "o escribí «cancelar» para descartarlo."
+)
 
 
 @dataclass
@@ -644,6 +656,25 @@ class BecarioService:
             return None, edit
         return edit, None
 
+    def _stale_confirmation_reply(self, token: str, requester_id: int) -> Reply:
+        """Qué contestar cuando el token ya no sirve. Tres casos, no uno.
+
+        El que importa es el tercero: apretar ✏️ consume el token Y deja el
+        plan esperando el cambio, así que si la respuesta se pierde en la red
+        —pasó: un `ConnectTimeout` al contestarle a Telegram— el segundo
+        toque encontraba el token consumido y decía "expiró". El sistema
+        estaba en el estado CORRECTO, esperando el cambio, y el mensaje decía
+        lo contrario: quien lo leía abandonaba un pedido que seguía vivo.
+        """
+        with self._edits_lock:
+            editando = requester_id in self._pending_edits
+        if editando:
+            return Reply(text=ALREADY_MODIFYING_TEXT, awaiting_params=True)
+        estado = self._confirmations.status(token)
+        if estado == "consumido":
+            return Reply(text=USED_CONFIRMATION_TEXT)
+        return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+
     def _minutos_ttl(self) -> int:
         return max(1, round(self._edit_ttl / 60))
 
@@ -842,7 +873,7 @@ class BecarioService:
         próximo mensaje del usuario describa el cambio."""
         plan = self._confirmations.peek(token)
         if plan is None:
-            return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+            return self._stale_confirmation_reply(token, requester_id)
         if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         # Todo paso que conserva su pedido original (`request_intent`) es
@@ -885,7 +916,7 @@ class BecarioService:
     def confirm(self, token: str, requester_id: int) -> Reply:
         plan = self._confirmations.peek(token)
         if plan is None:
-            return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+            return self._stale_confirmation_reply(token, requester_id)
         if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
 
@@ -897,7 +928,7 @@ class BecarioService:
 
         plan = self._confirmations.pop(token)  # recién ahora se consume
         if plan is None:
-            return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+            return self._stale_confirmation_reply(token, requester_id)
         # El humano avaló el plan: etiqueta el ruteo como correcto aunque
         # la ejecución posterior falle (eso es problema del cluster, no
         # del router).
@@ -956,7 +987,7 @@ class BecarioService:
     def reject(self, token: str, requester_id: int) -> Reply:
         plan = self._confirmations.peek(token)
         if plan is None:
-            return Reply(text=EXPIRED_CONFIRMATION_TEXT)
+            return self._stale_confirmation_reply(token, requester_id)
         if plan.requester_id != requester_id:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         self._confirmations.pop(token)

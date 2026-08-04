@@ -267,6 +267,17 @@ class ConfirmationStore(Protocol):
 
     def pop(self, token: str) -> Optional[PendingPlan]: ...
 
+    def status(self, token: str) -> str:
+        """Por qué `peek` devolvió `None`: `"vigente"`, `"vencido"`,
+        `"consumido"` o `"desconocido"` (nunca visto por este proceso).
+
+        `peek` colapsa dos situaciones distintas en `None`, y quien las
+        muestra necesita separarlas: un plan que venció por TTL se rehace,
+        uno que ya se consumió significa que la acción YA ocurrió — y decirle
+        "expiró" a alguien que acaba de apretar el botón dos veces lo manda a
+        empezar de nuevo algo que en realidad salió bien."""
+        ...
+
     def purge_expired(self) -> int: ...
 
 
