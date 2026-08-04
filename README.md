@@ -192,6 +192,25 @@ mejor que el launcher: el init system ya sabe ordenar y reiniciar servicios, y
 `main.py` mantiene su fail-fast. `start_becario.py` es para la máquina de
 escritorio, donde no hay nadie ordenando el arranque.
 
+> **Este es el caso donde el store de modelos muerde.** La unidad de arriba
+> depende de `ollama.service` —el Ollama **del sistema**, que corre como
+> usuario `ollama`— mientras el bot corre como `User=jeremias`. Son dos homes
+> distintos, así que los modelos que bajaste con tu usuario **no existen** para
+> ese servidor. El fail-fast hace lo suyo y el bot no arranca:
+> `❌ El modelo 'X' no está instalado en Ollama.` — y la lista de "modelos
+> disponibles" que imprime abajo es la del servidor de sistema, no la tuya.
+>
+> Dos salidas, según qué quieras:
+>
+> - **Compartir el Ollama del sistema** (lo normal en un servidor): bajá los
+>   modelos con `sudo -u ollama ollama pull <modelo>`, una vez por modelo.
+> - **Un Ollama por usuario**: sacá `Wants=`/`After=ollama.service` de la
+>   unidad y dejá que el bot use el tuyo (`BECARIO_OLLAMA_URL` apuntando a
+>   donde lo levantes). Ahí volvés a necesitar que alguien lo arranque antes.
+>
+> El síntoma que confunde es `ollama list` mostrándote los modelos: te los
+> muestra los **tuyos**, y el bot está preguntándole a otro servidor.
+
 ## Tests
 
 ```bash
