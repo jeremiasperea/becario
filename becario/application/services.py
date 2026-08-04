@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from ..domain.models import (
     _MAX_AUTOMATERIALIZE_STEPS,
     Intent,
+    descartar_numeros_inventados,
     PendingAction,
     PendingPlan,
     Plan,
@@ -782,6 +783,12 @@ class BecarioService:
 
         if len(edit.steps) == 1:
             new_params = self._router.extract_params(text)
+            new_params, inventados = descartar_numeros_inventados(new_params, text)
+            if inventados:
+                logger.warning(
+                    "descartados por número inventado (user=%s): %s",
+                    ctx.user_id, inventados,
+                )
             if not new_params:
                 # Devolver el plan al estante (con TTL renovado) para reintentar.
                 self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
@@ -803,6 +810,13 @@ class BecarioService:
                 # está en `merged`: se re-arma con lo acumulado, así el llenado
                 # es progresivo y no se pierde lo respondido hasta acá.
                 self._arm_pending_edit(ctx.user_id, ctx.chat_id, [(intent, merged)])
+            elif not reply.ok:
+                # El cambio no se pudo aplicar (parámetros inválidos, un
+                # rechazo del dominio…). El plan de ANTES seguía siendo
+                # válido, así que vuelve al estante para reintentar: el
+                # docstring de arriba promete que solo un «cancelar» lo tira,
+                # y sin esta rama un error de validación se lo llevaba puesto.
+                self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
             return reply
 
         if edit.awaiting_index is not None:

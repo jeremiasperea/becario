@@ -2340,3 +2340,46 @@ class TestStaleTokenSaysWhichKind:
         confirmations._items[token].created_at -= confirmations._ttl + 1
         reply = service.confirm(token, requester_id=ALICE.telegram_user_id)
         assert "expiró" in reply.text
+
+
+class TestFailedEditKeepsThePlan:
+    """`_apply_edit` promete en su docstring que el plan solo se descarta
+    con un «cancelar» explícito. Con un error de validación no lo cumplía:
+    nadie re-armaba el pendiente y el plan se perdía.
+
+    Pasó en el chat: el modelo duplicó el ENCUT en `tags_incar`, el dominio
+    lo rechazó (bien) y el plan entero desapareció por un cambio que ni
+    siquiera se había pedido así.
+    """
+
+    CALC = {"formula": "Zr", "red_cristalina": "hcp"}
+
+    def _pending(self, service, router):
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params=dict(self.CALC))
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá Zr"
+        ).confirmation_token
+        service.start_modification(token, requester_id=ALICE.telegram_user_id, chat_id=1)
+
+    def test_an_invalid_change_does_not_lose_the_plan(self, env):
+        service, router, *_ = env
+        self._pending(service, router)
+        # ENCUT fuera de rango: el dominio lo rechaza.
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"encut": 99999})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="poné el ENCUT en 99999"
+        )
+        assert not reply.ok
+        assert ALICE.telegram_user_id in service._pending_edits, "el plan sobrevive"
+
+    def test_and_the_next_change_still_applies(self, env):
+        service, router, *_ = env
+        self._pending(service, router)
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"encut": 99999})
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="ENCUT 99999")
+
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"encut": 600})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mejor 600"
+        )
+        assert reply.needs_confirmation, "se reintenta sin repetir el pedido entero"

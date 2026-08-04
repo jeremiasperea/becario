@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from .vasp_tags import validar_tags_pedidos
+from .vasp_tags import TAGS_CON_CAMPO_PROPIO, validar_tags_pedidos
 
 if TYPE_CHECKING:  # solo para anotar; el dominio no importa ASE en runtime
     from ase import Atoms
@@ -110,6 +110,56 @@ def is_plausible_formula(formula: str) -> bool:
             return False
         pos = match.end()
     return True
+
+
+# Campos numéricos donde un valor inventado NO falla: entra al INCAR o al
+# KPOINTS, la corrida sale y el resultado parece válido. `tiempo_limite` y
+# `miller` quedan afuera a propósito: el primero se re-formatea ("2hs" ->
+# "02:00:00", los dígitos no sobreviven) y el segundo se escribe pegado
+# ("(001)"), así que sus cifras aparecen igual y el chequeo no distinguiría
+# nada.
+_CAMPOS_CON_NUMERO_LITERAL = frozenset({
+    "encut", "encut_min", "encut_max", "encut_paso", "parametro_red",
+    "capas", "nodos", "vacio", "nbands", "puntos_k", "supercelda",
+})
+
+
+def _numeros_de(valor) -> list[str]:
+    """Las cifras de un valor, como texto, para buscarlas en el mensaje."""
+    if isinstance(valor, bool) or valor is None:
+        return []
+    if isinstance(valor, (int, float)):
+        crudo = f"{valor:g}" if isinstance(valor, float) else str(valor)
+        return [crudo]
+    if isinstance(valor, (list, tuple)):
+        return [n for v in valor for n in _numeros_de(v)]
+    return []
+
+
+def descartar_numeros_inventados(params: dict, texto: str) -> tuple[dict, list[str]]:
+    """Saca los campos numéricos cuyo número NO está escrito en el mensaje.
+
+    Devuelve `(params_limpios, campos_descartados)`.
+
+    Frontera anti-alucinación, de la misma familia que `is_plausible_formula`:
+    no depende de que el modelo se porte bien. Medido dos veces en producción
+    —un `parametro_red=5.63` inventado al responder una pregunta que no traía
+    ningún número, y un `puntos_k=[1,1,1]` agregado a un pedido que solo
+    hablaba de ENCUT, nodos y tiempo— y las dos veces el número habría entrado
+    a la corrida sin que nada fallara. Un k-mesh 1x1x1 es solo el punto Γ:
+    corre igual y da otra física.
+
+    Solo se mira lo que el usuario ESCRIBIÓ. Si dijo el número, pasa; si no
+    aparece por ningún lado, no hay de dónde lo haya sacado.
+    """
+    limpio, descartados = {}, []
+    for campo, valor in (params or {}).items():
+        numeros = _numeros_de(valor) if campo in _CAMPOS_CON_NUMERO_LITERAL else []
+        if numeros and any(n not in (texto or "") for n in numeros):
+            descartados.append(campo)
+            continue
+        limpio[campo] = valor
+    return limpio, descartados
 
 
 def elements_of(formula: str) -> list[str]:
@@ -838,8 +888,12 @@ class VaspCalcRequest(BaseModel):
 
     @field_validator("incar_tags")
     @classmethod
-    def _v_incar_tags(cls, v: dict) -> dict[str, str]:
-        return validar_tags_pedidos(v)
+    def _v_incar_tags(cls, v: dict, info: ValidationInfo) -> dict[str, str]:
+        # `encut` y `nbands` se declaran antes, así que acá ya están: se
+        # pasan para distinguir un tag que CONTRADICE al campo de uno que
+        # repite el mismo número (ver `validar_tags_pedidos`).
+        propios = {k: info.data.get(k.lower()) for k in TAGS_CON_CAMPO_PROPIO}
+        return validar_tags_pedidos(v, propios)
 
     @field_validator("encut_values")
     @classmethod

@@ -19,6 +19,7 @@ import difflib
 import json
 import re
 from functools import lru_cache
+from typing import Optional
 from pathlib import Path
 from typing import Optional
 
@@ -116,17 +117,33 @@ def sugerir(nombre: str) -> Optional[str]:
     return cerca[0] if cerca else None
 
 
-def validar_tags_pedidos(crudos: dict) -> dict[str, str]:
+def validar_tags_pedidos(
+    crudos: dict, campos_propios: Optional[dict[str, object]] = None
+) -> dict[str, str]:
     """Normaliza y valida tags pedidos a mano. Devuelve `{TAG: valor}`.
 
     Lanza `ValueError` con un mensaje ya redactado para el usuario. Se rechaza
     en vez de descartar en silencio: un tag ignorado es una corrida que sale
     con otros parámetros que los pedidos y no lo dice.
+
+    `campos_propios` son los valores que YA tiene el pedido en su campo
+    dedicado (`{'ENCUT': 600}`). Sirven para distinguir dos cosas que no son
+    lo mismo: un tag que CONTRADICE al campo (dos valores compitiendo, se
+    rechaza) y uno que REPITE el mismo número. Lo segundo pasa solo: el
+    modelo, ante «subí el ENCUT a 600», a veces lo escribe en los dos
+    lugares. Rechazarlo obligaba al usuario a resolver un conflicto que no
+    creó — dijo el número una vez.
     """
+    propios = {str(k).upper(): v for k, v in (campos_propios or {}).items()}
     limpio: dict[str, str] = {}
     for nombre_crudo, valor_crudo in (crudos or {}).items():
         nombre = str(nombre_crudo).strip().upper()
         valor = str(valor_crudo).strip()
+
+        if nombre in TAGS_CON_CAMPO_PROPIO and nombre in propios:
+            propio = propios[nombre]
+            if propio is not None and str(propio).strip() == valor:
+                continue  # dice lo mismo que el campo: se ignora, no compite
 
         if nombre in TAGS_RESERVADOS:
             raise ValueError(
