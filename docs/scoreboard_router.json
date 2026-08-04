@@ -1,0 +1,163 @@
+{
+  "generated_at": "2026-08-04T23:41:16+00:00",
+  "attempts": 3,
+  "fixtures_dir": "tests/fixtures/router",
+  "fixtures": [
+    "edit_explicit_step.txt",
+    "edit_semantic_step.txt",
+    "multi_destructive_tail.txt",
+    "multi_two_safe_steps.txt",
+    "single_create_dir.txt",
+    "single_prepare_encut.txt",
+    "single_prepare_relax.txt",
+    "single_submit_job.txt"
+  ],
+  "models": [
+    {
+      "model": "qwen2.5:7b",
+      "skipped": false,
+      "hits": 8,
+      "total": 8,
+      "median_latency_seconds": 8.788,
+      "fixtures": [
+        {
+          "name": "edit_explicit_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 3.305,
+          "error": null
+        },
+        {
+          "name": "edit_semantic_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 3.085,
+          "error": null
+        },
+        {
+          "name": "multi_destructive_tail.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 9.475,
+          "error": null
+        },
+        {
+          "name": "multi_two_safe_steps.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 9.983,
+          "error": null
+        },
+        {
+          "name": "single_create_dir.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 5.494,
+          "error": null
+        },
+        {
+          "name": "single_prepare_encut.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 11.761,
+          "error": null
+        },
+        {
+          "name": "single_prepare_relax.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 10.505,
+          "error": null
+        },
+        {
+          "name": "single_submit_job.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 5.376,
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5-coder:14b",
+      "skipped": false,
+      "hits": 7,
+      "total": 8,
+      "median_latency_seconds": 17.433,
+      "fixtures": [
+        {
+          "name": "edit_explicit_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 5.867,
+          "error": null
+        },
+        {
+          "name": "edit_semantic_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 5.753,
+          "error": null
+        },
+        {
+          "name": "multi_destructive_tail.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 19.989,
+          "error": null
+        },
+        {
+          "name": "multi_two_safe_steps.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 20.494,
+          "error": null
+        },
+        {
+          "name": "single_create_dir.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 11.292,
+          "error": null
+        },
+        {
+          "name": "single_prepare_encut.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 24.103,
+          "error": null
+        },
+        {
+          "name": "single_prepare_relax.txt",
+          "ok": false,
+          "passes": 0,
+          "attempts": 3,
+          "latency_seconds": 30.684,
+          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'preparar_calculo']"
+        },
+        {
+          "name": "single_submit_job.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 11.107,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

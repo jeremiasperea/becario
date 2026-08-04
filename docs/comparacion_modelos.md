@@ -93,9 +93,48 @@ Ordenados de más rápido a más lento por mediana de latencia.
 `BECARIO_OLLAMA_MODEL=qwen2.5:7b` en la máquina de desarrollo. Para
 producción, correr este mismo harness en esa máquina antes de decidir.
 
+## Segunda corrida (2026-08-04): qwen2.5-coder:14b duplica un paso
+
+Con el harness ya emitiendo puntaje (`--json`), se midió el modelo que sirve
+producción desde el benchmark del 2026-08-01 contra la línea base rápida. El
+resultado crudo está en [`scoreboard_router.json`](scoreboard_router.json).
+
+| | qwen2.5:7b | qwen2.5-coder:14b |
+|---|---|---|
+| **Aciertos** | **8/8** | **7/8** |
+| **Mediana por llamada** | **8.8s** | **17.4s** |
+| **Total (24 llamadas)** | 192s | 413s |
+
+El único fallo, y no es flake —`[0/3]`, unánime:
+
+```
+❌ single_prepare_relax.txt — esperaba steps=['preparar_calculo'],
+                              obtuve ['preparar_calculo', 'preparar_calculo']
+```
+
+**El 14b duplica el paso.** Dos `preparar_calculo` es una forma de plan
+*válida* (no hay destructivos, entra en el rango 1-5), así que
+`parse_llm_output` no la rechaza y el usuario termina con el cálculo
+preparado dos veces.
+
+Esto NO contradice el benchmark del 2026-08-01: aquel midió **invención** de
+valores sobre 13 casos y el coder:14b ganó ahí. Este mide **forma del plan y
+extracción de parámetros**, un eje que aquel no cubría. Son evidencias
+complementarias sobre un modelo que cuesta el doble de tiempo por llamada.
+
+Queda abierto: decidir si el 14b sigue sirviendo producción, y si la
+duplicación se ataca desde el prompt o desde una validación de dominio que
+rechace pasos idénticos consecutivos.
+
 ## Reproducir
 
 ```bash
+# La corrida original de este documento
 BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
     --models gemma3:4b,qwen2.5:7b,gemma4:e4b,gemma4:12b --attempts 3 --timeout 300
+
+# La segunda corrida, con scoreboard versionado
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    --models qwen2.5:7b,qwen2.5-coder:14b --timeout 300 \
+    --json docs/scoreboard_router.json
 ```

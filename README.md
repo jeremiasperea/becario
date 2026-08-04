@@ -214,7 +214,7 @@ escritorio, donde no hay nadie ordenando el arranque.
 ## Tests
 
 ```bash
-python3 -m pytest            # 154 tests
+python3 -m pytest            # 879 tests
 python3 -m pytest --cov=becario --cov-report=term-missing
 ```
 
@@ -226,6 +226,43 @@ personas nunca comparten conexión SSH ni ven el historial de la otra),
 construcción de comandos SSH (sin conexión real, interceptando `_run`) y
 generación de estructuras con ASE real (bulk, moléculas G2, superceldas,
 POSCAR válidos releídos con `ase.io.read`).
+
+### Tablero del router (gate manual)
+
+Ninguno de los tests automatizados mide la calidad del **modelo**: el
+`FakeRouter` devuelve planes fijados por el test, así que la suite prueba el
+andamiaje del prompt y el post-procesamiento, no al LLM. Lo que mide al modelo
+es el harness en vivo, y corre **a mano**:
+
+```bash
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    --models qwen2.5-coder:14b --timeout 300 --json docs/scoreboard_router.json
+```
+
+Cada fixture se decide por mayoría sobre 3 intentos (el greedy decoding en CPU
+no es bit-reproducible) y se reporta con su latencia mediana. **Correrlo y
+commitear el scoreboard antes de tocar el prompt o el schema del router**: es
+la única forma de saber si un cambio mejoró o empeoró la extracción.
+
+No corre en CI por costo: con `gemma4:12b` medido en 77.9s por llamada
+(`docs/comparacion_modelos.md`), 30 fixtures por 3 intentos son ~117 minutos, y
+los runners no tienen ni GPU ni los modelos instalados. Lo que CI sí exige es
+que `docs/scoreboard_router.json` esté al día — si alguien agrega un fixture y
+no vuelve a correr el harness, `tests/test_scoreboard_router.py` lo caza.
+
+Para ampliar el set con casos reales, las decisiones que un humano confirmó en
+producción se vuelven fixtures:
+
+```bash
+.venv/bin/python scripts/export_router_dataset.py --db becario.db \
+    --fixtures tests/fixtures/router/          # solo las 'confirmed'
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    --fixtures-dir tests/fixtures/router/
+```
+
+Los planes de un solo paso salen con `params:`, que es lo que hace que el
+fixture detecte la pérdida de `formula` — sin esa línea pasan en verde aunque
+el modelo suelte el material.
 
 ### Consola local (sin Telegram)
 
