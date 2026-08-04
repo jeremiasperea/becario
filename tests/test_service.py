@@ -414,8 +414,13 @@ class TestConfirmationFlow:
         assert "4242" in first.text
         assert len(factory.gateways["alice"].submitted) == 1
 
+        # El segundo toque NO vuelve a enviar — esa es la garantía dura, y la
+        # da el `pop` atómico del store. Lo que cambia es lo que se DICE:
+        # "ya se usó" en vez de "expiró", porque mandar a rehacer algo que
+        # salió bien es lo que hace que la gente lo pida dos veces.
         second = service.confirm(token, requester_id=ALICE.telegram_user_id)
-        assert "expiró" in second.text
+        assert "ya se usó" in second.text
+        assert "expiró" not in second.text
         assert len(factory.gateways["alice"].submitted) == 1
 
     def test_reject_never_executes(self, env):
@@ -1126,11 +1131,16 @@ class TestPlanModification:
         assert req.formula == "Zr"
 
     def test_modify_consumes_the_pending_action(self, env):
+        """Tras ✏️, el token ya no confirma: el plan pasó a estar en edición.
+
+        Y lo que se contesta lo DICE, en vez de "expiró": el plan sigue vivo
+        esperando el cambio, así que mandar a rehacerlo era falso."""
         service, router, *_ = env
         prep = self._prepare(service, router, self.SCAN)
         service.start_modification(prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1)
         reply = service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
-        assert "expiró" in reply.text
+        assert "Ya estás modificando" in reply.text
+        assert reply.awaiting_params, "el pedido sigue esperando el cambio"
 
     def test_foreign_modification_is_blocked(self, env):
         service, router, *_ = env
@@ -2264,3 +2274,69 @@ class TestExpirySweepNotifies:
         )
         assert service.sweep_expired_pendings() == []
         assert ALICE.telegram_user_id in service._pending_edits
+
+
+class TestStaleTokenSaysWhichKind:
+    """Un token que ya no sirve tiene CUATRO motivos, y decían todos lo mismo.
+
+    El que costó caro: apretar ✏️ consume el token y deja el plan esperando
+    el cambio. Si la respuesta se pierde en la red —pasó, un ConnectTimeout
+    al contestarle a Telegram— el segundo toque encontraba el token
+    consumido y contestaba "expiró". El sistema estaba en el estado correcto
+    y el mensaje decía lo contrario.
+    """
+
+    CALC = {"formula": "Zr", "red_cristalina": "hcp"}
+
+    def _token(self, service, router):
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params=dict(self.CALC))
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá Zr"
+        ).confirmation_token
+
+    def test_second_modify_press_says_you_are_already_modifying(self, env):
+        service, router, *_ = env
+        token = self._token(service, router)
+        first = service.start_modification(token, requester_id=ALICE.telegram_user_id, chat_id=1)
+        assert "decime qué querés cambiar" in first.text
+
+        second = service.start_modification(token, requester_id=ALICE.telegram_user_id, chat_id=1)
+        assert "Ya estás modificando" in second.text
+        assert second.awaiting_params
+        assert "expiró" not in second.text
+
+    def test_after_that_the_change_still_works(self, env):
+        """La prueba de que el mensaje anterior no miente: el plan sigue vivo."""
+        service, router, *_ = env
+        token = self._token(service, router)
+        service.start_modification(token, requester_id=ALICE.telegram_user_id, chat_id=1)
+        service.start_modification(token, requester_id=ALICE.telegram_user_id, chat_id=1)
+
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"encut": 600})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="subí el ENCUT a 600"
+        )
+        assert reply.needs_confirmation, "el cambio se aplicó pese al doble toque"
+
+    def test_consumed_token_is_not_reported_as_expired(self, env):
+        service, router, *_ = env
+        token = self._token(service, router)
+        service.reject(token, requester_id=ALICE.telegram_user_id)
+        again = service.reject(token, requester_id=ALICE.telegram_user_id)
+        assert "ya se usó" in again.text
+
+    def test_unknown_token_never_claims_the_action_happened(self, env):
+        """Un token que este proceso no vio (p. ej. tras reiniciar el bot) NO
+        puede afirmar 'ya se hizo': no nos consta."""
+        service, *_ = env
+        reply = service.confirm("token-que-no-existe", requester_id=ALICE.telegram_user_id)
+        assert "ya se usó" not in reply.text
+        assert "expiró" in reply.text
+
+    def test_a_genuinely_expired_token_says_expired(self, env):
+        service, router, _cf, _h, confirmations, *_ = env
+        token = self._token(service, router)
+        # Envejecerlo más allá del TTL sin esperar.
+        confirmations._items[token].created_at -= confirmations._ttl + 1
+        reply = service.confirm(token, requester_id=ALICE.telegram_user_id)
+        assert "expiró" in reply.text
