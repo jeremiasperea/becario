@@ -36,7 +36,7 @@ TAGS_RESERVADOS = frozenset({'NSW', 'IBRION', 'ISIF', 'SYSTEM'})
 # también por el diccionario genérico crearía dos fuentes de verdad para el
 # mismo número, y ganaría la que se escriba último — que es justo el tipo de
 # ambigüedad que no se descubre hasta mirar un INCAR raro.
-TAGS_CON_CAMPO_PROPIO = frozenset({'ENCUT', 'NBANDS'})
+TAGS_CON_CAMPO_PROPIO = frozenset({'ENCUT', 'NBANDS', 'ISPIN'})
 
 # Un valor va tal cual al INCAR, así que se acota a lo que un valor de VASP
 # puede ser: números, .TRUE./.FALSE., palabras como Accurate o Fast, y listas
