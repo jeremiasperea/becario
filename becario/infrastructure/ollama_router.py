@@ -57,15 +57,29 @@ class RouterParams(BaseModel):
     """Parámetros que el LLM puede extraer del mensaje. Todos opcionales;
     la validación fuerte ocurre después, en los modelos de dominio."""
 
-    job_id: Optional[str] = None
-    nombre_trabajo: Optional[str] = None
-    particion: Optional[str] = None
-    nodos: Optional[int] = None
-    tiempo_limite: Optional[str] = None
-    script_remoto: Optional[str] = None
-    filtro_busqueda: Optional[str] = None
+    job_id: Optional[str] = Field(
+        default=None, description="id numérico del trabajo en SLURM"
+    )
+    nombre_trabajo: Optional[str] = Field(
+        default=None, description="nombre del trabajo/cálculo"
+    )
+    particion: Optional[str] = Field(
+        default=None, description="partición (cola) de SLURM"
+    )
+    nodos: Optional[int] = Field(default=None, description="cantidad de nodos")
+    tiempo_limite: Optional[str] = Field(
+        default=None, description="límite de tiempo, HH:MM:SS o D-HH:MM:SS"
+    )
+    script_remoto: Optional[str] = Field(
+        default=None, description="ruta del script que YA existe en el cluster"
+    )
+    filtro_busqueda: Optional[str] = Field(
+        default=None, description="texto por el que filtrar el historial"
+    )
     # estructura atómica:
-    formula: Optional[str] = None
+    formula: Optional[str] = Field(
+        default=None, description="fórmula con símbolos químicos: Zr, W, ZrO2"
+    )
     tipo_estructura: Optional[str] = Field(
         default=None, description="bulk, molecule o slab"
     )
@@ -75,29 +89,38 @@ class RouterParams(BaseModel):
         default=None, description="cara de la losa [h, k, l]"
     )
     capas: Optional[int] = Field(default=None, description="capas de la losa")
-    eje_vacio: Optional[str] = Field(default=None, description="x, y o z")
+    eje_vacio: Optional[str] = Field(
+        default=None, description="eje del vacío de la losa: x, y o z"
+    )
     red_cristalina: Optional[str] = Field(
         default=None, description="diamond, fcc, bcc, hcp, rocksalt, zincblende…"
     )
-    parametro_red: Optional[float] = Field(default=None, description="en Å")
-    supercelda: Optional[list[int]] = Field(
-        default=None, description="[nx, ny, nz]"
+    parametro_red: Optional[float] = Field(
+        default=None, description="parámetro de red, en Å"
     )
-    vacio: Optional[float] = Field(default=None, description="en Å")
+    supercelda: Optional[list[int]] = Field(
+        default=None, description="repeticiones de la celda [nx, ny, nz]"
+    )
+    vacio: Optional[float] = Field(
+        default=None, description="espesor del vacío, en Å"
+    )
     formato_salida: Optional[str] = Field(
-        default=None, description="vasp, cif o xyz"
+        default=None, description="formato del archivo: vasp, cif o xyz"
     )
     destino_remoto: Optional[str] = Field(
         default=None,
         description="ruta absoluta en el cluster (directorio o archivo)",
     )
-    # Sin `description` a propósito: el schema del router tiene presupuesto
-    # de tamaño (ADR-0006). La guía de uso vive en `_SYSTEM_PROMPT`.
-    nombre_archivo: Optional[str] = None
+    nombre_archivo: Optional[str] = Field(
+        default=None, description="nombre de UN archivo, sin ruta: CONTCAR, OSZICAR"
+    )
     # Fuente de estructura (Materials Project). `mp_id` es el id explícito de
-    # un polimorfo ('mp-149'); `fuente_estructura` fuerza el origen. Sin
-    # description (presupuesto de schema): la guía vive en `_SYSTEM_PROMPT`.
-    mp_id: Optional[str] = None
+    # un polimorfo; `fuente_estructura` fuerza el origen. Cuándo usar cada uno
+    # (y cuándo dejarlos vacíos) sigue en `_SYSTEM_PROMPT`: es una regla de
+    # ruteo entre campos, no la definición de este campo.
+    mp_id: Optional[str] = Field(
+        default=None, description="id de Materials Project: mp-149"
+    )
     fuente_estructura: Optional[str] = Field(
         default=None, description="ase, mp o relajado"
     )
@@ -116,17 +139,23 @@ class RouterParams(BaseModel):
     # por feature no escala como diseño (ADR-0006), más allá de que el techo
     # del schema ya no sea la restricción que se creía.
     # El dominio valida contra el vocabulario del manual antes de emitir nada.
-    tags_incar: Optional[dict[str, str]] = None
+    tags_incar: Optional[dict[str, str]] = Field(
+        default=None, description="tags del INCAR y su valor: {'ISMEAR': '0'}"
+    )
     magnetico: Optional[bool] = Field(
         default=None, description="true si el usuario pide un cálculo magnético"
     )
 
 
-# Docstrings de RouterStep/RouterDecision se mantienen cortos a propósito:
-# Pydantic los vuelca como "description" en el JSON Schema que se le manda
-# al LLM, y ese schema tiene presupuesto de tamaño (ver ADR-0006 y el gate
-# de tarea 3.1/3.2 en tests/test_router_parsing.py). La explicación larga
-# vive acá, en comentarios normales, no en el docstring.
+# Docstrings de RouterStep/RouterDecision se mantienen cortos, pero YA NO
+# por presupuesto: Pydantic los vuelca como "description" en el JSON Schema
+# que se le manda al LLM, y ahí solo sirve lo que el LLM necesita para
+# emitir bien. La explicación de diseño —para quien lee el código— vive
+# acá, en comentarios normales, que no viajan a ningún lado.
+#
+# El techo del schema es un gate contra crecimiento desbocado, no un
+# racionamiento de bytes: está medido en 8000 B (ADR-0006, actualización 2)
+# y las `description` de campo se pagan sin problema.
 #
 # RouterStep: un paso del plan tal como lo emite el LLM. Distinto del
 # `PlanStep` de dominio: acá `parametros` es `RouterParams` (la superficie
