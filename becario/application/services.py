@@ -27,6 +27,7 @@ from typing import Callable, Optional
 from pydantic import ValidationError
 
 from ..domain.models import (
+    _MATERIAL_INTENTS,
     _MAX_AUTOMATERIALIZE_STEPS,
     Intent,
     descartar_numeros_inventados,
@@ -377,7 +378,7 @@ class BecarioService:
         cluster, así que nada se auto-ejecuta y el cap deja de gatear el
         blast-radius (lo hace la confirmación)."""
         n_calc = sum(1 for s in plan.steps if s.action is Intent.PREPARE_CALC)
-        if len(plan.steps) <= _MAX_AUTOMATERIALIZE_STEPS and n_calc <= 1:
+        if not n_calc and len(plan.steps) <= _MAX_AUTOMATERIALIZE_STEPS:
             return False
         return all(
             s.action in cls._MATERIALIZABLE_STEP_INTENTS or s.action is Intent.PREPARE_CALC
@@ -385,9 +386,66 @@ class BecarioService:
         )
 
     @staticmethod
-    def _describe_batch_step(step: PlanStep) -> str:
+    def _describe_structure_step(p: dict) -> str:
+        """Una línea para un paso de estructura: material primero, después
+        lo que lo distingue de otra estructura del mismo material."""
+        formula = p.get("formula") or p.get("formula_quimica") or "?"
+        detalles = []
+        if (kind := p.get("tipo_estructura")) and kind != "bulk":
+            detalles.append(str(kind))
+        if miller := p.get("miller"):
+            detalles.append("(" + "".join(str(i) for i in miller) + ")")
+        if capas := p.get("capas"):
+            detalles.append(f"{capas} capas")
+        if red := p.get("red_cristalina"):
+            detalles.append(str(red))
+        if celda := p.get("supercelda"):
+            detalles.append("×".join(str(n) for n in celda))
+        if fuente := p.get("fuente_estructura"):
+            detalles.append(f"desde {fuente}")
+        cola = f" ({', '.join(detalles)})" if detalles else ""
+        return f"🧱 generar estructura de {formula}{cola}"
+
+    @classmethod
+    def _describe_batch_step(cls, step: PlanStep) -> str:
+        """Qué va a hacer este paso, en una línea, para el preview del batch.
+
+        No es cosmética: en un batch NADA se ejecuta hasta que el usuario
+        confirma, así que esta línea es lo ÚNICO sobre lo que decide. Un
+        `• listar_archivos` pelado —el nombre crudo del enum— le pide que
+        apruebe a ciegas.
+
+        Cada rama nombra los parámetros que el handler correspondiente
+        realmente lee; cuando un parámetro falta y el sistema resuelve un
+        default, la línea dice cuál es ese default en vez de callarlo.
+        """
+        p = step.parametros
         if step.action is Intent.CREATE_DIR:
-            return f"📁 crear carpeta {step.parametros.get('destino_remoto', '?')}"
+            return f"📁 crear carpeta {p.get('destino_remoto', '?')}"
+        if step.action is Intent.LIST_FILES:
+            # Sin ruta, `list_files` lista la base de corridas.
+            return f"📂 listar {p.get('destino_remoto') or 'tus corridas'}"
+        if step.action is Intent.VIEW_FILE:
+            # `view_file` acepta nombre suelto (resuelto contra la última
+            # corrida) o ruta absoluta, nunca los dos.
+            if destino := p.get("destino_remoto"):
+                return f"👁 ver {destino}"
+            if nombre := p.get("nombre_archivo"):
+                return f"👁 ver {nombre} (de tu última corrida)"
+            return "👁 ver un archivo (falta cuál)"
+        if step.action is Intent.MODIFY_STRUCTURE:
+            return cls._describe_structure_step(p)
+        if step.action is Intent.QUERY_RESULTS:
+            formula = p.get("formula") or p.get("formula_quimica")
+            return f"📈 resultados de {formula}" if formula else "📈 resultados del último cálculo"
+        if step.action is Intent.QUERY_DB:
+            if filtro := p.get("filtro_busqueda"):
+                return f"📊 historial que contenga {filtro!r}"
+            return "📊 historial de cálculos"
+        if step.action is Intent.CHECK_STATUS:
+            if job := p.get("job_id"):
+                return f"🔎 estado del trabajo {job}"
+            return "🔎 estado de tus trabajos en cola"
         return f"• {step.action.value}"
 
     def _prepare_batch(self, ctx: _Ctx, plan: Plan) -> Reply:
@@ -410,6 +468,15 @@ class BecarioService:
                 n_calc += 1
                 line = calc.describe_calc_request(req)
             else:
+                # Los pasos de estructura también se validan ANTES de
+                # stagear: un slab sin cara no se puede armar, y stagearlo
+                # haría que el usuario apruebe un plan incumplible y se
+                # entere recién al confirmar. Mismo trato que el cálculo.
+                if step.action is Intent.MODIFY_STRUCTURE:
+                    problema = calc.validate_structure_params(step.parametros)
+                    if problema is not None:
+                        self._arm_if_awaiting(ctx, plan, i, problema)
+                        return problema
                 line = self._describe_batch_step(step)
             preview.append(f"{i}. {line}")
             actions.append(PendingAction(
@@ -503,57 +570,18 @@ class BecarioService:
         en un paso destructivo (`enviar_slurm`/`cancelar_calculo`, único
         posible por `Plan._v_destructive_last`), la confirmación se pide
         SOLO para esa cola — el resto ya corrió y se muestra ejecutado."""
-        # Cola de cálculos: pasos `preparar_calculo` contiguos al FINAL del
-        # plan. Cada uno arma su propia confirmación individual (decisión
-        # de producto: un botón por cálculo, nunca N envíos con un botón),
-        # así que acá no hay cola destructiva batch — el prefijo
-        # materializa y cada cálculo sale como followup con su token.
-        n_calc_tail = 0
-        for s in reversed(plan.steps):
-            if s.action is Intent.PREPARE_CALC:
-                n_calc_tail += 1
-            else:
-                break
-        if n_calc_tail:
-            prefix = plan.steps[:-n_calc_tail]
-            if any(s.action not in self._MATERIALIZABLE_STEP_INTENTS for s in prefix):
-                return Reply(text=HELP_TEXT)
-            awaiting: list[int] = []
-            result = PlanExecutor().run([
-                self._materialize_step_fn(ctx, s, i, awaiting)
-                for i, s in enumerate(prefix, start=1)
-            ])
-            if prefix and not result.ok:
-                lines = result.report_lines + [
-                    f"⏸ {n_calc_tail} cálculo(s) omitido(s): falló un paso previo."
-                ]
-                if awaiting:
-                    # No es un fallo: falta un dato. El plan ENTERO queda
-                    # esperando, así que el cálculo omitido corre en cuanto
-                    # la estructura se pueda armar.
-                    self._arm_pending_edit(
-                        ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan),
-                        awaiting_index=awaiting[0],
-                    )
-                    return Reply(
-                        text="\n".join(lines), ok=False, awaiting_params=True
-                    )
-                return Reply(text="\n".join(lines), ok=False)
-            handler = self._intent_handlers()[Intent.PREPARE_CALC]
-            followups = tuple(
-                handler(ctx, s.parametros) for s in plan.steps[-n_calc_tail:]
-            )
-            for offset, followup in enumerate(followups):
-                if followup.awaiting_params:
-                    self._arm_if_awaiting(
-                        ctx, plan, len(prefix) + offset + 1, followup
-                    )
-                    break
-            lines = result.report_lines + [
-                f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"
-            ] if prefix else [f"⏳ Te paso {n_calc_tail} cálculo(s), confirmá cada uno:"]
-            return Reply(text="\n".join(lines), followups=followups)
-
+        # Acá NO llega ningún plan con `preparar_calculo`: todo plan
+        # multi-paso que contenga uno se confirma entero como batch
+        # (`_is_batch_plan`). La única forma de que un cálculo llegue hasta
+        # este método sería junto a un paso destructivo, y `_v_destructive_last`
+        # lo obliga a ir último — o sea, el cálculo quedaría en el prefijo y
+        # cae en el fail-closed de abajo.
+        #
+        # Antes vivía acá una "cola de cálculos" que materializaba el prefijo
+        # y emitía un followup con confirmación individual por cálculo. Quedó
+        # inalcanzable al enrutar estos planes al batch, y se sacó en vez de
+        # dejarla: código muerto que describe un comportamiento que ya no
+        # existe es peor que no tener nada, porque se lee como si rigiera.
         tail = plan.steps[-1]
         has_destructive_tail = tail.action in Intent.destructive()
         prefix = plan.steps[:-1] if has_destructive_tail else plan.steps
@@ -742,6 +770,44 @@ class BecarioService:
         ya materializado."""
         return [(s.action, dict(s.parametros)) for s in plan.steps]
 
+    @staticmethod
+    def _propagate_answer(
+        steps: list[tuple[Intent, dict]],
+        answered_index: int,
+        base_params: dict,
+        new_params: dict,
+    ) -> None:
+        """Lleva el dato recién contestado a los pasos posteriores que hablan
+        del MISMO material y tienen el mismo hueco. Muta `steps` in place.
+
+        "Armá el slab de ZrO2 y relajalo" son dos pasos sobre una sola
+        superficie: si al usuario le faltó la cara, le falta a los dos. Sin
+        esto, contesta «(001)», el paso 1 se completa y el paso 2 le vuelve
+        a preguntar lo mismo con las mismas palabras — se ve como si el bot
+        lo hubiera ignorado.
+
+        Tres condiciones para no pisar un pedido legítimo:
+
+        - Solo pasos POSTERIORES al contestado (los previos ya se
+          resolvieron con lo que el usuario había dicho entonces).
+        - Solo pasos sobre el mismo material: `formula` igual y ambos de
+          `_MATERIAL_INTENTS`. Dos materiales distintos son dos pedidos.
+        - Solo claves que el paso NO define ya. "Generá el POSCAR de Si
+          (001) y relajá Si (110)" son dos caras dichas a propósito.
+        """
+        material = base_params.get("formula") or base_params.get("formula_quimica")
+        if not material:
+            return
+        for i in range(answered_index, len(steps)):
+            intent, params = steps[i]
+            if intent not in _MATERIAL_INTENTS:
+                continue
+            if (params.get("formula") or params.get("formula_quimica")) != material:
+                continue
+            faltantes = {k: v for k, v in new_params.items() if k not in params}
+            if faltantes:
+                steps[i] = (intent, {**params, **faltantes})
+
     def _arm_if_awaiting(
         self, ctx: _Ctx, plan: Plan, index: int, reply: Reply
     ) -> None:
@@ -875,6 +941,7 @@ class BecarioService:
         new_steps = list(edit.steps)
         intent, base_params = new_steps[edit.awaiting_index - 1]
         new_steps[edit.awaiting_index - 1] = (intent, {**base_params, **new_params})
+        self._propagate_answer(new_steps, edit.awaiting_index, base_params, new_params)
         logger.info(
             "dato faltante completado (paso %s) por user=%s: %s",
             edit.awaiting_index, ctx.user_id, new_params,

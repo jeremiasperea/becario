@@ -1692,41 +1692,68 @@ class TestWorkspaceRelativePaths:
         assert factory.gateways["alice"].made_dirs == []
 
 
-class TestCalcTailIndividualConfirmations:
-    """Un plan que termina en UN solo `preparar_calculo` materializa el
-    prefijo y emite su confirmación individual (camino de ADR-0006). Con
-    VARIOS cálculos ya no hay N followups: es un batch (ADR-0007), ver
-    `TestBatchConfirmation`."""
+class TestAnyPlanWithACalcIsConfirmedWhole:
+    """TODO plan multi-paso que contenga `preparar_calculo` se confirma
+    entero como batch — no importa en qué posición esté el cálculo.
+
+    Antes solo servía si el cálculo iba ÚLTIMO: un `[calc, crear_dir]` se
+    rechazaba fail-closed con el mensaje de ayuda genérico, y el prefijo de
+    un `[crear_dir, calc]` se materializaba sin que nadie lo hubiera
+    aprobado."""
 
     def _plan(self, *steps):
         return Plan(steps=[PlanStep(action=a, parametros=p) for a, p in steps])
 
-    def test_failed_prefix_omits_calcs(self, env):
+    def _CALC(self):
+        return (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"})
+
+    def _DIR(self):
+        return (Intent.CREATE_DIR, {"destino_remoto": "W"})
+
+    @pytest.mark.parametrize("nombre", ["calc_ultimo", "calc_primero", "calc_en_el_medio"])
+    def test_the_position_of_the_calc_no_longer_decides_the_outcome(self, env, nombre):
+        service, router, factory, *_ = env
+        formas = {
+            "calc_ultimo": (self._DIR(), self._CALC()),
+            "calc_primero": (self._CALC(), self._DIR()),
+            "calc_en_el_medio": (
+                self._DIR(), self._CALC(),
+                (Intent.LIST_FILES, {"destino_remoto": "/home/alice"}),
+            ),
+        }
+        router.next_plan = self._plan(*formas[nombre])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        assert reply.needs_confirmation and reply.confirmation_token
+        assert HELP_TEXT not in reply.text
+        # Y nada tocó el cluster todavía, tampoco el paso "inofensivo".
+        assert factory.gateways["alice"].made_dirs == []
+
+    def test_the_prefix_no_longer_runs_before_approval(self, env):
+        # El cambio de contrato: antes el mkdir corría solo y el usuario se
+        # enteraba del fallo en el mismo turno. Ahora primero aprueba.
         service, router, factory, *_ = env
         gateway = factory.gateways.setdefault("alice", FakeCluster("alice"))
         gateway.make_directory_result = CommandResult(ok=False, stderr="disco lleno")
-        router.next_plan = self._plan(
-            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
-            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
-        )
+        router.next_plan = self._plan(self._DIR(), self._CALC())
         reply = service.handle_text(
             chat_id=1, user_id=ALICE.telegram_user_id, text="creá W y corré Zr"
         )
-        assert reply.followups == ()
-        assert "omitido" in reply.text
+        assert gateway.made_dirs == [] and gateway.submitted == []
+        # Al confirmar sí se ejecuta, y ahí el fallo corta la cola.
+        done = service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        assert "omitido" in done.text and gateway.submitted == []
 
-    def test_calc_in_middle_is_still_rejected(self, env):
-        # `preparar_calculo` seguido de otro paso NO es cola: fail-closed.
+    def test_a_calc_next_to_a_destructive_step_is_still_rejected(self, env):
+        # El único fail-closed que queda: cálculo + cola destructiva son dos
+        # confirmaciones en un turno, que es lo que ADR-0006 evita a propósito.
         service, router, factory, *_ = env
         router.next_plan = self._plan(
-            (Intent.PREPARE_CALC, {"formula": "Zr", "red_cristalina": "hcp"}),
-            (Intent.CREATE_DIR, {"destino_remoto": "W"}),
+            self._CALC(),
+            (Intent.SUBMIT_SLURM, {"script_remoto": "/home/alice/run.sh"}),
         )
-        reply = service.handle_text(
-            chat_id=1, user_id=ALICE.telegram_user_id, text="raro"
-        )
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="raro")
         assert reply.followups == ()
-        assert factory.gateways["alice"].made_dirs == []
+        assert factory.gateways["alice"].submitted == []
 
 
 class TestDecomposition:
@@ -1918,6 +1945,152 @@ class TestBatchConfirmation:
         service.reject(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
         gw = factory.gateways["alice"]
         assert gw.made_dirs == [] and gw.submitted == []
+
+
+class TestAnswerPropagationDoesNotOverreach:
+    """`_propagate_answer` completa los pasos que comparten el hueco, pero
+    pisar un pedido legítimo sería peor que preguntar dos veces."""
+
+    def _pasos(self, *steps) -> list:
+        return [(a, dict(p)) for a, p in steps]
+
+    def test_it_fills_a_later_step_of_the_same_material(self):
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {"formula": "ZrO2", "tipo_estructura": "slab"}),
+            (Intent.PREPARE_CALC, {"formula": "ZrO2", "tipo_estructura": "slab"}),
+        )
+        BecarioService._propagate_answer(
+            steps, 1, {"formula": "ZrO2"}, {"miller": [0, 0, 1]}
+        )
+        assert steps[1][1]["miller"] == [0, 0, 1]
+
+    def test_it_never_overwrites_a_value_the_user_already_gave(self):
+        # "Generá el POSCAR de Si (001) y relajá Si (110)": dos caras dichas
+        # a propósito.
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {"formula": "Si"}),
+            (Intent.PREPARE_CALC, {"formula": "Si", "miller": [1, 1, 0]}),
+        )
+        BecarioService._propagate_answer(
+            steps, 1, {"formula": "Si"}, {"miller": [0, 0, 1]}
+        )
+        assert steps[1][1]["miller"] == [1, 1, 0]
+
+    def test_a_different_material_is_a_different_request(self):
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {"formula": "ZrO2"}),
+            (Intent.PREPARE_CALC, {"formula": "W"}),
+        )
+        BecarioService._propagate_answer(
+            steps, 1, {"formula": "ZrO2"}, {"miller": [0, 0, 1]}
+        )
+        assert "miller" not in steps[1][1]
+
+    def test_earlier_steps_are_left_alone(self):
+        # Los pasos previos ya se resolvieron con lo que el usuario había
+        # dicho entonces; volver atrás cambiaría un pedido ya contestado.
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {"formula": "ZrO2"}),
+            (Intent.PREPARE_CALC, {"formula": "ZrO2"}),
+        )
+        BecarioService._propagate_answer(
+            steps, 2, {"formula": "ZrO2"}, {"miller": [0, 0, 1]}
+        )
+        assert "miller" not in steps[0][1]
+
+    def test_a_step_that_is_not_about_a_material_is_skipped(self):
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {"formula": "ZrO2"}),
+            (Intent.CREATE_DIR, {"destino_remoto": "runs"}),
+        )
+        BecarioService._propagate_answer(
+            steps, 1, {"formula": "ZrO2"}, {"miller": [0, 0, 1]}
+        )
+        assert "miller" not in steps[1][1]
+
+    def test_without_a_material_nothing_propagates(self):
+        # Sin `formula` no hay forma de saber a qué pedido pertenece el dato.
+        steps = self._pasos(
+            (Intent.MODIFY_STRUCTURE, {}), (Intent.PREPARE_CALC, {}),
+        )
+        BecarioService._propagate_answer(steps, 1, {}, {"miller": [0, 0, 1]})
+        assert "miller" not in steps[1][1]
+
+
+class TestBatchPreviewDescribesEveryStep:
+    """En un batch NADA se ejecuta hasta confirmar, así que el preview es lo
+    único sobre lo que el usuario decide. Un `• listar_archivos` pelado —el
+    nombre crudo del enum— le pide aprobar a ciegas."""
+
+    def _describe(self, action, **params) -> str:
+        return BecarioService._describe_batch_step(
+            PlanStep(action=action, parametros=params)
+        )
+
+    def test_no_step_is_described_by_its_raw_enum_name(self):
+        # El gate: si mañana entra un intent nuevo al batch sin descripción,
+        # esto lo caza antes de que un usuario apruebe algo que no leyó.
+        for action in BecarioService._MATERIALIZABLE_STEP_INTENTS:
+            linea = self._describe(action)
+            assert linea != f"• {action.value}", (
+                f"{action.value} cae en el fallback del enum crudo"
+            )
+
+    def test_a_listing_without_a_path_says_where_it_will_look(self):
+        # `list_files` sin ruta lista la base de corridas: callarlo dejaría
+        # al usuario aprobando un listado de destino desconocido.
+        assert "tus corridas" in self._describe(Intent.LIST_FILES)
+        assert "/data/x" in self._describe(Intent.LIST_FILES, destino_remoto="/data/x")
+
+    def test_a_file_by_name_says_it_resolves_against_the_last_run(self):
+        linea = self._describe(Intent.VIEW_FILE, nombre_archivo="CONTCAR")
+        assert "CONTCAR" in linea and "última corrida" in linea
+
+    def test_a_file_by_path_shows_the_path(self):
+        assert "/home/ana/OSZICAR" in self._describe(
+            Intent.VIEW_FILE, destino_remoto="/home/ana/OSZICAR"
+        )
+
+    def test_a_structure_leads_with_the_material(self):
+        assert "Si" in self._describe(Intent.MODIFY_STRUCTURE, formula="Si")
+
+    def test_a_slab_is_distinguishable_from_a_bulk_of_the_same_material(self):
+        # Dos pasos del mismo material tienen que poder distinguirse: si el
+        # preview los muestra igual, confirmar el plan no significa nada.
+        bulk = self._describe(Intent.MODIFY_STRUCTURE, formula="ZrO2")
+        slab = self._describe(
+            Intent.MODIFY_STRUCTURE, formula="ZrO2", tipo_estructura="slab",
+            miller=[0, 0, 1], capas=5,
+        )
+        assert bulk != slab
+        assert "slab" in slab and "(001)" in slab and "5 capas" in slab
+
+    def test_a_supercell_and_a_lattice_show_up(self):
+        linea = self._describe(
+            Intent.MODIFY_STRUCTURE, formula="Si", red_cristalina="diamond",
+            supercelda=[2, 2, 2],
+        )
+        assert "diamond" in linea and "2×2×2" in linea
+
+    def test_the_history_filter_is_visible(self):
+        assert "'Zr'" in self._describe(Intent.QUERY_DB, filtro_busqueda="Zr")
+
+    def test_results_without_material_say_which_calc_they_mean(self):
+        assert "último cálculo" in self._describe(Intent.QUERY_RESULTS)
+
+    def test_the_preview_of_a_real_batch_has_no_enum_leftovers(self, env):
+        service, router, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(action=Intent.MODIFY_STRUCTURE, parametros={"formula": "Si"}),
+            PlanStep(action=Intent.LIST_FILES, parametros={}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W", "red_cristalina": "bcc"}),
+        ])
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+        assert "• modificar_estructura" not in reply.text
+        assert "• listar_archivos" not in reply.text
+        assert "Si" in reply.text and "tus corridas" in reply.text
 
 
 class TestCompoundHeuristic:
@@ -2127,18 +2300,25 @@ class TestMissingMillerInMultiStepPlans:
         return reply
 
     def test_composite_plan_waits_and_remembers_which_step(self, env):
+        # El dato faltante se detecta ANTES de stagear nada: el batch valida
+        # los pasos de estructura igual que los cálculos, así que el usuario
+        # nunca llega a aprobar un plan que no se puede cumplir.
         service, router, *_ = env
         reply = self._start(service, router, self._plan(
             (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
         ))
         assert reply.awaiting_params
         assert "cara" in reply.text
-        assert "omitido" in reply.text  # el cálculo NO corrió
+        assert not reply.needs_confirmation, "no se stagea un plan incumplible"
         pending = service._pending_edits[ALICE.telegram_user_id]
         assert pending.awaiting_index == 1
         assert len(pending.steps) == 2, "se guarda el plan entero, no solo el hueco"
 
-    def test_answering_runs_the_step_and_the_one_that_was_skipped(self, env):
+    def test_answering_once_completes_every_step_of_the_same_material(self, env):
+        # "Armá el slab de ZrO2 y relajalo" son dos pasos sobre UNA
+        # superficie: la cara que falta les falta a los dos. Sin propagar la
+        # respuesta, el paso 2 vuelve a preguntar lo mismo con las mismas
+        # palabras y se ve como si el bot hubiera ignorado al usuario.
         service, router, _cf, _h, _c, structures, *_ = env
         self._start(service, router, self._plan(
             (Intent.MODIFY_STRUCTURE, self.SLAB), (Intent.PREPARE_CALC, self.CALC),
@@ -2146,10 +2326,11 @@ class TestMissingMillerInMultiStepPlans:
         router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={"miller": [0, 0, 1]})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="la (001)")
 
-        assert not reply.awaiting_params
-        assert structures.requests[-1].miller == (0, 0, 1)
-        assert structures.requests[-1].layers == 5  # lo ya dicho sobrevive
-        assert len(reply.followups) == 1, "el cálculo omitido tiene que volver"
+        assert not reply.awaiting_params, "no puede volver a pedir la misma cara"
+        assert reply.needs_confirmation, "con la cara completa, el plan se puede aprobar"
+        assert ALICE.telegram_user_id not in service._pending_edits
+        # Sigue siendo un batch: nada se armó todavía.
+        assert structures.requests == []
 
     def test_unusable_answer_keeps_the_whole_plan_waiting(self, env):
         service, router, *_ = env

@@ -106,22 +106,20 @@ No hay referencias cruzadas entre pasos (el paso 2 no puede usar el
 resultado del paso 1) ni re-chequeo de duplicados por paso dentro de un
 plan compuesto — quedan para una iteración futura.
 
-**Límite documentado de v1: `preparar_calculo` no se combina dentro de un
-plan de varios pasos.** `preparar_calculo` deja su propia confirmación
-pendiente (sube inputs, arma el POTCAR, prepara un `SlurmJobRequest`) —
-es, en los hechos, una operación "casi destructiva" que el validador de
-`Plan` no conoce (`Intent.destructive()` solo cubre `enviar_slurm` y
-`cancelar_calculo`). Dejarlo entrar como paso "seguro" de un plan
-compuesto auto-ejecutaría esos efectos sin pasar por la confirmación de
-un solo paso que tiene hoy, o exigiría inventar un segundo mecanismo de
-confirmación-dentro-de-un-plan que no está diseñado. La implementación
-rechaza fail-closed cualquier plan compuesto que contenga
-`preparar_calculo` en cualquier posición (nada se ejecuta, se responde el
-mensaje de ayuda genérico). Ningún ejemplo del prompt del router combina
-`preparar_calculo` en una composición, así que esto no contradice ningún
-comportamiento ya probado — queda anotado para una futura iteración de
-diseño (una "cola destructiva virtual" para operaciones que preparan y
-confirman sin ser técnicamente `Intent.destructive()`).
+**Límite de v1 (SUPERADO, ver abajo): `preparar_calculo` no se combina
+dentro de un plan de varios pasos.** `preparar_calculo` deja su propia
+confirmación pendiente (sube inputs, arma el POTCAR, prepara un
+`SlurmJobRequest`) — es, en los hechos, una operación "casi destructiva"
+que el validador de `Plan` no conoce (`Intent.destructive()` solo cubre
+`enviar_slurm` y `cancelar_calculo`). Dejarlo entrar como paso "seguro"
+de un plan compuesto auto-ejecutaría esos efectos sin pasar por la
+confirmación de un solo paso que tiene hoy, o exigiría inventar un
+segundo mecanismo de confirmación-dentro-de-un-plan que no está diseñado.
+La implementación rechazaba fail-closed cualquier plan compuesto que
+contuviera `preparar_calculo` (nada se ejecuta, se responde el mensaje de
+ayuda genérico), y quedaba anotada para una futura iteración una "cola
+destructiva virtual" para operaciones que preparan y confirman sin ser
+técnicamente `Intent.destructive()`.
 
 **Consecuencia medida (2026-08-05): ese fail-closed convierte un error de
 formato del modelo en un pedido muerto.** `qwen2.5-coder:14b` —el modelo
@@ -173,6 +171,83 @@ pedido **3 de 3**, idéntico. La regla se revirtió en vez de dejarla
 puesta. Prosa que está medida como inerte no es una red de seguridad: es
 un amuleto, y encima uno que no puede vigilar CI. La regla de dominio sí
 se testea sin LLM.
+
+Todo lo anterior describe el estado **mientras el fail-closed regía**. Ese
+episodio fue lo que empujó a mirar el límite en sí, que es lo que sigue: la
+reparación de dominio arregla ESTA forma de error, y el levantamiento del
+límite hace que la próxima forma no sea fatal.
+
+**Levantamiento del límite (2026-08-05): la cola destructiva virtual es
+el batch, y ya existía.** (El detalle de este levantamiento vive en la
+Enmienda 2 de ADR-0007, que es el ADR dueño del batch; acá queda el efecto
+sobre el límite de v1.) ADR-0007 construyó exactamente el mecanismo que
+faltaba —validar y describir cada paso sin tocar el cluster, stagear el
+plan entero con UNA confirmación— pero solo se usaba para planes grandes
+o multi-cálculo. Medido antes de tocar nada, el límite real que regía no
+era el documentado:
+
+| forma | antes |
+|---|---|
+| `[crear_dir, calc]` | ✅ andaba (prefijo auto-materializado + confirmación del cálculo) |
+| `[estructura, calc]` | ✅ andaba |
+| `[calc, calc]` | ✅ andaba (batch) |
+| `[calc, crear_dir]` | ❌ mensaje de ayuda genérico |
+| `[calc, listar]` | ❌ mensaje de ayuda genérico |
+| `[crear_dir, calc, listar]` | ❌ mensaje de ayuda genérico |
+
+El límite no era "`preparar_calculo` no se combina" sino "`preparar_calculo`
+tiene que ser el ÚLTIMO". La posición de un paso decidía si el pedido
+vivía o moría, y el ADR describía el estado anterior a ADR-0007.
+
+**Ahora todo plan multi-paso que contenga `preparar_calculo` se confirma
+entero como batch**, en cualquier posición. Dos consecuencias, y la
+segunda es un cambio de contrato:
+
+1. Los `[calc, …]` dejan de morir.
+2. Los `[crear_dir, calc]` **ya no auto-materializan el prefijo**: antes
+   el `mkdir` corría solo y el usuario se enteraba de un fallo en el mismo
+   turno; ahora ve el plan completo y recién al aprobar se ejecuta. Se
+   eligió a propósito: "algunos pasos ya corrieron y otros no" es más
+   difícil de razonar que "nada pasó todavía", y elimina el efecto
+   huérfano de rechazar un plan cuya mitad ya ocurrió.
+
+Sigue rechazándose fail-closed **un cálculo junto a una cola destructiva**
+(`enviar_slurm`/`cancelar_calculo`): son dos confirmaciones en un turno,
+que es justo la degradación que este ADR evita a propósito.
+
+**Lo que el cambio obligó a arreglar antes.** Si nada se ejecuta hasta
+aprobar, el preview deja de ser cosmético y pasa a ser el contrato sobre
+el que la persona decide:
+
+- `_describe_batch_step` describía solo `crear_directorio` y
+  `preparar_calculo`; el resto salía como `• listar_archivos`, el nombre
+  crudo del enum. Ahora cada intent dice qué va a hacer, con sus
+  parámetros y —cuando el sistema resuelve un default— cuál es ese
+  default. Un test recorre `_MATERIALIZABLE_STEP_INTENTS` y falla si
+  alguno cae en el fallback del enum.
+- El batch validaba solo los cálculos antes de stagear. Un slab sin cara
+  se stageaba igual y el usuario aprobaba un plan incumplible. Se extrajo
+  `calc.validate_structure_params` (los chequeos de `modify_structure` que
+  no tocan nada) y el batch la corre por cada paso de estructura: mismo
+  trato que el cálculo.
+- Contestar un dato faltante completaba SOLO el paso que lo pidió. En
+  "armá el slab de ZrO2 y relajalo" —dos pasos sobre una sola superficie—
+  el usuario contestaba «(001)» y el paso 2 volvía a preguntar lo mismo
+  con las mismas palabras. El bug era anterior (verificado corriendo el
+  mismo escenario contra `main`), pero quedaba tapado porque el paso 1 sí
+  se ejecutaba y se veía progreso; sin materialización previa quedaba a la
+  vista y se leía como que el bot ignoró la respuesta.
+  `_propagate_answer` lleva el dato a los pasos POSTERIORES del MISMO
+  material que no definan ya esa clave.
+
+**Código muerto retirado.** La "cola de cálculos" de
+`_run_composite_plan` (materializar el prefijo y emitir un followup con
+confirmación individual por cálculo) quedó inalcanzable: para llegar ahí
+un plan tendría que terminar en cálculo y a la vez tener un paso
+destructivo, y `_v_destructive_last` obliga al destructivo a ir último.
+Verificado además instrumentando la rama y corriendo la suite entera: cero
+impactos. Se sacó en vez de dejarla — código muerto que describe un
+comportamiento que ya no existe se lee como si rigiera.
 
 **Nota de presupuesto de schema:** fusionar `steps` en `RouterDecision`
 crece el JSON Schema que se le manda al LLM (gemma3:4b es el peor caso —
