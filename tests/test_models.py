@@ -219,6 +219,10 @@ class TestIntent:
         assert Intent.QUERY_DB not in Intent.destructive()
 
 
+def _listar(destino: str) -> PlanStep:
+    return PlanStep(action=Intent.LIST_FILES, parametros={"destino_remoto": destino})
+
+
 class TestPlan:
     """Suite de validación del Plan: forma fail-closed, tope de pasos y la
     regla "a lo sumo un paso destructivo y, si existe, va al final"."""
@@ -269,11 +273,15 @@ class TestPlan:
 
     def test_too_many_steps_rejected(self):
         # Cap estructural = 11 (ADR-0007): acota una descomposición desbocada.
+        # El tope se aplica al plan CRUDO, antes de colapsar tartamudeos.
         with pytest.raises(ValidationError):
-            Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(12)])
+            Plan(steps=[_listar(f"/d{i}") for i in range(12)])
 
     def test_max_steps_is_accepted(self):
-        plan = Plan(steps=[PlanStep(action=Intent.LIST_FILES) for _ in range(11)])
+        # Pasos DISTINTOS a propósito: once `listar_archivos` con los mismos
+        # parámetros son un tartamudeo y `_v_collapse_stutter` los reduce a
+        # uno. El tope y el colapso son reglas separadas.
+        plan = Plan(steps=[_listar(f"/d{i}") for i in range(11)])
         assert len(plan.steps) == 11
 
     def test_empty_steps_rejected(self):
@@ -283,6 +291,121 @@ class TestPlan:
     def test_step_parametros_default_empty_dict(self):
         step = PlanStep(action=Intent.LIST_FILES)
         assert step.parametros == {}
+
+
+class TestPlanCollapsesStutter:
+    """El modelo a veces repite un paso idéntico. Colapsarlo es del dominio:
+    dos pasos iguales pasaban la validación de forma y el trabajo se hacía
+    dos veces."""
+
+    def _preparar(self, **params) -> PlanStep:
+        return PlanStep(action=Intent.PREPARE_CALC, parametros=params)
+
+    def test_the_measured_bug_a_duplicated_prepare_becomes_one(self):
+        # qwen2.5-coder:14b sobre "relajá el bulk de Zr hcp" devolvía esto
+        # unánime en 3 de 3: el cálculo se preparaba dos veces.
+        params = {"formula": "Zr", "red_cristalina": "hcp"}
+        plan = Plan(steps=[self._preparar(**params), self._preparar(**params)])
+        assert len(plan.steps) == 1
+        assert plan.steps[0].parametros == params
+
+    def test_same_action_with_different_params_is_two_real_calculations(self):
+        # La regla mira acción Y parámetros: dos cálculos distintos que el
+        # usuario pidió no se pueden fusionar.
+        plan = Plan(
+            steps=[self._preparar(formula="Zr"), self._preparar(formula="Si")]
+        )
+        assert [s.parametros["formula"] for s in plan.steps] == ["Zr", "Si"]
+
+    def test_a_repeat_that_is_not_consecutive_survives(self):
+        # "listá /a, creá /b, listá /a de nuevo" — mirar antes y después es
+        # una repetición pedida a propósito.
+        plan = Plan(
+            steps=[
+                _listar("/a"),
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/b"}),
+                _listar("/a"),
+            ]
+        )
+        assert len(plan.steps) == 3
+
+    def test_a_stuttered_destructive_step_collapses_instead_of_being_rejected(self):
+        # Sin colapsar primero, dos `enviar_slurm` son dos destructivos y
+        # `_v_destructive_last` tiraría el plan ENTERO. El orden de los dos
+        # validadores es lo que hace que esto funcione.
+        step = PlanStep(action=Intent.SUBMIT_SLURM, parametros={"nombre_trabajo": "zr"})
+        plan = Plan(steps=[step, step])
+        assert len(plan.steps) == 1
+        assert plan.steps[0].action == Intent.SUBMIT_SLURM
+
+    def test_more_than_two_repeats_collapse_to_one(self):
+        plan = Plan(steps=[_listar("/a")] * 4)
+        assert len(plan.steps) == 1
+
+    def test_a_stutter_in_the_middle_of_a_longer_plan(self):
+        plan = Plan(
+            steps=[
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/a"}),
+                _listar("/a"),
+                _listar("/a"),
+                PlanStep(action=Intent.SUBMIT_SLURM),
+            ]
+        )
+        assert [s.action for s in plan.steps] == [
+            Intent.CREATE_DIR, Intent.LIST_FILES, Intent.SUBMIT_SLURM,
+        ]
+
+    def test_a_plan_without_repeats_is_untouched(self):
+        steps = [_listar("/a"), _listar("/b"), _listar("/c")]
+        assert Plan(steps=steps).steps == steps
+
+    def test_two_calcs_without_material_are_NOT_collapsed(self):
+        # "relajá ZrO2 en bcc y en fcc" puede salir así: dos cálculos que se
+        # ven idénticos porque el modelo perdió justo lo que los distingue.
+        # Fusionarlos se comería un cálculo. Un valor ausente no puede
+        # colapsar dos estados distintos.
+        plan = Plan(
+            steps=[
+                self._preparar(tipo_calculo="relajacion"),
+                self._preparar(tipo_calculo="relajacion"),
+            ]
+        )
+        assert len(plan.steps) == 2
+
+    def test_not_collapsing_keeps_the_signal_that_triggers_recovery(self):
+        # `BecarioService._needs_decomposition` busca un plan multi-paso con
+        # un cálculo sin material para volver a pedirlo descompuesto. Si el
+        # colapso lo dejara en un solo paso, esa recuperación no se dispara.
+        plan = Plan(
+            steps=[
+                PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/a"}),
+                self._preparar(tipo_calculo="relajacion"),
+                self._preparar(tipo_calculo="relajacion"),
+            ]
+        )
+        assert len(plan.steps) >= 2
+        assert any(
+            s.action is Intent.PREPARE_CALC and not s.parametros.get("formula")
+            for s in plan.steps
+        )
+
+    def test_slabs_without_material_are_not_collapsed_either(self):
+        # Las losas entran por MODIFY_STRUCTURE y también llevan `formula`.
+        step = PlanStep(
+            action=Intent.MODIFY_STRUCTURE,
+            parametros={"tipo_estructura": "slab", "miller": [1, 0, 0]},
+        )
+        assert len(Plan(steps=[step, step]).steps) == 2
+
+    def test_a_stuttered_calc_WITH_material_still_collapses(self):
+        # El contraste que fija la regla: con material, son el mismo paso.
+        plan = Plan(
+            steps=[
+                self._preparar(formula="Zr", tipo_calculo="relajacion"),
+                self._preparar(formula="Zr", tipo_calculo="relajacion"),
+            ]
+        )
+        assert len(plan.steps) == 1
 
 
 class TestPendingPlan:
