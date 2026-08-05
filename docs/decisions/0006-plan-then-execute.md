@@ -122,7 +122,9 @@ destructiva virtual" para operaciones que preparan y confirman sin ser
 técnicamente `Intent.destructive()`.
 
 **Levantamiento del límite (2026-08-05): la cola destructiva virtual es
-el batch, y ya existía.** ADR-0007 construyó exactamente el mecanismo que
+el batch, y ya existía.** (El detalle de este levantamiento vive en la
+Enmienda 2 de ADR-0007, que es el ADR dueño del batch; acá queda el efecto
+sobre el límite de v1.) ADR-0007 construyó exactamente el mecanismo que
 faltaba —validar y describir cada paso sin tocar el cluster, stagear el
 plan entero con UNA confirmación— pero solo se usaba para planes grandes
 o multi-cálculo. Medido antes de tocar nada, el límite real que regía no
