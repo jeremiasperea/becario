@@ -145,6 +145,37 @@ ser dos cálculos distintos a los que el modelo les comió el material —
 justo el caso de acá. Cubre el otro escenario, el de pasos idénticos y
 COMPLETOS, que no tiene ninguna red abajo.
 
+### Actualización 2026-08-05: la pregunta abierta tiene respuesta, y es la contraria
+
+**"Eso es del prompt, no del dominio" se midió y era falso.**
+
+El segundo paso sobre un pedido de uno solo cambió de forma. Ya no es el
+paso repetido que describe este documento: `qwen2.5-coder:14b` sobre
+"relajá el bulk de W con red cristalina bcc" devuelve, unánime en 3 de 3,
+un paso **partido en dos mitades**:
+
+```
+paso 1: preparar_calculo     {tipo_calculo: relajacion}
+paso 2: modificar_estructura {formula: W, red_cristalina: bcc}
+```
+
+La acción sin material, el material sin acción. Antes de arreglarlo se
+probó la hipótesis de este documento: se agregó al `_SYSTEM_PROMPT` una
+regla explícita ("un cálculo es UN SOLO paso, el material va en el mismo
+paso") más un ejemplo con otro material que el del fixture, para no
+enseñarle al modelo la respuesta del examen. Medido sobre la salida cruda
+del LLM: **siguió partiendo el pedido 3 de 3, idéntico.** La regla se
+revirtió en vez de dejarla puesta — prosa medida como inerte no es una red
+de seguridad, y CI no puede vigilarla.
+
+El arreglo terminó siendo **del dominio**: `Plan._v_merge_split_calc`
+(PR #36), el reverso exacto de `_v_collapse_stutter`. Allá el modelo dice
+dos veces un paso completo; acá dice una sola vez un paso partido en dos.
+Con eso, `coder:14b` pasa de 7/8 a **8/8** — su primera corrida limpia.
+
+Sobre la otra mitad de la pregunta abierta: el 14b **sigue en producción**.
+Lo que lo descalificaba en este documento era este fixture, y ya pasa.
+
 ## Reproducir
 
 ```bash
