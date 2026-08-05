@@ -93,9 +93,67 @@ Ordenados de más rápido a más lento por mediana de latencia.
 `BECARIO_OLLAMA_MODEL=qwen2.5:7b` en la máquina de desarrollo. Para
 producción, correr este mismo harness en esa máquina antes de decidir.
 
+## Segunda corrida (2026-08-04): qwen2.5-coder:14b duplica un paso
+
+Con el harness ya emitiendo puntaje (`--json`), se midió el modelo que sirve
+producción desde el benchmark del 2026-08-01 contra la línea base rápida. El
+resultado crudo está en [`scoreboard_router.json`](scoreboard_router.json).
+
+| | qwen2.5:7b | qwen2.5-coder:14b |
+|---|---|---|
+| **Aciertos** | **8/8** | **7/8** |
+| **Mediana por llamada** | **8.8s** | **17.4s** |
+| **Total (24 llamadas)** | 192s | 413s |
+
+El único fallo, y no es flake —`[0/3]`, unánime:
+
+```
+❌ single_prepare_relax.txt — esperaba steps=['preparar_calculo'],
+                              obtuve ['preparar_calculo', 'preparar_calculo']
+```
+
+**El 14b agrega un paso que nadie pidió.** Repetido con 3 llamadas más al
+mismo prompt, el fallo se ve mejor: 2 de 3 veces devuelve el par
+`[preparar_calculo, preparar_calculo]` y 1 de 3 devuelve
+`[preparar_calculo, enviar_slurm]` — inventa un envío al cluster que el
+mensaje no menciona.
+
+Y en los dos pasos duplicados **falta `formula`**: los params son
+`{tipo_calculo: relajacion, tags_incar: {...}}`. Es decir que la
+duplicación viene junto con el fallo ya conocido de soltar el material
+(0/3), no separado de él.
+
+Eso importa para el desenlace: un plan multi-paso con un cálculo sin
+material dispara `BecarioService._needs_decomposition`, que lo vuelve a
+pedir descompuesto. **El cálculo no se prepara dos veces** — la
+recuperación existente lo maneja. Verificado a mano sobre el plan exacto
+que devuelve el modelo.
+
+Esto NO contradice el benchmark del 2026-08-01: aquel midió **invención** de
+valores sobre 13 casos y el coder:14b ganó ahí. Este mide **forma del plan y
+extracción de parámetros**, un eje que aquel no cubría. Son evidencias
+complementarias sobre un modelo que cuesta el doble de tiempo por llamada.
+
+Queda abierto: decidir si el 14b sigue sirviendo producción, y por qué
+agrega un segundo paso sobre un pedido de uno solo — eso es del prompt, no
+del dominio.
+
+Sobre el colapso de pasos idénticos: se implementó en el dominio
+(`Plan._v_collapse_stutter`), pero **no hace pasar este fixture, a
+propósito**. La regla no fusiona dos cálculos sin `formula` porque pueden
+ser dos cálculos distintos a los que el modelo les comió el material —
+justo el caso de acá. Cubre el otro escenario, el de pasos idénticos y
+COMPLETOS, que no tiene ninguna red abajo.
+
 ## Reproducir
 
 ```bash
+# La corrida original de este documento
 BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
     --models gemma3:4b,qwen2.5:7b,gemma4:e4b,gemma4:12b --attempts 3 --timeout 300
+
+# La segunda corrida, con scoreboard versionado
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    --models qwen2.5:7b,qwen2.5-coder:14b --timeout 300 \
+    --json docs/scoreboard_router.json
 ```
