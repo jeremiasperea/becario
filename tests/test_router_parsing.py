@@ -248,6 +248,23 @@ class TestSchema:
             f"antes de seguir agregando campos."
         )
 
+    def test_every_extraction_field_tells_the_llm_what_it_holds(self):
+        # La contracara del gate de tamaño. Mientras el techo era falso, la
+        # regla de oro era "campo nuevo va sin description, la guía va al
+        # _SYSTEM_PROMPT": eso dejó 11 campos que el LLM veía como un nombre
+        # pelado. Ahora el schema se paga, así que un campo sin description
+        # es un olvido, no una decisión.
+        sin_guia = [
+            nombre
+            for nombre, campo in RouterParams.model_fields.items()
+            if not campo.description
+        ]
+        assert sin_guia == [], (
+            f"campos del router sin `description`: {sin_guia}. El LLM los ve "
+            f"como un nombre sin contexto. Hay margen de schema medido "
+            f"(ADR-0006): escribí qué contiene el campo y en qué formato."
+        )
+
     def test_compact_schema_has_no_titles_but_keeps_descriptions(self):
         # `title` es ruido para el LLM (el nombre ya está en la key) y
         # pesa contra el presupuesto; las `description` son la guía de

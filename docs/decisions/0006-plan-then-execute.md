@@ -325,6 +325,35 @@ el tamaño por sí solo no degrada hasta ahí; no prueba dónde está el
 límite exacto ni cómo interactúan campos con significado real. Antes de
 subir el techo de nuevo, re-correr `scripts/calibrar_schema.py`.
 
+**Actualización 3 (2026-08-05) — se pagó la deuda que dejó el presupuesto
+falso.** Medir el techo no alcanzaba: el código seguía lleno de las
+decisiones tomadas contra la pared imaginaria. Once campos de
+`RouterParams` (`job_id`, `nombre_trabajo`, `particion`, `nodos`,
+`tiempo_limite`, `script_remoto`, `filtro_busqueda`, `formula`,
+`nombre_archivo`, `mp_id`, `tags_incar`) llegaban al LLM como un nombre
+pelado, y seis más tenían descripciones telegráficas escritas para ahorrar
+bytes (`"en Å"`, `"x, y o z"`, `"[nx, ny, nz]"`). Peor: dos comentarios en
+`ollama_router.py` instruían explícitamente a no escribir `description`
+por presupuesto — consejo ya falso, apuntando a la próxima persona que
+tocara el archivo.
+
+Ahora los 29 campos tienen `description`. El schema pasa de **3912 a 5027
+bytes**; quedan **2973 libres** del techo medido de 8000.
+
+El criterio de qué va dónde queda fijado, y no es "lo que entre":
+
+- **`description` del campo**: qué contiene y en qué formato. Es
+  información local, y el LLM la lee justo donde está el campo.
+- **`_SYSTEM_PROMPT`**: reglas de ruteo ENTRE campos y ejemplos completos
+  ("si es una superficie y no nombra la cara, dejá `miller` vacío"). No
+  tienen dónde vivir a nivel de un campo suelto.
+
+El gate nuevo
+(`tests/test_router_parsing.py::TestSchema::test_every_extraction_field_tells_the_llm_what_it_holds`)
+falla si un campo entra sin `description`. Es la contracara del gate de
+tamaño: uno impide que el schema se desboque, el otro impide que se
+racione de nuevo.
+
 **Nota de validación en vivo (AR-2): `gemma4:12b` verificado, con dos
 hallazgos.** La paridad de fixtures sobre el modelo de producción (SR8,
 diferida en el archive como AR-2) se corrió y pasa 6/6. La corrida dejó
