@@ -123,6 +123,57 @@ comportamiento ya probado — queda anotado para una futura iteración de
 diseño (una "cola destructiva virtual" para operaciones que preparan y
 confirman sin ser técnicamente `Intent.destructive()`).
 
+**Consecuencia medida (2026-08-05): ese fail-closed convierte un error de
+formato del modelo en un pedido muerto.** `qwen2.5-coder:14b` —el modelo
+de producción— parte "relajá el bulk de W con red cristalina bcc" en dos
+mitades, unánime en 3 de 3 intentos:
+
+```
+paso 1: preparar_calculo     {tipo_calculo: relajacion}
+paso 2: modificar_estructura {formula: W, red_cristalina: bcc}
+```
+
+La acción sin material, el material sin acción. Ninguna se sostiene sola,
+y como el plan es multi-paso y contiene `preparar_calculo`, se rechaza
+ENTERO. Corrido por el camino real del servicio, el usuario recibe:
+
+```
+❓ No pude interpretar tu pedido. Probá con:
+• "Relajá los parámetros de red del bulk de W"
+```
+
+La primera sugerencia es lo que acaba de pedir. El pedido más común del
+proyecto, roto en el modelo de producción, con un mensaje que se burla
+del usuario sin querer.
+
+La red de recuperación existente no alcanza:
+`BecarioService._needs_decomposition` detecta la firma (plan multi-paso
+con un cálculo sin material) y vuelve a rutear descompuesto, pero el
+modelo devuelve el MISMO plan partido y el fallback es el plan roto
+original. `OllamaRouter._backfill_structure` tampoco: exige exactamente
+un paso que necesite material, y acá hay dos (`preparar_calculo` y
+`modificar_estructura` están los dos en `_STRUCTURE_INTENTS`), así que se
+abre de manos justo en el caso que podría arreglar.
+
+**Se arregla en el dominio** (`Plan._v_merge_split_calc`), no en el
+prompt. Es el reverso de `_v_collapse_stutter`: allá el modelo dice dos
+veces un paso completo, acá dice una sola vez un paso partido en dos.
+Las condiciones son estrechas a propósito — el cálculo sin material, la
+estructura inmediatamente después y con material, y sin parámetros de
+archivo (`destino_remoto`, `formato_salida`, `nombre_archivo`), porque
+"generá el POSCAR de Si en /home/ana" es un entregable propio. El orden
+es lo que delata el error: armar la estructura DESPUÉS de calcular sobre
+ella no es un plan que alguien pida.
+
+**Por qué NO en el prompt, con evidencia.** Se intentó primero: una regla
+explícita ("un cálculo es UN SOLO paso, el material va en el mismo paso")
+más un ejemplo con otro material que el del fixture, para no enseñarle al
+modelo la respuesta del examen. Medido: `coder:14b` siguió partiendo el
+pedido **3 de 3**, idéntico. La regla se revirtió en vez de dejarla
+puesta. Prosa que está medida como inerte no es una red de seguridad: es
+un amuleto, y encima uno que no puede vigilar CI. La regla de dominio sí
+se testea sin LLM.
+
 **Nota de presupuesto de schema:** fusionar `steps` en `RouterDecision`
 crece el JSON Schema que se le manda al LLM (gemma3:4b es el peor caso —
 el modelo de banco, ver ADR-0002). Medido en la fase de implementación:
