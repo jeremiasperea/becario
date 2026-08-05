@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-04T23:41:16+00:00",
+  "generated_at": "2026-08-05T20:42:45+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,20 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
+  "router_fingerprint": "e05e720bcfedbdfd",
   "models": [
     {
       "model": "qwen2.5:7b",
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 8.788,
+      "median_latency_seconds": 8.939,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.305,
+          "latency_seconds": 3.301,
           "error": null
         },
         {
@@ -33,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.085,
+          "latency_seconds": 3.222,
           "error": null
         },
         {
@@ -41,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.475,
+          "latency_seconds": 9.504,
           "error": null
         },
         {
@@ -49,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.983,
+          "latency_seconds": 10.407,
           "error": null
         },
         {
@@ -57,7 +58,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.494,
+          "latency_seconds": 5.647,
           "error": null
         },
         {
@@ -65,7 +66,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 11.761,
+          "latency_seconds": 12.5,
           "error": null
         },
         {
@@ -73,7 +74,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 10.505,
+          "latency_seconds": 9.699,
           "error": null
         },
         {
@@ -81,7 +82,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.376,
+          "latency_seconds": 5.803,
           "error": null
         }
       ]
@@ -91,14 +92,14 @@
       "skipped": false,
       "hits": 7,
       "total": 8,
-      "median_latency_seconds": 17.433,
+      "median_latency_seconds": 18.638,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.867,
+          "latency_seconds": 6.303,
           "error": null
         },
         {
@@ -106,7 +107,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.753,
+          "latency_seconds": 6.183,
           "error": null
         },
         {
@@ -114,7 +115,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 19.989,
+          "latency_seconds": 22.01,
           "error": null
         },
         {
@@ -122,7 +123,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 20.494,
+          "latency_seconds": 22.504,
           "error": null
         },
         {
@@ -130,7 +131,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 11.292,
+          "latency_seconds": 12.338,
           "error": null
         },
         {
@@ -138,7 +139,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.103,
+          "latency_seconds": 26.194,
           "error": null
         },
         {
@@ -146,15 +147,15 @@
           "ok": false,
           "passes": 0,
           "attempts": 3,
-          "latency_seconds": 30.684,
-          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'preparar_calculo']"
+          "latency_seconds": 24.57,
+          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'modificar_estructura']"
         },
         {
           "name": "single_submit_job.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 11.107,
+          "latency_seconds": 12.151,
           "error": null
         }
       ]

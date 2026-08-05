@@ -52,6 +52,7 @@ decisiones confirmadas por humanos.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -65,7 +66,10 @@ from typing import Callable, Optional, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from becario.infrastructure.ollama_router import OllamaRouter  # noqa: E402
+from becario.infrastructure.ollama_router import (  # noqa: E402
+    OllamaRouter,
+    compact_json_schema,
+)
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "router"
 # gemma3:4b primero: es el peor caso (HC4) y el que gatea el presupuesto
@@ -191,6 +195,38 @@ class ModelScore:
         }
 
 
+def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
+    """Huella de TODO lo que decide qué mide el tablero: el schema que viaja
+    a Ollama, los cuatro prompts del router y el contenido de los fixtures.
+
+    Es la pieza que faltaba para cerrar el agujero. `check_scoreboard` ya
+    detectaba que apareciera o desapareciera un fixture, pero no que
+    cambiara el contrato con el modelo: entre el 2026-08-04 y el 08-05 el
+    schema sumó un campo (`magnetico`, PR #34) y el tablero commiteado
+    siguió pareciendo válido mientras describía un router que ya no
+    existía. Un fixture pasó de fallar de una forma a fallar de otra sin
+    que nada avisara.
+
+    Se hashea el CONTENIDO de los fixtures, no solo sus nombres: editarle
+    el `prompt` a un fixture cambia lo que se está midiendo tanto como
+    agregarlo.
+    """
+    from becario.infrastructure import ollama_router as router_mod
+
+    partes = [compact_json_schema_json(router_mod.RouterDecision)]
+    for nombre in sorted(n for n in dir(router_mod) if n.endswith("_PROMPT")):
+        partes.append(f"{nombre}={getattr(router_mod, nombre)}")
+    for path in sorted(fixtures_dir.glob("*.txt")):
+        partes.append(f"{path.name}={path.read_text(encoding='utf-8')}")
+    crudo = "\n\x00".join(partes).encode("utf-8")
+    return hashlib.sha256(crudo).hexdigest()[:16]
+
+
+def compact_json_schema_json(model) -> str:
+    """El schema tal como viaja a Ollama, serializado de forma estable."""
+    return json.dumps(compact_json_schema(model), sort_keys=True, ensure_ascii=False)
+
+
 def build_scoreboard(
     scores: list[ModelScore], *, attempts: int, fixtures_dir: Path
 ) -> dict:
@@ -207,11 +243,30 @@ def build_scoreboard(
         "attempts": attempts,
         "fixtures_dir": where,
         "fixtures": sorted({r.name for s in scores for r in s.results}),
+        # Con qué contrato de router se midió esto (ver `router_fingerprint`).
+        "router_fingerprint": router_fingerprint(fixtures_dir),
         "models": [s.to_dict() for s in scores],
     }
 
 
-def check_scoreboard(board, fixture_names: set[str]) -> list[str]:
+def _scoreboard_age_days(board: dict) -> Optional[float]:
+    """Días desde que se midió, o `None` si la fecha no se puede leer."""
+    try:
+        cuando = datetime.fromisoformat(str(board.get("generated_at")))
+    except (TypeError, ValueError):
+        return None
+    if cuando.tzinfo is None:
+        cuando = cuando.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - cuando).total_seconds() / 86400
+
+
+def check_scoreboard(
+    board,
+    fixture_names: set[str],
+    *,
+    fingerprint: Optional[str] = None,
+    max_age_days: Optional[float] = None,
+) -> list[str]:
     """Los problemas de un scoreboard commiteado; lista vacía = está al día.
 
     Es el gate BARATO que sí puede correr en CI: valida forma y frescura sin
@@ -220,9 +275,19 @@ def check_scoreboard(board, fixture_names: set[str]) -> list[str]:
     por 3 intentos son ~117 minutos, y los runners no tienen ni GPU ni el
     modelo instalado.
 
-    La comprobación de frescura es la que atrapa el olvido real: si alguien
-    agrega un fixture y no vuelve a correr el harness, el scoreboard deja de
-    describir lo que hay en `tests/fixtures/router/` y CI lo dice."""
+    Tres formas de quedar vencido, y las tres se chequean acá:
+
+    1. **Cambió el set de fixtures.** Alguien agrega uno y no vuelve a
+       correr el harness: el tablero deja de describir lo que hay en
+       `tests/fixtures/router/`.
+    2. **Cambió el contrato con el modelo** (`fingerprint`): schema,
+       prompts o el contenido de un fixture. Este es el que faltaba —
+       el tablero seguía pareciendo válido mientras describía un router
+       que ya no existía.
+    3. **Pasó el tiempo** (`max_age_days`): el código puede no haberse
+       movido y el modelo comportarse distinto igual. Contra eso no hay
+       hash que valga, solo volver a medir.
+    """
     problems: list[str] = []
     if not isinstance(board, dict):
         return ["el scoreboard no es un objeto JSON"]
@@ -231,6 +296,33 @@ def check_scoreboard(board, fixture_names: set[str]) -> list[str]:
             problems.append(f"falta la clave '{key}'")
     if problems:
         return problems
+
+    if fingerprint is not None:
+        medido = board.get("router_fingerprint")
+        if medido is None:
+            problems.append(
+                "el tablero no dice con qué contrato de router se midió "
+                "(falta 'router_fingerprint'): re-corré el harness con --json"
+            )
+        elif medido != fingerprint:
+            problems.append(
+                f"el tablero se midió con otro contrato de router "
+                f"(huella {medido}, ahora {fingerprint}): cambió el schema, "
+                f"un prompt o un fixture desde la última medición. Los "
+                f"números de abajo describen un router que ya no existe — "
+                f"re-corré el harness con --json."
+            )
+
+    if max_age_days is not None:
+        edad = _scoreboard_age_days(board)
+        if edad is None:
+            problems.append(f"'generated_at' ilegible: {board['generated_at']!r}")
+        elif edad > max_age_days:
+            problems.append(
+                f"el tablero tiene {edad:.0f} días (tope {max_age_days:.0f}): "
+                f"el modelo puede haber cambiado de comportamiento sin que "
+                f"se moviera una línea de código. Re-corré el harness."
+            )
 
     if not isinstance(board["attempts"], int) or board["attempts"] < 1:
         problems.append(f"'attempts' inválido: {board['attempts']!r}")
