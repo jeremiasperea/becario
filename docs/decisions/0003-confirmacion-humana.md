@@ -25,6 +25,15 @@ al confirmar se llama al `ClusterGateway`. El resto de las acciones
 lectura o generan un archivo local sin tocar la cola de Slurm, y ejecutan
 directo.
 
+> **Matiz agregado el 2026-08-05.** "Ejecutan directo" vale para un pedido
+> de UNA acción, que es el caso que este ADR tenía enfrente. Dentro de un
+> plan multi-paso que contenga `preparar_calculo`, ningún paso ejecuta
+> directo: el plan entero se stagea y se confirma de una sola vez
+> (ADR-0007, Enmienda 2). Eso no relaja esta decisión, la endurece — más
+> cosas esperan aprobación, no menos. Lo que sí cambia es el momento en
+> que un `modificar_estructura` toca el disco: antes era al construir el
+> plan, ahora es después de que el humano avala.
+
 ## Consecuencias
 
 **A favor:** un test (`test_confirm_executes_exactly_once`) prueba que

@@ -29,9 +29,14 @@ class Reply:
     # intent (el camino de hoy) nunca lo consulta.
     ok: bool = True
     # Respuestas adicionales que el canal envía DESPUÉS de esta, cada una
-    # con sus propios botones: un plan con varios `preparar_calculo` emite
-    # una confirmación individual por cálculo (decisión de producto: nada
-    # de aprobar N envíos con un solo botón).
+    # con sus propios botones.
+    #
+    # OJO: ya NO es "una confirmación por cálculo". Un plan multi-paso que
+    # contenga `preparar_calculo` se confirma ENTERO como batch, con un
+    # solo botón (ADR-0007, Enmienda 2), y ese camino no usa `followups`.
+    # El campo sigue vivo para las respuestas que el canal encadena por
+    # otros motivos; si estás buscando dónde se aprueban N cálculos, es
+    # `_prepare_batch`, no acá.
     followups: tuple["Reply", ...] = ()
     # El pedido está BIEN pero le falta un dato que no se puede adivinar
     # (p. ej. el índice de Miller de una losa). La fachada deja el pedido
