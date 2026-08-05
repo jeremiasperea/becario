@@ -214,7 +214,7 @@ escritorio, donde no hay nadie ordenando el arranque.
 ## Tests
 
 ```bash
-python3 -m pytest            # ~905 tests al 2026-08-05
+python3 -m pytest            # ~934 tests al 2026-08-05
 python3 -m pytest --cov=becario --cov-report=term-missing
 ```
 
