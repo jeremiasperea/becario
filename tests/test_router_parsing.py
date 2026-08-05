@@ -101,6 +101,14 @@ class TestParseLLMOutput:
         assert plan.single_step.parametros["mp_id"] == "mp-19770"
         assert plan.single_step.parametros["fuente_estructura"] == "mp"
 
+    def test_magnetic_param_roundtrip(self):
+        raw = (
+            '{"steps": [{"action": "preparar_calculo", "parametros": '
+            '{"formula": "Fe", "magnetico": true}}]}'
+        )
+        plan = parse(raw)
+        assert plan.single_step.parametros["magnetico"] is True
+
     def test_none_params_are_excluded(self):
         plan = parse('{"steps": [{"action": "revisar_estado", "parametros": {"job_id": null}}]}')
         assert plan.single_step.parametros == {}
@@ -208,6 +216,10 @@ class TestSchema:
         schema = RouterParams.model_json_schema()
         for key in ("mp_id", "fuente_estructura"):
             assert key in schema["properties"]
+
+    def test_schema_has_magnetic_param(self):
+        schema = RouterParams.model_json_schema()
+        assert "magnetico" in schema["properties"]
 
     def test_schema_size_stays_within_measured_ceiling(self):
         # Gate contra crecimiento desbocado, no racionamiento de bytes: el

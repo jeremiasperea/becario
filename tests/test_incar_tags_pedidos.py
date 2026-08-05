@@ -75,10 +75,29 @@ class TestSeRechazaLoQueNoCorresponde:
         with pytest.raises(ValidationError, match="tipo de cálculo|campo"):
             VaspCalcRequest(formula="Zr", incar_tags={tag: "1"})
 
-    @pytest.mark.parametrize("tag", ["ENCUT", "NBANDS"])
+    @pytest.mark.parametrize("tag", ["ENCUT", "NBANDS", "ISPIN"])
     def test_los_que_ya_tienen_campo_propio(self, tag):
         with pytest.raises(ValidationError, match="campo"):
             VaspCalcRequest(formula="Zr", incar_tags={tag: "600"})
+
+    def test_ispin_a_mano_no_puede_desmagnetizar_en_silencio(self):
+        """Pedir un cálculo magnético y a la vez `ISPIN=1` a mano es una
+        contradicción que cambia la FÍSICA de la corrida: el INCAR saldría
+        sin polarización de espín aunque el usuario la pidió.
+
+        Los tags a mano se aplican después de los de calidad, así que sin
+        esta validación el tag ganaba en silencio. Es el mismo riesgo que
+        motivó `descartar_numeros_inventados`: un valor que no falla, corre,
+        y da otra física."""
+        with pytest.raises(ValidationError, match="campo"):
+            VaspCalcRequest(formula="Fe", ispin=2, incar_tags={"ISPIN": "1"})
+
+    def test_ispin_a_mano_que_dice_lo_mismo_no_es_contradiccion(self):
+        # Repetir un valor no es contradecirlo (PR #30): se ignora por
+        # redundante en vez de rebotar el pedido entero.
+        req = VaspCalcRequest(formula="Fe", ispin=2, incar_tags={"ISPIN": "2"})
+        assert req.incar_tags == {}
+        assert req.ispin == 2
 
     def test_un_tag_inexistente_no_se_ignora_se_rechaza(self):
         """VASP ignoraría el tag y correría con el default: el error tiene que
