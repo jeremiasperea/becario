@@ -133,7 +133,7 @@ los docstrings de `RouterStep`/`RouterDecision` (Pydantic los vuelca como
 bytes**, dentro de presupuesto. `RouterParams` se referencia una sola vez
 vía `$ref` en `$defs` y se reutiliza por paso — no se duplica el schema
 de parámetros por cada paso del plan. Un test de regresión
-(`tests/test_router_parsing.py::TestSchema::test_schema_size_stays_within_budget`)
+(`tests/test_router_parsing.py::TestSchema::test_schema_size_stays_within_measured_ceiling`)
 falla si una fusión futura vuelve a inflar el schema por encima del
 1.15×.
 
@@ -149,10 +149,55 @@ como UN campo genérico (`tags_incar`, un diccionario) validado contra el
 vocabulario del manual, y no como un campo por tag — cuesta 126 bytes una
 sola vez y sirve para los 169 tags documentados.
 
-Para lo que venga: antes de agregar un campo al schema, preguntarse si el
-dato no entra por `tags_incar`. Y si hace falta un campo nuevo, va **sin
-`description`** (como `mp_id` o `nombre_archivo`): la guía de extracción
-vive en `_SYSTEM_PROMPT`, que no pesa contra este presupuesto.
+**Actualización 2 (2026-08-05) — el presupuesto era falso, y por eso
+"agotarlo" no significaba nada.** Con el tablero del router andando (PR
+\#31) se pudo hacer lo que faltaba desde el principio: medir. El resultado
+está en `scripts/calibrar_schema.py`, que infla el schema con relleno
+inerte (los `title` que Pydantic autogenera y `compact_json_schema` poda) y
+corre los 8 fixtures en cada tamaño:
+
+| schema | qwen2.5:7b | gemma3:4b |
+|---|---|---|
+| 4122 B (el de hoy) | 8/8 | 7/8 |
+| 4884 B | 8/8 | 7/8 |
+| 6000 B | 8/8 | 7/8 |
+| **8004 B** | **8/8** | **7/8** |
+
+Ni la precisión ni la latencia se mueven al **duplicar** el schema. Y
+`gemma3:4b` —el peor caso que este presupuesto decía proteger— falla el
+mismo fixture (`single_prepare_encut`) en TODOS los tamaños, incluido el
+actual: su fallo no es de tamaño.
+
+De dónde venía el error: ni el 3650 ni el 1.15 fueron nunca una medición
+de capacidad del modelo. El 3650 se midió **antes** de fusionar `steps` y
+el 15% era headroom para que ESE refactor no regresara — un guard de
+regresión puntual, correcto para lo que se escribió. Lo que falló fue
+reinterpretarlo como límite absoluto y diseñar contra él durante meses.
+
+Dos cosas más que conviene dejar dichas:
+
+- **El gate vigilaba el 40% del costo.** Por cada `route()` el modelo
+  recibe el schema (4122 B) **y** `_SYSTEM_PROMPT` (6179 B). El consejo de
+  arriba —"si hace falta un campo nuevo, va sin `description`, la guía vive
+  en `_SYSTEM_PROMPT`, que no pesa contra este presupuesto"— no ahorraba
+  contexto: movía bytes de la columna medida a la no medida. Era
+  contabilidad, no ahorro.
+- **El techo nuevo (8000 B) es el mayor tamaño verificado limpio**, y el
+  gate cambió de propósito: ya no raciona bytes para decidir si un campo
+  entra, sino que caza un crecimiento desbocado (volver a un campo por tag
+  del INCAR, por ejemplo). Quedan ~3900 bytes libres.
+
+Lo que **sí** sigue en pie de la conclusión anterior: un campo por feature
+no escala como diseño, y `tags_incar` como diccionario genérico sigue
+siendo la decisión correcta. Lo que cae es la urgencia y, sobre todo,
+recortar `description` para ahorrar bytes — las descripciones son guía de
+extracción y ahora se pagan sin problema.
+
+**Limitación de la calibración:** ningún relleno es perfectamente inerte,
+así que el resultado se lee como cota. Aguantar 8 KB de relleno prueba que
+el tamaño por sí solo no degrada hasta ahí; no prueba dónde está el
+límite exacto ni cómo interactúan campos con significado real. Antes de
+subir el techo de nuevo, re-correr `scripts/calibrar_schema.py`.
 
 **Nota de validación en vivo (AR-2): `gemma4:12b` verificado, con dos
 hallazgos.** La paridad de fixtures sobre el modelo de producción (SR8,

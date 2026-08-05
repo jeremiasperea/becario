@@ -11,13 +11,32 @@ from becario.infrastructure.ollama_router import (
 
 parse = OllamaRouter.parse_llm_output
 
-# Tamaño del schema de RouterDecision ANTES de fusionar `steps` (medido en
-# la fase apply, tarea 3.1, sobre gemma3:4b como modelo peor-caso). El
-# presupuesto del gate es 1.15x: si la fusión de `steps` en la tarea 3.2
-# infla el schema por encima de eso, corresponde activar la mitigación de
-# recorte de `description` descripta en el diseño (ADR-0006).
-_ROUTER_DECISION_SCHEMA_BASELINE_BYTES = 3650
-_ROUTER_DECISION_SCHEMA_BUDGET_FACTOR = 1.15
+# Techo del schema de RouterDecision, MEDIDO (2026-08-05,
+# `scripts/calibrar_schema.py`). El presupuesto anterior era 3650 x 1.15 =
+# 4197 B, y ninguno de los dos números era una medición: el 3650 se midió
+# ANTES de fusionar `steps` y el 1.15 era headroom elegido para que ESE
+# refactor (tarea 3.2) no regresara. Sirvió para lo que se escribió, pero
+# quedó fosilizado como límite absoluto y llegó a estar al 98% de uso,
+# contorsionando features que no hacía falta contorsionar.
+#
+# La calibración infló el schema con relleno inerte (los `title` que
+# Pydantic autogenera y `compact_json_schema` poda) y corrió los 8 fixtures
+# del harness en cada tamaño:
+#
+#     schema     qwen2.5:7b   gemma3:4b
+#     4122 B        8/8          7/8
+#     4884 B        8/8          7/8
+#     6000 B        8/8          7/8
+#     8004 B        8/8          7/8
+#
+# Ni precisión ni latencia se mueven al duplicar el schema. Y `gemma3:4b`
+# —el peor caso que el presupuesto decía proteger— falla el MISMO fixture
+# en todos los tamaños, incluido el actual: su fallo no es de tamaño.
+#
+# El techo queda en el mayor tamaño verificado limpio. El gate ya no
+# raciona bytes: existe para cazar un crecimiento desbocado (p. ej. volver
+# a un campo por cada tag del INCAR), no para decidir si un campo entra.
+_ROUTER_DECISION_SCHEMA_MAX_BYTES = 8000
 
 
 class TestParseLLMOutput:
@@ -190,19 +209,31 @@ class TestSchema:
         for key in ("mp_id", "fuente_estructura"):
             assert key in schema["properties"]
 
-    def test_schema_size_stays_within_budget(self):
-        # Gate de tamaño (gemma3:4b es el peor caso): la fusión de `steps`
-        # en RouterDecision (tarea 3.2) no puede inflar el schema más de
-        # 1.15x el baseline medido antes del merge. Si esto falla, activar
-        # la mitigación de recorte de `description` (ver diseño §2.2).
-        # Se mide el schema COMO VIAJA a Ollama (compact_json_schema, sin
-        # los `title` autogenerados de Pydantic) porque eso es lo que
-        # consume el presupuesto real del modelo.
+    def test_schema_size_stays_within_measured_ceiling(self):
+        # Gate contra crecimiento desbocado, no racionamiento de bytes: el
+        # techo está MEDIDO (ver la nota del módulo y
+        # `scripts/calibrar_schema.py`). Se mide el schema COMO VIAJA a
+        # Ollama (compact_json_schema, sin los `title` autogenerados de
+        # Pydantic) porque eso es lo que el modelo realmente recibe.
         size = len(json.dumps(compact_json_schema(RouterDecision)))
-        budget = _ROUTER_DECISION_SCHEMA_BASELINE_BYTES * _ROUTER_DECISION_SCHEMA_BUDGET_FACTOR
-        assert size <= budget, (
-            f"schema de RouterDecision creció a {size} bytes, "
-            f"supera el presupuesto de {budget:.0f} bytes (1.15x baseline)"
+        assert size <= _ROUTER_DECISION_SCHEMA_MAX_BYTES, (
+            f"schema de RouterDecision creció a {size} bytes, supera el techo "
+            f"medido de {_ROUTER_DECISION_SCHEMA_MAX_BYTES} bytes. Antes de "
+            f"subirlo, re-calibrá con scripts/calibrar_schema.py: el número "
+            f"tiene que salir de una medición, no de una estimación."
+        )
+
+    def test_the_ceiling_leaves_real_room_for_new_features(self):
+        # El presupuesto viejo (4197 B) llegó al 98% de uso y obligó a
+        # contorsionar features. Este test falla si el margen vuelve a
+        # apretarse hasta ahí, para que el aviso llegue antes de que alguien
+        # vuelva a diseñar contra una pared.
+        size = len(json.dumps(compact_json_schema(RouterDecision)))
+        libre = _ROUTER_DECISION_SCHEMA_MAX_BYTES - size
+        assert libre >= 1000, (
+            f"quedan {libre} bytes libres de schema: volvimos a la situación "
+            f"que motivó la calibración. Re-calibrá el techo con evidencia "
+            f"antes de seguir agregando campos."
         )
 
     def test_compact_schema_has_no_titles_but_keeps_descriptions(self):
