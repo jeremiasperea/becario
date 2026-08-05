@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T19:06:18+00:00",
+  "generated_at": "2026-08-05T22:44:47+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,20 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
+  "router_fingerprint": "05f4813f8f1c0c13",
   "models": [
     {
       "model": "qwen2.5:7b",
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 8.389,
+      "median_latency_seconds": 8.378,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.271,
+          "latency_seconds": 3.279,
           "error": null
         },
         {
@@ -33,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.232,
+          "latency_seconds": 3.588,
           "error": null
         },
         {
@@ -41,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.224,
+          "latency_seconds": 9.952,
           "error": null
         },
         {
@@ -49,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 10.079,
+          "latency_seconds": 10.712,
           "error": null
         },
         {
@@ -57,7 +58,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.056,
+          "latency_seconds": 5.817,
           "error": null
         },
         {
@@ -65,7 +66,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 13.046,
+          "latency_seconds": 13.011,
           "error": null
         },
         {
@@ -73,7 +74,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.347,
+          "latency_seconds": 8.93,
           "error": null
         },
         {
@@ -81,7 +82,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.874,
+          "latency_seconds": 5.554,
           "error": null
         }
       ]
@@ -91,14 +92,14 @@
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 19.352,
+      "median_latency_seconds": 18.651,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.747,
+          "latency_seconds": 6.225,
           "error": null
         },
         {
@@ -106,7 +107,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.28,
+          "latency_seconds": 6.179,
           "error": null
         },
         {
@@ -114,7 +115,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 21.907,
+          "latency_seconds": 21.532,
           "error": null
         },
         {
@@ -122,7 +123,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 23.013,
+          "latency_seconds": 22.388,
           "error": null
         },
         {
@@ -130,7 +131,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.717,
+          "latency_seconds": 12.034,
           "error": null
         },
         {
@@ -138,7 +139,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.842,
+          "latency_seconds": 27.288,
           "error": null
         },
         {
@@ -146,7 +147,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 23.757,
+          "latency_seconds": 24.451,
           "error": null
         },
         {
@@ -154,7 +155,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.207,
+          "latency_seconds": 12.179,
           "error": null
         }
       ]

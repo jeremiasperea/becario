@@ -250,9 +250,24 @@ la única forma de saber si un cambio mejoró o empeoró la extracción.
 
 No corre en CI por costo: con `gemma4:12b` medido en 77.9s por llamada
 (`docs/comparacion_modelos.md`), 30 fixtures por 3 intentos son ~117 minutos, y
-los runners no tienen ni GPU ni los modelos instalados. Lo que CI sí exige es
-que `docs/scoreboard_router.json` esté al día — si alguien agrega un fixture y
-no vuelve a correr el harness, `tests/test_scoreboard_router.py` lo caza.
+los runners no tienen ni GPU ni los modelos instalados.
+
+Lo que CI sí hace es **negarse a creerle a una medición vencida**.
+`tests/test_scoreboard_router.py` falla si `docs/scoreboard_router.json` dejó
+de describir el router de hoy, por cualquiera de estas tres vías:
+
+| se venció porque… | lo detecta |
+|---|---|
+| apareció o desapareció un fixture | la lista de fixtures |
+| cambió el schema, un prompt o el texto de un fixture | `router_fingerprint`, un hash del contrato con el modelo |
+| pasaron más de 30 días | `generated_at` |
+
+Los dos primeros cubren el código; el tercero es el único remedio contra que
+el modelo cambie de comportamiento **sin que se mueva una línea**. Eso pasó: un
+fixture pasó de fallar de una forma a fallar de otra entre dos días, y el
+tablero commiteado siguió pareciendo válido. Cuando el gate falla, la
+respuesta es siempre la misma —volver a correr el harness, ~11 minutos con los
+dos modelos— y el mensaje del test dice cuál de las tres cosas se venció.
 
 Para ampliar el set con casos reales, las decisiones que un humano confirmó en
 producción se vuelven fixtures:
