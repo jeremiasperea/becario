@@ -112,7 +112,16 @@ def _calc_fingerprint(req: VaspCalcRequest) -> str:
     return json.dumps(data, sort_keys=True, default=str)
 
 
-def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+def validate_structure_params(params: dict) -> Optional[Reply]:
+    """Los chequeos de `modify_structure` que NO tocan nada: devuelve el
+    `Reply` que corresponde si al pedido le falta un dato o pide algo que
+    este camino no sabe hacer, o `None` si la estructura se puede armar.
+
+    Vive separado del handler porque el preview del batch necesita
+    exactamente esto: validar sin ejecutar. Sin él, un slab al que le falta
+    la cara se stagea igual y el usuario aprueba un plan que no se puede
+    cumplir — cambiar un fallo silencioso por otro no es una mejora.
+    """
     formula = params.get("formula") or params.get("formula_quimica")
     if not formula:
         return Reply(
@@ -120,6 +129,45 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             '"generá un POSCAR de Si diamond 2x2x2".',
             ok=False,
         )
+    kind_raw = str(params.get("tipo_estructura", "")).lower()
+    kind = (
+        StructureKind(kind_raw)
+        if kind_raw in StructureKind._value2member_map_
+        else StructureKind.BULK
+    )
+    if kind is StructureKind.SLAB and not params.get("miller"):
+        return _ask_for_miller(str(formula))
+    # Las moléculas salen de la base G2 por nombre, no de `bulk()`: H2O
+    # tiene dos elementos y NO necesita red. Solo el cristal la pide.
+    if kind is not StructureKind.MOLECULE and needs_explicit_lattice(
+        str(formula),
+        params.get("red_cristalina"),
+        params.get("parametro_red"),
+    ):
+        return _ask_for_lattice(str(formula))
+    # Generar un archivo suelto arma la estructura IDEAL con ASE: no pasa
+    # por Materials Project ni por el CONTCAR de una corrida previa. Si el
+    # pedido nombró otra fuente hay que decirlo, porque devolver la ideal
+    # con cara de relajada es exactamente el error que no queremos.
+    src_raw = str(params.get("fuente_estructura") or "").strip().lower()
+    if src_raw in (StructureSource.RELAXED.value, StructureSource.MP.value):
+        return Reply(
+            text=(
+                "⚠️ Para generar un archivo suelto armo la estructura ideal "
+                "con ASE; todavía no sé partir de una relajación previa ni "
+                "de Materials Project por este camino. Pedímelo como "
+                "cálculo (p. ej. «relajá el slab del ZrO2 relajado») o "
+                "sacá esa condición."
+            ),
+            ok=False,
+        )
+    return None
+
+
+def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    if (problema := validate_structure_params(params)) is not None:
+        return problema
+    formula = params.get("formula") or params.get("formula_quimica")
     try:
         kind_raw = str(params.get("tipo_estructura", "")).lower()
         kind = (
@@ -127,32 +175,6 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             if kind_raw in StructureKind._value2member_map_
             else StructureKind.BULK
         )
-        if kind is StructureKind.SLAB and not params.get("miller"):
-            return _ask_for_miller(str(formula))
-        # Las moléculas salen de la base G2 por nombre, no de `bulk()`: H2O
-        # tiene dos elementos y NO necesita red. Solo el cristal la pide.
-        if kind is not StructureKind.MOLECULE and needs_explicit_lattice(
-            str(formula),
-            params.get("red_cristalina"),
-            params.get("parametro_red"),
-        ):
-            return _ask_for_lattice(str(formula))
-        # Generar un archivo suelto arma la estructura IDEAL con ASE: no pasa
-        # por Materials Project ni por el CONTCAR de una corrida previa. Si el
-        # pedido nombró otra fuente hay que decirlo, porque devolver la ideal
-        # con cara de relajada es exactamente el error que no queremos.
-        src_raw = str(params.get("fuente_estructura") or "").strip().lower()
-        if src_raw in (StructureSource.RELAXED.value, StructureSource.MP.value):
-            return Reply(
-                text=(
-                    "⚠️ Para generar un archivo suelto armo la estructura ideal "
-                    "con ASE; todavía no sé partir de una relajación previa ni "
-                    "de Materials Project por este camino. Pedímelo como "
-                    "cálculo (p. ej. «relajá el slab del ZrO2 relajado») o "
-                    "sacá esa condición."
-                ),
-                ok=False,
-            )
         fmt_raw = str(params.get("formato_salida", "vasp")).lower()
         fmt = OutputFormat(fmt_raw) if fmt_raw in OutputFormat._value2member_map_ else OutputFormat.VASP
         sc = params.get("supercelda") or [1, 1, 1]

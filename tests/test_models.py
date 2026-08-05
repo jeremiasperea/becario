@@ -408,6 +408,120 @@ class TestPlanCollapsesStutter:
         assert len(plan.steps) == 1
 
 
+class TestPlanMergesSplitCalc:
+    """El reverso del tartamudeo: el modelo dice UNA vez un paso partido en
+    dos mitades —la acción sin material, el material sin acción— y ninguna
+    se sostiene sola. Sin fusionarlas, el plan multi-paso con
+    `preparar_calculo` se rechaza fail-closed y el pedido más común del
+    proyecto muere en el mensaje de ayuda genérico."""
+
+    def _calc(self, **params) -> PlanStep:
+        return PlanStep(action=Intent.PREPARE_CALC, parametros=params)
+
+    def _estructura(self, **params) -> PlanStep:
+        return PlanStep(action=Intent.MODIFY_STRUCTURE, parametros=params)
+
+    def test_the_measured_bug_a_split_calc_becomes_one_step(self):
+        # qwen2.5-coder:14b sobre "relajá el bulk de W con red cristalina
+        # bcc" devuelve esto unánime en 3 de 3.
+        plan = Plan(steps=[
+            self._calc(tipo_calculo="relajacion", magnetico=False),
+            self._estructura(formula="W", red_cristalina="bcc"),
+        ])
+        assert len(plan.steps) == 1
+        step = plan.steps[0]
+        assert step.action is Intent.PREPARE_CALC
+        assert step.parametros["formula"] == "W"
+        assert step.parametros["red_cristalina"] == "bcc"
+        assert step.parametros["tipo_calculo"] == "relajacion"
+
+    def test_a_calc_that_already_has_material_is_not_touched(self):
+        # "relajá W y generá el POSCAR de Si": dos entregables distintos.
+        plan = Plan(steps=[
+            self._calc(formula="W", tipo_calculo="relajacion"),
+            self._estructura(formula="Si"),
+        ])
+        assert len(plan.steps) == 2
+
+    def test_the_structure_step_coming_FIRST_is_a_real_composition(self):
+        # El orden es lo que delata el error. Armar la estructura ANTES es
+        # un pedido compuesto legítimo; armarla DESPUÉS de calcular sobre
+        # ella no es un plan que alguien pida.
+        plan = Plan(steps=[
+            self._estructura(formula="Si"),
+            self._calc(tipo_calculo="relajacion"),
+        ])
+        assert len(plan.steps) == 2
+
+    def test_a_structure_that_asks_for_a_FILE_is_its_own_deliverable(self):
+        # "generá el POSCAR de Si en /home/ana": el usuario quiere el
+        # archivo, no es el material suelto de un cálculo.
+        for clave, valor in (
+            ("destino_remoto", "/home/ana/Si"),
+            ("formato_salida", "cif"),
+            ("nombre_archivo", "POSCAR"),
+        ):
+            plan = Plan(steps=[
+                self._calc(tipo_calculo="relajacion"),
+                self._estructura(formula="Si", **{clave: valor}),
+            ])
+            assert len(plan.steps) == 2, f"{clave} debería frenar la fusión"
+
+    def test_a_structure_without_material_cannot_complete_the_calc(self):
+        # Dos mitades vacías no hacen un paso: no hay qué fusionar, y el
+        # plan conserva la señal que dispara la descomposición.
+        plan = Plan(steps=[
+            self._calc(tipo_calculo="relajacion"),
+            self._estructura(tipo_estructura="bulk"),
+        ])
+        assert len(plan.steps) == 2
+
+    def test_the_calc_params_win_over_the_structure_ones(self):
+        # Lo que el modelo dijo bajo el intent correcto pesa más que el
+        # relleno, igual que en `_backfill_structure`.
+        plan = Plan(steps=[
+            self._calc(tipo_calculo="relajacion", red_cristalina="hcp"),
+            self._estructura(formula="Zr", red_cristalina="bcc"),
+        ])
+        assert plan.steps[0].parametros["red_cristalina"] == "hcp"
+
+    def test_the_merge_survives_inside_a_longer_plan(self):
+        plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/a"}),
+            self._calc(tipo_calculo="relajacion"),
+            self._estructura(formula="W", red_cristalina="bcc"),
+        ])
+        assert [s.action for s in plan.steps] == [
+            Intent.CREATE_DIR, Intent.PREPARE_CALC,
+        ]
+        assert plan.steps[1].parametros["formula"] == "W"
+
+    def test_two_split_calcs_merge_into_two_real_calculations(self):
+        # "relajá W bcc y Si diamond" partido dos veces: cada mitad se une
+        # con la SUYA, no se mezclan entre pedidos.
+        plan = Plan(steps=[
+            self._calc(tipo_calculo="relajacion"),
+            self._estructura(formula="W", red_cristalina="bcc"),
+            self._calc(tipo_calculo="estatico"),
+            self._estructura(formula="Si", red_cristalina="diamond"),
+        ])
+        assert len(plan.steps) == 2
+        assert [s.parametros["formula"] for s in plan.steps] == ["W", "Si"]
+        assert [s.parametros["tipo_calculo"] for s in plan.steps] == [
+            "relajacion", "estatico",
+        ]
+
+    def test_a_lone_calc_without_material_still_triggers_recovery(self):
+        # Sin un `modificar_estructura` que lo complete, no hay fusión: la
+        # señal de `_needs_decomposition` tiene que sobrevivir intacta.
+        plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "/a"}),
+            self._calc(tipo_calculo="relajacion"),
+        ])
+        assert len(plan.steps) == 2
+        assert not plan.steps[1].parametros.get("formula")
+
+
 class TestPendingPlan:
     """`PendingPlan` es la unidad que guarda el ConfirmationStore: un token
     y un TTL por plan, con pasos ordenados en forma de `PendingAction`."""
