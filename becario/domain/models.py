@@ -1151,6 +1151,17 @@ _MAX_PLAN_STEPS = 11
 _MAX_AUTOMATERIALIZE_STEPS = 5
 
 
+# Intenciones cuya identidad depende del material: dos de estas solo son
+# "el mismo paso dicho dos veces" si ambas dicen SOBRE QUÉ trabajan. Las
+# losas entran por MODIFY_STRUCTURE y también llevan `formula`.
+_MATERIAL_INTENTS = frozenset({Intent.PREPARE_CALC, Intent.MODIFY_STRUCTURE})
+
+
+def _sin_material(step: "PlanStep") -> bool:
+    """¿Este paso se parece a su vecino solo porque le falta el material?"""
+    return step.action in _MATERIAL_INTENTS and not step.parametros.get("formula")
+
+
 class PlanStep(BaseModel):
     """Un paso del plan: una intención + sus parámetros crudos del LLM.
 
@@ -1171,9 +1182,60 @@ class Plan(BaseModel):
     A lo sumo un paso destructivo (`Intent.destructive()`) y, si existe,
     debe ser el último — así la confirmación humana sigue gatillando
     únicamente sobre la cola irreversible del plan (ver ADR-0006).
+
+    Los pasos consecutivos idénticos se colapsan antes de esa regla (ver
+    `_v_collapse_stutter`), y el orden de los dos validadores importa: un
+    `enviar_slurm` tartamudeado son dos destructivos, que la regla de
+    abajo rechazaría entero. Colapsarlo primero lo deja en el único envío
+    que el usuario pidió.
     """
 
     steps: list[PlanStep] = Field(min_length=1, max_length=_MAX_PLAN_STEPS)
+
+    @field_validator("steps")
+    @classmethod
+    def _v_collapse_stutter(cls, steps: list[PlanStep]) -> list[PlanStep]:
+        """Colapsa pasos consecutivos IDÉNTICOS Y COMPLETOS: el modelo
+        tartamudea.
+
+        Medido con `qwen2.5-coder:14b` sobre "relajá el bulk de Zr hcp":
+        devuelve `[preparar_calculo, preparar_calculo]` con los mismos
+        parámetros, unánime en 3 de 3 intentos. Dos pasos iguales pasaban
+        la validación de forma —no hay destructivos y entran en el
+        presupuesto— así que el cálculo se preparaba DOS veces.
+
+        Idénticos significa misma acción **y** mismos parámetros. Dos
+        `preparar_calculo` con fórmulas distintas son dos cálculos que el
+        usuario pidió; dos con la misma fórmula son uno solo dicho dos
+        veces. Comparar solo la acción rompería los planes legítimos.
+
+        Solo CONSECUTIVOS: `listar_archivos(/a)`, `crear_directorio(/b)`,
+        `listar_archivos(/a)` es una repetición pedida a propósito —mirar
+        antes y después— y ahí los pasos iguales no se tocan.
+
+        **Y solo si el paso dice sobre qué material trabaja.** Dos pasos
+        pueden verse idénticos porque el modelo perdió justo el dato que
+        los distingue: "relajá ZrO2 en bcc y en fcc" puede salir como dos
+        `preparar_calculo(tipo_calculo=relajacion)` sin `formula`, que son
+        DOS cálculos, no uno tartamudeado. Fusionarlos se comería un
+        cálculo y además borraría la señal de la que vive la recuperación
+        —`BecarioService._needs_decomposition` busca exactamente un plan
+        multi-paso con un cálculo sin material para volver a pedirlo
+        descompuesto—. Un valor ausente no puede colapsar dos estados
+        distintos: ante la duda, no se toca.
+
+        Se colapsa en vez de rechazar porque `parse_llm_output` es
+        fail-closed: elevar acá convertiría un pedido que el modelo
+        entendió bien en un "no te entendí". El usuario dijo una cosa una
+        vez, y el plan que ve confirma exactamente eso.
+        """
+        if not steps:
+            return steps
+        collapsed = [steps[0]]
+        for step in steps[1:]:
+            if step != collapsed[-1] or _sin_material(step):
+                collapsed.append(step)
+        return collapsed
 
     @field_validator("steps")
     @classmethod
