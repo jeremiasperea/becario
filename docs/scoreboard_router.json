@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T18:18:50+00:00",
+  "generated_at": "2026-08-05T19:06:18+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -18,14 +18,14 @@
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 8.435,
+      "median_latency_seconds": 8.389,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.26,
+          "latency_seconds": 3.271,
           "error": null
         },
         {
@@ -33,7 +33,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.355,
+          "latency_seconds": 3.232,
           "error": null
         },
         {
@@ -41,7 +41,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.477,
+          "latency_seconds": 9.224,
           "error": null
         },
         {
@@ -49,7 +49,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 10.236,
+          "latency_seconds": 10.079,
           "error": null
         },
         {
@@ -57,7 +57,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.953,
+          "latency_seconds": 6.056,
           "error": null
         },
         {
@@ -65,7 +65,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.405,
+          "latency_seconds": 13.046,
           "error": null
         },
         {
@@ -73,7 +73,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.542,
+          "latency_seconds": 9.347,
           "error": null
         },
         {
@@ -81,7 +81,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.735,
+          "latency_seconds": 5.874,
           "error": null
         }
       ]
@@ -89,16 +89,16 @@
     {
       "model": "qwen2.5-coder:14b",
       "skipped": false,
-      "hits": 7,
+      "hits": 8,
       "total": 8,
-      "median_latency_seconds": 18.139,
+      "median_latency_seconds": 19.352,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.011,
+          "latency_seconds": 6.747,
           "error": null
         },
         {
@@ -106,7 +106,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.278,
+          "latency_seconds": 6.28,
           "error": null
         },
         {
@@ -114,7 +114,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 21.17,
+          "latency_seconds": 21.907,
           "error": null
         },
         {
@@ -122,7 +122,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 21.483,
+          "latency_seconds": 23.013,
           "error": null
         },
         {
@@ -130,7 +130,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.111,
+          "latency_seconds": 12.717,
           "error": null
         },
         {
@@ -138,23 +138,23 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 25.737,
+          "latency_seconds": 24.842,
           "error": null
         },
         {
           "name": "single_prepare_relax.txt",
-          "ok": false,
-          "passes": 0,
+          "ok": true,
+          "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.72,
-          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'modificar_estructura']"
+          "latency_seconds": 23.757,
+          "error": null
         },
         {
           "name": "single_submit_job.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 11.827,
+          "latency_seconds": 12.207,
           "error": null
         }
       ]

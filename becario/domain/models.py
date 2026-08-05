@@ -1177,6 +1177,13 @@ def _sin_material(step: "PlanStep") -> bool:
     return step.action in _MATERIAL_INTENTS and not step.parametros.get("formula")
 
 
+# Parámetros que delatan un pedido REAL de generar un archivo de estructura
+# ("generá el POSCAR de Si en /home/ana"). Si el paso trae alguno de estos,
+# el usuario quiere el archivo — no es el material de un cálculo que el
+# modelo dejó caer en un paso aparte.
+_FILE_OUTPUT_KEYS = frozenset({"destino_remoto", "formato_salida", "nombre_archivo"})
+
+
 class PlanStep(BaseModel):
     """Un paso del plan: una intención + sus parámetros crudos del LLM.
 
@@ -1198,14 +1205,89 @@ class Plan(BaseModel):
     debe ser el último — así la confirmación humana sigue gatillando
     únicamente sobre la cola irreversible del plan (ver ADR-0006).
 
-    Los pasos consecutivos idénticos se colapsan antes de esa regla (ver
-    `_v_collapse_stutter`), y el orden de los dos validadores importa: un
-    `enviar_slurm` tartamudeado son dos destructivos, que la regla de
-    abajo rechazaría entero. Colapsarlo primero lo deja en el único envío
-    que el usuario pidió.
+    Antes de esa regla corren dos reparaciones de forma, y el orden de los
+    tres validadores importa:
+
+    1. `_v_merge_split_calc` une un cálculo que el modelo partió en acción
+       + material (dos mitades que no se sostienen solas).
+    2. `_v_collapse_stutter` colapsa pasos consecutivos idénticos: un
+       `enviar_slurm` tartamudeado son dos destructivos, que la regla de
+       abajo rechazaría entero. Colapsarlo primero lo deja en el único
+       envío que el usuario pidió.
+    3. `_v_destructive_last` valida la forma sobre el plan ya reparado.
+
+    Fusionar antes de colapsar no es casual: dos cálculos partidos ("relajá
+    W bcc y Si diamond", cuatro pasos) se vuelven dos cálculos completos y
+    distintos, que el colapso ya no toca. Al revés, las mitades sin
+    material se verían idénticas entre sí.
     """
 
     steps: list[PlanStep] = Field(min_length=1, max_length=_MAX_PLAN_STEPS)
+
+    @field_validator("steps")
+    @classmethod
+    def _v_merge_split_calc(cls, steps: list[PlanStep]) -> list[PlanStep]:
+        """Fusiona un cálculo que el modelo partió en acción + material.
+
+        Medido con `qwen2.5-coder:14b` sobre "relajá el bulk de W con red
+        cristalina bcc", unánime en 3 de 3 intentos:
+
+            paso 1: preparar_calculo     {tipo_calculo: relajacion}
+            paso 2: modificar_estructura {formula: W, red_cristalina: bcc}
+
+        La acción por un lado y el material por el otro. Es el reverso del
+        tartamudeo que colapsa `_v_collapse_stutter`: allá el modelo dice
+        dos veces un paso completo, acá dice una sola vez un paso partido
+        en dos mitades, ninguna de las cuales se sostiene sola.
+
+        Sin esta regla el pedido MUERE: un plan multi-paso que contiene
+        `preparar_calculo` se rechaza fail-closed (ADR-0006, límite de v1)
+        y el usuario recibe el mensaje de ayuda genérico — cuya PRIMERA
+        sugerencia es, palabra por palabra, lo que acaba de pedir. La red
+        de recuperación (`BecarioService._needs_decomposition`) tampoco lo
+        salva: descompone, vuelve a rutear, el modelo devuelve el mismo
+        plan partido y el fallback es el plan original roto.
+
+        Las condiciones son deliberadamente estrechas: fusionar planes
+        legítimos sería peor que no fusionar nada.
+
+        - El `preparar_calculo` NO tiene material. Si lo tiene, el pedido
+          ya se sostiene solo y un `modificar_estructura` que lo siga es
+          otra cosa que el usuario pidió ("relajá W y generá el POSCAR de
+          Si").
+        - El `modificar_estructura` va INMEDIATAMENTE DESPUÉS y SÍ tiene
+          material. El orden es el que delata el error: armar la
+          estructura DESPUÉS de calcular sobre ella no es un plan que
+          alguien pida. Un pedido compuesto de verdad la arma antes.
+        - El `modificar_estructura` no pide un archivo (`_FILE_OUTPUT_KEYS`).
+          "generá el POSCAR de Si en /home/ana" es un entregable propio,
+          no el material suelto de un cálculo.
+
+        Los parámetros del cálculo GANAN sobre los de la estructura, igual
+        que en `OllamaRouter._backfill_structure`: lo que el modelo dijo
+        bajo el intent correcto pesa más que el relleno.
+        """
+        merged: list[PlanStep] = []
+        i = 0
+        while i < len(steps):
+            step, nxt = steps[i], steps[i + 1] if i + 1 < len(steps) else None
+            if (
+                nxt is not None
+                and step.action is Intent.PREPARE_CALC
+                and _sin_material(step)
+                and nxt.action is Intent.MODIFY_STRUCTURE
+                and nxt.parametros.get("formula")
+                and not (_FILE_OUTPUT_KEYS & nxt.parametros.keys())
+            ):
+                merged.append(PlanStep(
+                    action=Intent.PREPARE_CALC,
+                    parametros={**nxt.parametros, **step.parametros},
+                ))
+                i += 2
+                continue
+            merged.append(step)
+            i += 1
+        return merged
 
     @field_validator("steps")
     @classmethod
