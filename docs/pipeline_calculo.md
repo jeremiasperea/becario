@@ -87,9 +87,42 @@ descompuesta también recupera su `formula`/`red_cristalina`.
 arquitectura: lo producen la infraestructura (`route`), lo declara el
 puerto (`IntentRouter.route`) y lo orquesta la aplicación
 (`_dispatch_plan`, `_run_composite_plan`), pero ninguna capa lo atraviesa.
-Su invariante fail-closed vive en `Plan._v_destructive_last()`: a lo sumo
-un paso destructivo y, si existe, debe ser el último — así la confirmación
-humana siempre gatilla sobre la cola irreversible del plan (ADR-0006).
+
+Sus validadores corren **en orden de definición**, y el orden importa:
+
+1. **`_v_merge_split_calc()`** — repara. Fusiona un cálculo que el modelo
+   partió en dos mitades: la acción sin material (`preparar_calculo` sin
+   `formula`) seguida INMEDIATAMENTE del material sin acción
+   (`modificar_estructura` con `formula` y sin parámetros de archivo).
+   `qwen2.5-coder:14b` parte así "relajá el bulk de W con red cristalina
+   bcc", unánime en 3 de 3. Sin fusionar, el plan multi-paso con un cálculo
+   se rechazaba fail-closed y el pedido moría en el mensaje de ayuda
+   genérico. El ORDEN es lo que delata el error: armar la estructura
+   DESPUÉS de calcular sobre ella no es un plan que alguien pida.
+2. **`_v_collapse_stutter()`** — repara. Colapsa pasos consecutivos
+   IDÉNTICOS Y COMPLETOS: el modelo a veces tartamudea y devuelve dos
+   veces el mismo paso, que pasaba la validación de forma y hacía el
+   trabajo dos veces. Solo fusiona si el paso dice sobre qué material
+   trabaja: dos `preparar_calculo` sin `formula` pueden ser dos cálculos
+   distintos a los que el modelo les comió el material, y fusionarlos se
+   comería uno **y** borraría la señal de la que vive la recuperación por
+   descomposición (§2).
+3. **`_v_destructive_last()`** — rechaza. A lo sumo un paso destructivo y,
+   si existe, debe ser el último, así la confirmación humana siempre
+   gatilla sobre la cola irreversible del plan (ADR-0006).
+
+Reparar antes de rechazar no es casual: un `enviar_slurm` tartamudeado son
+DOS destructivos, y el validador de abajo tiraría el plan entero.
+Colapsarlo primero lo deja en el único envío que el usuario pidió.
+
+Y fusionar antes de colapsar tampoco: dos cálculos partidos ("relajá W bcc
+y Si diamond", cuatro pasos) se vuelven dos cálculos completos y distintos,
+que el colapso ya no toca. Al revés, las mitades sin material se verían
+idénticas entre sí y se comerían un cálculo.
+
+Nada de esto trunca ni reordena a espaldas del usuario: lo que se colapsa
+es el mismo paso dicho dos veces, y lo que no encaja se rechaza ENTERO
+antes de mostrar nada.
 
 ### 4. Preparación del cálculo — handler de aplicación
 

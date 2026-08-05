@@ -214,9 +214,13 @@ escritorio, donde no hay nadie ordenando el arranque.
 ## Tests
 
 ```bash
-python3 -m pytest            # 879 tests
+python3 -m pytest            # ~934 tests al 2026-08-05
 python3 -m pytest --cov=becario --cov-report=term-missing
 ```
+
+El número va con fecha a propósito: crece en casi todos los PRs y nadie lo
+va a venir a actualizar acá. Sirve como orden de magnitud, no como dato
+vigente — el vigente lo dice `pytest`.
 
 La suite cubre: sanitización contra inyección de shell y SQL, parseo
 defensivo de la salida del LLM, flujo de confirmación (ejecuta exactamente
