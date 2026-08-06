@@ -23,10 +23,24 @@ BecarioService.handle_text()                      application/services.py
       ├─▶ _maybe_decompose(texto, plan) ──────────▶ Plan (recompuesto)   (pedidos largos)
       │
       └─▶ _dispatch_plan(plan)
-                 │  por cada PlanStep, según su Intent
-                 ▼
-        prepare_calc(svc, ctx, params)            application/handlers/calc.py
                  │
+                 ├── plan de UN paso ──────────────────────────┐
+                 │                                             │
+                 └── plan multi-paso CON preparar_calculo ──┐  │
+                          (_is_batch_plan → _prepare_batch) │  │
+                                                            │  │
+   ══ camino BATCH: nada toca el cluster ══                 │  │
+   _build_calc_request()  valida sin I/O   ◀────────────────┘  │
+   validate_structure_params()  valida sin I/O                 │
+   _describe_batch_step()  arma el preview                     │
+            └─▶ PendingPlan(execute_all=True) → UNA confirmación
+                     │
+                     ▼  el usuario confirma
+            _execute_batch() → por cada paso, lo de abajo, en orden
+                                                                │
+   ══ camino de UN paso: se materializa al construir el plan ══ │
+        prepare_calc(svc, ctx, params)    ◀───────────────────  ┘
+                 │                          application/handlers/calc.py
                  ├─▶ VaspCalcRequest(...)          (pedido validado; dominio)
                  │        └─ _v_formula · _v_crystal · scan_values (ENCUT)
                  │
@@ -44,6 +58,14 @@ BecarioService.handle_text()                      application/services.py
                           ▼  el usuario confirma
                  Intent.SUBMIT_SLURM → sbatch (ejecución real)
 ```
+
+**La diferencia entre los dos caminos es CUÁNDO se sube.** En el de un
+paso, `prepare_calc` genera los inputs y los sube al cluster, y la
+confirmación es solo del `sbatch`: si el usuario rechaza, los archivos ya
+están arriba. En el batch **nada toca el cluster antes de aprobar** —
+`_build_calc_request` y `validate_structure_params` validan sin I/O, el
+usuario aprueba una vez, y recién ahí se genera, se sube y se envía todo
+en orden. Ver ADR-0007 (Enmienda 2).
 
 ## Etapas
 
@@ -183,6 +205,12 @@ en espera dentro de un `PendingPlan` con una `PendingAction`
 bot responde pidiendo confirmación. Recién cuando el usuario confirma se
 ejecuta el `sbatch` real. La persistencia de la corrida queda a cargo de
 `CalcRunRepository`.
+
+Las etapas 5 a 7 describen el **camino de un solo paso**. En un batch la
+secuencia es la misma pero corre entera DESPUÉS de la confirmación, desde
+`_execute_batch`: al armar el preview no se genera ni se sube nada, solo
+se valida. Por eso `_prepare_batch` usa `_build_calc_request` y no
+`prepare_calc` — el primero valida, el segundo materializa.
 
 ## Mapa de capas
 
