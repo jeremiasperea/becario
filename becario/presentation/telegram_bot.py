@@ -231,9 +231,17 @@ class TelegramBot:
                 chat, self._service.reject, token, requester_id=query.from_user.id
             )
         elif action == "modify":
+            # `chat` acá es un `Chat`, y `start_modification` espera el ID:
+            # ese valor termina en `_PendingEdit.chat_id` y de ahí en el
+            # `send_message` del barrido de vencidos, que con un objeto en
+            # vez de un entero fallaba y se comía el aviso (el `except` de
+            # abajo lo tapaba). Sin `message` no hay a quién avisarle: 0 es
+            # el centinela que `sweep_expired_pendings` ya interpreta como
+            # "vencer callado".
             reply = await self._run_blocking(
                 chat, self._service.start_modification, token,
-                requester_id=query.from_user.id, chat_id=chat,
+                requester_id=query.from_user.id,
+                chat_id=chat.id if chat is not None else 0,
             )
         else:
             reply = Reply(text="⚠️ Acción desconocida.")
