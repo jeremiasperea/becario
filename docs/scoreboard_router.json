@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T22:44:47+00:00",
+  "generated_at": "2026-08-09T08:15:03+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,94 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
-  "router_fingerprint": "05f4813f8f1c0c13",
+  "router_fingerprint": "c697d8ff40f57d2b",
   "models": [
-    {
-      "model": "qwen2.5:7b",
-      "skipped": false,
-      "hits": 8,
-      "total": 8,
-      "median_latency_seconds": 8.378,
-      "fixtures": [
-        {
-          "name": "edit_explicit_step.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 3.279,
-          "error": null
-        },
-        {
-          "name": "edit_semantic_step.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 3.588,
-          "error": null
-        },
-        {
-          "name": "multi_destructive_tail.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 9.952,
-          "error": null
-        },
-        {
-          "name": "multi_two_safe_steps.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 10.712,
-          "error": null
-        },
-        {
-          "name": "single_create_dir.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 5.817,
-          "error": null
-        },
-        {
-          "name": "single_prepare_encut.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 13.011,
-          "error": null
-        },
-        {
-          "name": "single_prepare_relax.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 8.93,
-          "error": null
-        },
-        {
-          "name": "single_submit_job.txt",
-          "ok": true,
-          "passes": 3,
-          "attempts": 3,
-          "latency_seconds": 5.554,
-          "error": null
-        }
-      ]
-    },
     {
       "model": "qwen2.5-coder:14b",
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 18.651,
+      "median_latency_seconds": 20.959,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.225,
+          "latency_seconds": 6.644,
           "error": null
         },
         {
@@ -107,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.179,
+          "latency_seconds": 6.695,
           "error": null
         },
         {
@@ -115,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 21.532,
+          "latency_seconds": 25.476,
           "error": null
         },
         {
@@ -123,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 22.388,
+          "latency_seconds": 28.903,
           "error": null
         },
         {
@@ -131,7 +58,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.034,
+          "latency_seconds": 15.431,
           "error": null
         },
         {
@@ -139,7 +66,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 27.288,
+          "latency_seconds": 28.274,
           "error": null
         },
         {
@@ -147,7 +74,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.451,
+          "latency_seconds": 26.451,
           "error": null
         },
         {
@@ -155,7 +82,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.179,
+          "latency_seconds": 12.928,
           "error": null
         }
       ]

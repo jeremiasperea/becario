@@ -545,6 +545,7 @@ class BecarioService:
             Intent.CREATE_DIR: partial(remote_files.create_directory, self),
             Intent.LIST_FILES: partial(remote_files.list_files, self),
             Intent.VIEW_FILE: partial(remote_files.view_file, self),
+            Intent.EXPLAIN: partial(queries.explain, self),
         }
 
     # ------------------------------------------------------------------

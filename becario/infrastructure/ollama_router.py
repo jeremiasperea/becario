@@ -107,9 +107,27 @@ class RouterParams(BaseModel):
     formato_salida: Optional[str] = Field(
         default=None, description="formato del archivo: vasp, cif o xyz"
     )
+    # Dónde ancla `destino_remoto`. Existe porque «mi home» no era
+    # expresable: el modelo de rutas conocía solo "absoluta" y "relativa a
+    # las corridas", así que para decir el home el LLM tenía que inventar
+    # una ruta literal — y la inventaba (`/home/ana`, que además es un
+    # ejemplo del prompt). Medido con `scripts/medir_schemas_router.py`:
+    # con este campo, 30/30 sin alucinar y más rápido que sin él.
+    base: Optional[str] = Field(
+        default=None,
+        description=(
+            "dónde ancla destino_remoto: 'home' (el home del usuario), "
+            "'corridas' (el directorio de trabajo del bot, y también "
+            "cuando no dice dónde) o 'absoluta' (el usuario escribió una "
+            "ruta que empieza con /)"
+        ),
+    )
     destino_remoto: Optional[str] = Field(
         default=None,
-        description="ruta absoluta en el cluster (directorio o archivo)",
+        description=(
+            "ruta del directorio o archivo, relativa a `base` y sin barra "
+            "inicial; vacía si el usuario no nombró ninguna subcarpeta"
+        ),
     )
     nombre_archivo: Optional[str] = Field(
         default=None, description="nombre de UN archivo, sin ruta: CONTCAR, OSZICAR"
@@ -204,7 +222,19 @@ _SYSTEM_PROMPT = (
     "nombra el archivo (CONTCAR, OSZICAR, INCAR…) poné ese nombre en "
     "nombre_archivo; si da una ruta absoluta al archivo, poné esa ruta en "
     "destino_remoto\n"
+    "- 'explicar': el usuario PREGUNTA por vos —cómo estás configurado, "
+    "dónde buscaste algo, qué quedó pendiente— en vez de pedirte que hagas "
+    "algo en el cluster. Preguntas sobre TU último mensaje van acá\n"
     "- 'error': si el pedido no encaja en ninguna\n"
+    # La semántica de rutas vive acá arriba, con las definiciones, y NO en
+    # el bloque de ejemplos: metida ahí abajo rompió dos veces el fixture
+    # del barrido de ENCUT (3/3 -> 0/3, dos pasos donde va uno). El prompt
+    # es sensible a cuánto pesa cada sección, no solo a lo que dice.
+    "Toda ruta lleva 'base', que dice DÓNDE ancla: 'home' (el usuario "
+    "habla de SU home), 'corridas' (el directorio de trabajo del bot, y "
+    "también cuando no dice dónde) o 'absoluta' (el usuario escribió una "
+    "ruta que empieza con /). 'destino_remoto' es lo que va DESPUÉS de la "
+    "base, sin barra inicial, y va vacío si no nombró subcarpeta.\n"
     "Ejemplos:\n"
     "'dame los parámetros de red del cálculo del zirconio bulk' -> "
     "consultar_resultados, formula=Zr\n"
@@ -254,44 +284,44 @@ _SYSTEM_PROMPT = (
     "magnetico=true. Si no lo menciona, dejá magnetico sin completar.\n"
     "'relajá el bulk de Fe con espín' -> preparar_calculo, formula=Fe, "
     "magnetico=true\n"
-    "'corré el script /home/ana/run.sh' -> enviar_slurm, "
-    "script_remoto=/home/ana/run.sh\n"
+    "'corré el script scripts/run.sh' -> enviar_slurm, "
+    "script_remoto=scripts/run.sh\n"
     "'generá un POSCAR de Si diamond 2x2x2' -> modificar_estructura\n"
-    "'creame la carpeta /home/ana/pruebas' -> crear_directorio, "
-    "destino_remoto=/home/ana/pruebas\n"
+    "'creame la carpeta pruebas' -> crear_directorio, base=corridas, "
+    "destino_remoto=pruebas\n"
     "'dentro de Zr creá las carpetas bcc y fcc' -> "
-    "paso 1: crear_directorio, destino_remoto=Zr/bcc; "
-    "paso 2: crear_directorio, destino_remoto=Zr/fcc "
-    "(rutas RELATIVAS: el sistema las ancla en la carpeta de corridas)\n"
-    "'mostrame la estructura de archivos del cluster' -> listar_archivos\n"
-    "'listá mi home' -> listar_archivos (sin destino_remoto: el sistema "
-    "resuelve el home del usuario)\n"
-    "'mostramelo en forma de tree' / 'mostrame todo' -> listar_archivos "
-    "(sin destino_remoto: si el pedido refiere a lo anterior o solo pide "
-    "un formato, el sistema muestra el árbol del workspace)\n"
-    "'qué archivos hay en /data/becario_runs' -> listar_archivos, "
-    "destino_remoto=/data/becario_runs\n"
+    "paso 1: crear_directorio, base=corridas, destino_remoto=Zr/bcc; "
+    "paso 2: crear_directorio, base=corridas, destino_remoto=Zr/fcc\n"
+    "'mostrame la estructura de archivos del cluster' -> listar_archivos, "
+    "base=corridas\n"
+    "'listá mi home' -> listar_archivos, base=home\n"
+    "'mostramelo en forma de tree' / 'mostrame todo' -> listar_archivos, "
+    "base=corridas (si el pedido refiere a lo anterior o solo pide un "
+    "formato, el sistema muestra el árbol del workspace)\n"
+    "'qué archivos hay en /data/otro_grupo' -> listar_archivos, "
+    "base=absoluta, destino_remoto=/data/otro_grupo\n"
     "'mostrame el CONTCAR' -> ver_archivo, nombre_archivo=CONTCAR\n"
-    "'ver el contenido de /home/ana/run/OSZICAR' -> ver_archivo, "
-    "destino_remoto=/home/ana/run/OSZICAR\n"
     "Si el mensaje pide más de una acción, emitilas en 'steps', en el "
     "mismo orden en que las pidió el usuario, cada paso con su propia "
     "'action' y 'parametros':\n"
-    "'creá la carpeta /home/ana/x y después listá /home/ana/y' -> "
-    "paso 1: crear_directorio, destino_remoto=/home/ana/x; "
-    "paso 2: listar_archivos, destino_remoto=/home/ana/y\n"
-    "'generá el POSCAR de Si y creá la carpeta /home/ana/run' -> "
+    "'creá la carpeta x y después listá y' -> "
+    "paso 1: crear_directorio, base=corridas, destino_remoto=x; "
+    "paso 2: listar_archivos, base=corridas, destino_remoto=y\n"
+    "'generá el POSCAR de Si y creá la carpeta run' -> "
     "paso 1: modificar_estructura, formula=Si; "
-    "paso 2: crear_directorio, destino_remoto=/home/ana/run\n"
+    "paso 2: crear_directorio, base=corridas, destino_remoto=run\n"
+    # Estos dos van al FINAL del bloque de ejemplos, no al principio.
+    # Puestos arriba (antes de los de consultar_resultados) rompieron el
+    # fixture del barrido de ENCUT: pasó de 3/3 a 0/3, emitiendo dos pasos
+    # de preparar_calculo donde va uno. El prompt es sensible al orden, no
+    # solo al contenido — medido con `live_router_check.py`.
+    "'donde buscaste?' -> explicar\n"
+    "'en qué carpeta dejás las corridas?' -> explicar\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
-    "No inventes valores. Las rutas de los ejemplos de arriba "
-    "(/home/ana/..., /data/...) son ILUSTRATIVAS: jamás las copies a tu "
-    "respuesta. Una ruta absoluta (con /) solo es válida si el usuario "
-    "la escribió así en SU mensaje. Si nombra carpetas sin ruta absoluta "
-    "('dentro de Zr', 'la carpeta pruebas'), emití la ruta RELATIVA tal "
-    "cual (Zr/bcc) — nunca le agregues '/', '/home/…' ni ningún prefijo "
-    "inventado. Si habla de 'mi home', 'mis corridas' o no da ruta, dejá "
-    "destino_remoto sin completar; JAMÁS uses '/' (la raíz) como destino. "
+    "No inventes valores. Nunca inventes una ruta: 'base' ya dice de dónde "
+    "cuelga, así que 'destino_remoto' solo lleva lo que el usuario nombró. "
+    "Una ruta con '/' adelante solo va con base=absoluta, y solo si el "
+    "usuario la escribió así en SU mensaje. "
     "En 'formula' usá siempre el símbolo químico (zirconio->Zr, "
     "tungsteno/wolframio->W, silicio->Si)."
 )

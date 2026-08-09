@@ -39,6 +39,13 @@ class Intent(str, Enum):
     CREATE_DIR = "crear_directorio"
     LIST_FILES = "listar_archivos"
     VIEW_FILE = "ver_archivo"
+    # Pregunta sobre el bot mismo, no orden de hacer algo. Existe porque
+    # sin ella TODO mensaje tenía que mapear a una acción del cluster, y
+    # «donde buscaste?» —preguntando por el POTCAR que el bot acababa de
+    # decir que no encontraba— terminaba en `revisar_estado`, mostrando la
+    # cola de trabajos. La respuesta estaba en el mensaje anterior del
+    # propio bot: no hacía falta ni el LLM ni el cluster.
+    EXPLAIN = "explicar"
     UNKNOWN = "error"
 
     @classmethod

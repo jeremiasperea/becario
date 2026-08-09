@@ -1417,6 +1417,70 @@ _CONTCAR_ZR = (
 )
 
 
+class TestExplainRespondePreguntas:
+    """Una pregunta se responde, no se ejecuta.
+
+    El caso real: el bot avisó «No encontré POTCAR para O en /data/potcars
+    (busqué O_sv, O_pv, O)», el usuario preguntó «donde buscaste?» y el
+    router lo mandó a `revisar_estado` — le mostró la cola de trabajos. No
+    era una mala clasificación entre las que había: es que «pregunta» no
+    existía como categoría, así que caía en la acción más parecida.
+    """
+
+    def test_contesta_donde_busca_los_potcar(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="donde buscaste?"
+        )
+
+        assert reply.ok
+        assert service._potcar_dir in reply.text
+        # Y dice el ORDEN, que es la otra mitad de la pregunta.
+        assert "_sv" in reply.text
+
+    def test_dice_donde_deja_las_corridas(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="en qué carpeta dejás las corridas?",
+        )
+
+        assert service._remote_base in reply.text
+
+    def test_con_un_pendiente_vivo_la_pregunta_no_llega(self, env):
+        """LIMITACIÓN conocida, fijada para que se vea.
+
+        Mientras hay un pedido esperando respuesta, `handle_text` deriva a
+        `_apply_edit` y nunca rutea, así que `explicar` es inalcanzable: la
+        pregunta se interpreta como el dato que falta.
+
+        El caso de la bitácora no cae acá —«donde buscaste?» vino después
+        de un error, sin pendiente vivo—, pero el hueco existe. Para
+        cerrarlo, `_apply_edit` tendría que reconocer una pregunta como hoy
+        reconoce «cancelar».
+        """
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk")
+
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="qué estabas esperando?"
+        )
+
+        # No es la respuesta a la pregunta: es el flujo de edición.
+        assert service._potcar_dir not in reply.text
+        assert service._pending_edits.has(ALICE.telegram_user_id), (
+            "el pendiente no se pierde por preguntar"
+        )
+
+
 class TestQueryResults:
     """'dame los parámetros de red del Zr' lee la celda de la corrida
     previa (CONTCAR si hubo relajación) en vez de contestar el historial."""
