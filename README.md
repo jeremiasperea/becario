@@ -283,6 +283,34 @@ Los planes de un solo paso salen con `params:`, que es lo que hace que el
 fixture detecte la pérdida de `formula` — sin esa línea pasan en verde aunque
 el modelo suelte el material.
 
+### Medición de schemas: ¿conviene partir el router en dos etapas?
+
+```bash
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py \
+    --familia calculo --repeticiones 5 --json docs/medicion_schemas.json
+```
+
+Existe para contestar con números una pregunta de diseño que se discute
+seguido: si conviene una primera pasada que clasifique la **familia** del
+pedido (sistema / cálculo) y una segunda con un schema chico y afinado, en
+vez de la única llamada con el schema grande de 11 intents.
+
+Tres brazos sobre los mismos pedidos reales de la bitácora:
+
+| brazo | qué es |
+|---|---|
+| **A** | `_SYSTEM_PROMPT` + schema del plan, **sin** backfill |
+| **B** | schema chico de la familia, con el mismo vocabulario que hoy |
+| **C** | el schema chico **más** la pieza que faltaba: enum `base` (sistema) o el `_STRUCT_PROMPT` de producción (cálculo) |
+
+`A` se mide sin backfill a propósito: `route()` ya aplica
+`_backfill_structure`, que *es* el brazo C de la familia cálculo, y medirlos
+juntos haría que A se lleve el crédito de C. Producción hoy es A + C.
+
+La respuesta no es la misma para las dos familias, y por eso el harness las
+separa — el detalle de la última corrida está en `docs/medicion_schemas.json`.
+
 ### Batería de conversaciones (replay del chat real)
 
 El tablero del router mide **texto → pasos**. Lo que no mide es qué pasa
