@@ -124,10 +124,13 @@ def validate_structure_params(params: dict) -> Optional[Reply]:
     """
     formula = params.get("formula") or params.get("formula_quimica")
     if not formula:
+        # Misma razón que en `prepare_calc`: es una pregunta, y una pregunta
+        # que no deja el pedido esperando obliga al usuario a repetirlo
+        # entero (o pierde la geometría que ya había dado).
         return Reply(
             text="⚠️ Decime qué estructura querés (fórmula), p. ej.: "
             '"generá un POSCAR de Si diamond 2x2x2".',
-            ok=False,
+            ok=False, awaiting_params=True,
         )
     kind_raw = str(params.get("tipo_estructura", "")).lower()
     kind = (
@@ -229,9 +232,15 @@ def _build_calc_request(svc: "BecarioService", params: dict) -> "VaspCalcRequest
         )
     formula = params.get("formula") or params.get("formula_quimica")
     if not formula:
+        # `awaiting_params` porque esto es una PREGUNTA: sin él, el bot
+        # preguntaba y no escuchaba — la respuesta («ZrO2 bulk») se ruteaba
+        # de cero. En un plan de varios cálculos la misma pregunta salía
+        # repetida y ninguna copia esperaba a nadie, así que contestar una
+        # vez no podía completar el pedido (bitácora, mensajes 47-51).
         return Reply(
             text="⚠️ Decime qué material querés calcular, p. ej.: "
-            '"relajá los parámetros de red del bulk de W".', ok=False
+            '"relajá los parámetros de red del bulk de W".',
+            ok=False, awaiting_params=True,
         )
     if not svc._potcar_dir or not svc._potcar_dir.startswith("/"):
         return Reply(

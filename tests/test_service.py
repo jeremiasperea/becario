@@ -2272,6 +2272,65 @@ class TestMissingMillerIsAsked:
         assert "cara" in reply.text
 
 
+class TestMissingMaterialIsAsked:
+    """Falta el MATERIAL: también es una pregunta, y también espera.
+
+    Antes salía con `ok=False` a secas, así que el bot preguntaba y no
+    escuchaba: la respuesta se ruteaba de cero y funcionaba de casualidad
+    en una conversación de a uno. Se rompía en un plan de varios cálculos,
+    donde la misma pregunta salía tres veces y ninguna esperaba a nadie
+    (bitácora, mensajes 47-51: tres «Decime qué material» seguidos después
+    de haber creado la carpeta).
+    """
+
+    def test_calculo_sin_material_pregunta_y_espera(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk"
+        )
+
+        assert "material" in reply.text.lower()
+        assert reply.awaiting_params, "preguntó, así que tiene que esperar la respuesta"
+        assert service._pending_edits.has(ALICE.telegram_user_id)
+
+    def test_estructura_sin_formula_pregunta_y_espera(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE, params={"tipo_estructura": "bulk"}
+        )
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="generá un POSCAR"
+        )
+
+        assert reply.awaiting_params
+        assert service._pending_edits.has(ALICE.telegram_user_id)
+
+    def test_contestar_el_material_completa_el_pedido_original(self, env):
+        # Lo que importa: el `tipo_calculo` del primer mensaje sobrevive.
+        # Sin pendiente, contestar «W» perdía que era una relajación.
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk")
+
+        # El fake resuelve `extract_params` desde `next.params`: así se
+        # simula que el usuario contestó solo el material.
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"formula": "W", "red_cristalina": "bcc"}
+        )
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="W bcc")
+
+        assert not reply.awaiting_params
+        assert "material" not in reply.text.lower(), "no puede volver a preguntar lo mismo"
+        assert "W" in reply.text
+
+
 class TestMissingMillerInMultiStepPlans:
     """Un plan multi-paso ("armá el slab y mandalo a relajar") también queda
     esperando: el `Reply` no viaja por `PlanExecutor`, así que el paso anota
