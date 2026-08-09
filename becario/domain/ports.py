@@ -15,6 +15,7 @@ from .models import (
     HistoryFilter,
     JobId,
     JobStatus,
+    PendingEdit,
     PendingPlan,
     Plan,
     SlurmJobRequest,
@@ -279,6 +280,37 @@ class ConfirmationStore(Protocol):
         ...
 
     def purge_expired(self) -> int: ...
+
+
+class PendingEditStore(Protocol):
+    """Pedidos esperando el próximo mensaje de cada usuario.
+
+    Uno por `user_id`: quien contesta una repregunta contesta la última.
+    Separado de `ConfirmationStore` a propósito — miden cosas distintas y
+    tienen TTL distintos (una confirmación es una acción destructiva a un
+    botón de distancia; una repregunta de física nadie la contesta con el
+    reloj corriendo)."""
+
+    def put(self, user_id: int, edit: PendingEdit) -> None: ...
+
+    def get(self, user_id: int) -> Optional[PendingEdit]:
+        """Sin consumir y SIN mirar el TTL: quien decide qué hacer con uno
+        vencido es el servicio, que tiene el mensaje para el usuario."""
+        ...
+
+    def pop(self, user_id: int) -> Optional[PendingEdit]:
+        """Lo saca, vencido o no. Un pendiente vencido también se saca: ya
+        no sirve, y el servicio necesita su contenido para avisar QUÉ se
+        venció."""
+        ...
+
+    def has(self, user_id: int) -> bool: ...
+
+    def pop_expired(self, ttl_seconds: float) -> list[tuple[int, PendingEdit]]:
+        """Saca todos los vencidos y los devuelve para poder avisar. Lo
+        llama el tick del monitor, así que el aviso sale SOLO cuando vence
+        y no cuando el usuario vuelve a escribir."""
+        ...
 
 
 class Transcriber(Protocol):

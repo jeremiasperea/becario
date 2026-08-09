@@ -32,6 +32,7 @@ from ..domain.models import (
     Intent,
     descartar_numeros_inventados,
     PendingAction,
+    PendingEdit,
     PendingPlan,
     Plan,
     PlanStep,
@@ -44,6 +45,7 @@ from ..domain.ports import (
     HistoryRepository,
     IntentRouter,
     JobTracker,
+    PendingEditStore,
     RouterDecisionLog,
     StructureBuilder,
     StructureProvider,
@@ -98,28 +100,52 @@ ALREADY_MODIFYING_TEXT = (
 )
 
 
-@dataclass
-class _PendingEdit:
-    """El usuario tocó ✏️ Modificar: su próximo mensaje describe el
-    cambio. Guarda el pedido ORIGINAL (acción + parámetros) de cada paso
-    editable del plan, en orden — un plan de un solo paso es la lista de
-    largo 1 de siempre; un plan de varios pasos generaliza a targeting
-    (tarea 5.1, diseño §3.2/§4.6): el cambio aceptado SIEMPRE re-arma el
-    plan entero desde estos pedidos originales, nunca parchea un payload
-    ya materializado."""
+# `_PendingEdit` se mudó al dominio como `PendingEdit`: lo necesita también
+# la infraestructura para poder guardarlo (`SQLitePendingEditStore`). El
+# alias mantiene los nombres internos de este módulo sin tocar 20 firmas.
+_PendingEdit = PendingEdit
 
-    steps: list[tuple[Intent, dict]]
-    created_at: float = field(default_factory=time.time)
-    # A qué chat avisarle cuando venza. Sin esto el vencimiento solo se
-    # podría contar cuando el usuario vuelve a escribir, que es tarde: ya
-    # se quedó esperando una respuesta que nunca iba a llegar.
-    chat_id: int = 0
-    # Paso (1-based) al que le faltaba un dato, cuando el pendiente lo armó
-    # un handler vía `Reply.awaiting_params` en vez del botón ✏️ Modificar.
-    # Sabiéndolo no hace falta targetear la respuesta: ya conocemos el hueco,
-    # así que se usa el extractor simple y se evita el caso ambiguo — "la
-    # (001)" no dice a qué paso pertenece, pero nosotros sí lo sabemos.
-    awaiting_index: Optional[int] = None
+
+class _InMemoryPendingEdits:
+    """Default en proceso del `PendingEditStore`.
+
+    Vive acá y no en `infrastructure` a propósito: es un `dict` con un
+    lock —sin I/O ni dependencias externas—, y que la aplicación importara
+    de infraestructura para tener un default daría vuelta la dirección de
+    las dependencias por comodidad.
+
+    Sirve para los tests y para cualquier armado sin composition root.
+    Producción inyecta `SQLitePendingEditStore`: acá un reinicio se lleva
+    la repregunta en silencio, que es justo lo que se vino a arreglar.
+    """
+
+    def __init__(self) -> None:
+        self._items: dict[int, PendingEdit] = {}
+        self._lock = threading.Lock()
+
+    def put(self, user_id: int, edit: PendingEdit) -> None:
+        with self._lock:
+            self._items[user_id] = edit
+
+    def get(self, user_id: int) -> Optional[PendingEdit]:
+        with self._lock:
+            return self._items.get(user_id)
+
+    def pop(self, user_id: int) -> Optional[PendingEdit]:
+        with self._lock:
+            return self._items.pop(user_id, None)
+
+    def has(self, user_id: int) -> bool:
+        with self._lock:
+            return user_id in self._items
+
+    def pop_expired(self, ttl_seconds: float) -> list[tuple[int, PendingEdit]]:
+        with self._lock:
+            vencidos = [(u, e) for u, e in self._items.items()
+                        if e.expired(ttl_seconds)]
+            for user_id, _ in vencidos:
+                del self._items[user_id]
+        return vencidos
 
 
 _CANCEL_RE = re.compile(r"\A\s*(cancel|descart|olvid|dejal|no,?\s*(dejalo|nada))", re.IGNORECASE)
@@ -151,6 +177,7 @@ class BecarioService:
         decision_log: Optional[RouterDecisionLog] = None,
         structure_provider: Optional[StructureProvider] = None,
         mp_api_key: str = "",
+        pending_edits: Optional[PendingEditStore] = None,
     ) -> None:
         self._router = router
         self._registry = registry
@@ -166,11 +193,15 @@ class BecarioService:
         self._decision_log = decision_log
         self._structure_provider = structure_provider
         self._mp_api_key = mp_api_key
-        # Modificaciones pendientes por usuario (en memoria, con TTL: si se
-        # reinicia el bot simplemente se vuelve a pedir el cálculo).
+        # Pedidos esperando respuesta, por usuario. El store se inyecta:
+        # producción usa el de SQLite (un reinicio se llevaba la repregunta
+        # en silencio y el usuario recibía "no pude interpretar tu pedido"
+        # por una respuesta perfecta), y el default en memoria mantiene los
+        # tests sin base.
         self._edit_ttl = edit_ttl_seconds
-        self._pending_edits: dict[int, _PendingEdit] = {}
-        self._edits_lock = threading.Lock()
+        self._pending_edits: PendingEditStore = (
+            pending_edits if pending_edits is not None else _InMemoryPendingEdits()
+        )
 
     # Orden de búsqueda del pseudopotencial de cada elemento en la
     # biblioteca del cluster (variantes semi-core primero, como recomienda
@@ -677,11 +708,10 @@ class BecarioService:
         —«tetragonal»— se ruteaba en frío y volvía como "no pude interpretar
         tu pedido": el usuario cree que no lo entendieron cuando en realidad
         se olvidaron de lo que había preguntado."""
-        with self._edits_lock:
-            edit = self._pending_edits.pop(user_id, None)
+        edit = self._pending_edits.pop(user_id)
         if edit is None:
             return None, None
-        if (time.time() - edit.created_at) > self._edit_ttl:
+        if edit.expired(self._edit_ttl):
             return None, edit
         return edit, None
 
@@ -695,9 +725,7 @@ class BecarioService:
         estaba en el estado CORRECTO, esperando el cambio, y el mensaje decía
         lo contrario: quien lo leía abandonaba un pedido que seguía vivo.
         """
-        with self._edits_lock:
-            editando = requester_id in self._pending_edits
-        if editando:
+        if self._pending_edits.has(requester_id):
             return Reply(text=ALREADY_MODIFYING_TEXT, awaiting_params=True)
         estado = self._confirmations.status(token)
         if estado == "consumido":
@@ -729,13 +757,7 @@ class BecarioService:
 
         Solo avisa de los que tienen `chat_id`: los armados antes de que
         existiera este campo no tienen a dónde ir, y se cierran callados."""
-        vencidos: list[tuple[int, _PendingEdit]] = []
-        ahora = time.time()
-        with self._edits_lock:
-            for user_id, edit in list(self._pending_edits.items()):
-                if (ahora - edit.created_at) > self._edit_ttl:
-                    del self._pending_edits[user_id]
-                    vencidos.append((user_id, edit))
+        vencidos = self._pending_edits.pop_expired(self._edit_ttl)
         avisos = []
         for user_id, edit in vencidos:
             logger.info("Pedido pendiente vencido para user=%s", user_id)
@@ -758,10 +780,12 @@ class BecarioService:
         el aviso se MANDA (ver `sweep_expired_pendings`), y para eso hay
         que saber a qué chat. Van como ids sueltos y no como `_Ctx`
         porque el botón ✏️ (`start_modification`) no tiene contexto."""
-        with self._edits_lock:
-            self._pending_edits[user_id] = _PendingEdit(
+        self._pending_edits.put(
+            user_id,
+            PendingEdit(
                 steps=steps, awaiting_index=awaiting_index, chat_id=chat_id
-            )
+            ),
+        )
 
     @staticmethod
     def _plan_steps_as_requests(plan: Plan) -> list[tuple[Intent, dict]]:
