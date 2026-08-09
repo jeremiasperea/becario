@@ -1,0 +1,19 @@
+# El cambio descrito en lenguaje natural, con tres parámetros de una vez.
+# Acá se filtró un ValidationError de pydantic CRUDO al chat: cinco líneas
+# de traza, el nombre del modelo interno y un link a errors.pydantic.dev.
+# Un usuario que pide "subí el ENCUT a 600" no tiene por qué enterarse de
+# que existe un campo `incar_tags`.
+id: CV26
+titulo: describir la modificación (ENCUT, nodos y tiempo a la vez)
+origen: chat_messages 117,118
+sintoma: "1 validation error for VaspCalcRequest / incar_tags / Value error, ENCUT ya tiene su propio campo..." con link a errors.pydantic.dev
+
+> relajá el bulk de Zr hcp
+espera: confirmacion
+boton: modificar
+> aumenta el encut a 600, los nodos a 2 y el tiempo 2hs
+no_contiene: validation error
+no_contiene: pydantic
+no_contiene: VaspCalcRequest
+no_contiene: incar_tags
+contiene: 600

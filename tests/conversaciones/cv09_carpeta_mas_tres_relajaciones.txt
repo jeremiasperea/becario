@@ -1,0 +1,14 @@
+# El pedido compuesto que más veces se intentó en la bitácora: crear una
+# carpeta Y preparar tres relajaciones, una por red cristalina.
+# Lo que NO puede pasar es que los pasos de cálculo pierdan la fórmula que
+# el propio mensaje nombra tres veces.
+id: CV09
+titulo: crear carpeta + tres relajaciones de Zr (bcc/fcc/hcp)
+origen: chat_messages 7,19
+sintoma: "No pude interpretar tu pedido"; y cuando ruteó, los pasos de cálculo salieron sin formula
+
+> quiero que crees una carpeta en la carpeta de corridas llamada Zr, y dentro corré tres relajaciones de Zr bulk: bcc, fcc y hcp
+espera: ok
+no_contiene: No pude interpretar
+no_contiene: Decime qué material
+contiene: Zr

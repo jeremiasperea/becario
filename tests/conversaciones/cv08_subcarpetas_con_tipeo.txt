@@ -1,0 +1,13 @@
+# Misma intención que CV07 con "quiero crees" en vez de "quiero que crees".
+# Un verbo comido no puede mover las carpetas a la raíz del filesystem.
+id: CV08
+titulo: crear bcc/fcc/hcp (con tipeo, "quiero crees")
+origen: chat_messages 24
+sintoma: creó /Zr/bcc, /Zr/fcc, /Zr/hcp en la RAÍZ del cluster, fuera del directorio de corridas
+
+> quiero que crees una carpeta en la carpeta de corridas, llamada Zr
+espera: ok
+> dentro de Zr quiero crees 3 carpetas bcc, fcc y hcp
+espera: ok
+contiene: {base}/Zr/bcc
+no_contiene: : /Zr/bcc

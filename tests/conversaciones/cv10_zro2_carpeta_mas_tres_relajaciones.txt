@@ -1,0 +1,14 @@
+# El mismo pedido compuesto pero con un COMPUESTO (ZrO2), que además obliga
+# a resolver la estructura por Materials Project. Se intentó 5 veces.
+# El síntoma es el más caro del proyecto: el paso de crear la carpeta anda,
+# y los tres pasos de cálculo se olvidan de qué material era.
+id: CV10
+titulo: crear carpeta ZrO2 + tres relajaciones en sus subcarpetas
+origen: chat_messages 44,46,55,60,65 (5 intentos)
+sintoma: "⚠️ Decime qué material querés calcular" x3 después de haber creado la carpeta ZrO2
+
+> quiero que crees una carpeta llamada ZrO2 en la carpeta de corridas, dentro quiero que corras tres bulks y hagas relajacion de las estructuras para 3 tipos de celdas de ZrO2 bulk bcc, fcc y hcp, cada una en sus respectivas carpetas
+espera: ok
+no_contiene: Decime qué material querés calcular
+no_contiene: No pude interpretar
+contiene: ZrO2

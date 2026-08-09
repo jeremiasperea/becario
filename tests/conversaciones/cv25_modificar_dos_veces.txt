@@ -1,0 +1,14 @@
+# Doble toque de ✏️ (el usuario no vio la respuesta y volvió a apretar).
+# El segundo toque tiene que decir "ya estás modificando", no "expiró":
+# el plan sigue vivo y decirle lo contrario lo hace abandonar el pedido.
+id: CV25
+titulo: apretar ✏️ dos veces seguidas
+origen: chat_messages 115,116
+sintoma: ninguno — el mensaje era correcto; regresión
+
+> relajá el bulk de Zr hcp
+espera: confirmacion
+boton: modificar
+boton: modificar
+regex: Ya est[áa]s modificando
+no_regex: expir[óo]

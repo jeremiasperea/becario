@@ -1,0 +1,16 @@
+# Botón ✏️ sobre una confirmación viva: el bot pide el cambio en lenguaje
+# natural y re-arma el plan.
+id: CV24
+titulo: modificar un plan antes de confirmarlo
+origen: chat_messages 113,114
+sintoma: ninguno en este turno; el problema aparece al describir el cambio (CV26)
+
+# Ojo con el flag: este primer toque devuelve `ok` sin `awaiting_params`,
+# mientras que el segundo (CV25) sí lo trae. El pendiente queda armado igual
+# —CV26 lo demuestra—, así que la incoherencia es interna y no se asserta acá.
+
+> relajá el bulk de Zr hcp
+espera: confirmacion
+boton: modificar
+espera: ok
+regex: qu[ée] quer[ée]s cambiar

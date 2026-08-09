@@ -1,0 +1,12 @@
+# "tetragona" — falta la l final. Es el caso que en la bitácora SÍ funcionó,
+# mientras que "tetragonal" bien escrito falló. Queda fijado para que la
+# tolerancia a tipeos no dependa de la suerte del muestreo del LLM.
+id: CV20
+titulo: contestar la fase con tipeo ("tetragona")
+origen: chat_messages 111
+sintoma: funcionó por casualidad; el mismo pedido bien escrito (msg 100) falló
+
+> relajá el ZrO2
+espera: dato
+> tetragona
+no_contiene: No pude interpretar

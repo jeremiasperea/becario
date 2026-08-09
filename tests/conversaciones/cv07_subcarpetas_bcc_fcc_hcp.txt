@@ -1,0 +1,14 @@
+# Plan multi-paso relativo a una carpeta creada en el turno anterior.
+# Las tres rutas tienen que colgar del remote_base, no de la raíz absoluta.
+id: CV07
+titulo: crear bcc/fcc/hcp dentro de una carpeta ya creada
+origen: chat_messages 28,30,36
+sintoma: correcto acá, pero la variante con tipeo (CV08) creó /Zr/bcc en la raíz
+
+> quiero que crees una carpeta en la carpeta de corridas, llamada Zr
+espera: ok
+> dentro de Zr quiero que crees 3 carpetas bcc, fcc y hcp
+espera: ok
+contiene: {base}/Zr/bcc
+contiene: {base}/Zr/fcc
+contiene: {base}/Zr/hcp

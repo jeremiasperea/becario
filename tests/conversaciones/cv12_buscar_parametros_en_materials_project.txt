@@ -1,0 +1,12 @@
+# El usuario dice explícitamente de dónde sacar los parámetros ("project
+# materials", mal tipeado). Dos cosas no pueden pasar: que el material se
+# corra de ZrO2 a Zr, y que igual pida a mano el parámetro de red.
+id: CV12
+titulo: pedir que los parámetros los busque en Materials Project
+origen: chat_messages 53
+sintoma: la fórmula derivó de ZrO2 a Zr y respondió "You need to specify the lattice constant"
+
+> relajá el ZrO2 en bcc, fcc y hcp
+> lo quiero para las 3 estructuras que te pedi bcc, fcc y hcp los parametros buscalos en poject matirials
+no_contiene: You need to specify the lattice constant
+no_regex: bulk de 'Zr'[^O]

@@ -1,0 +1,14 @@
+# "tetragonal" a secas es la respuesta a la repregunta de CV16. El bot la
+# ruteó como mensaje nuevo y contestó "No pude interpretar tu pedido":
+# el pedido pendiente se perdió justo en el turno que lo iba a completar.
+id: CV17
+titulo: contestar la fase ("tetragonal")
+origen: chat_messages 100 (respuesta al pedido 98)
+sintoma: "❓ No pude interpretar tu pedido" en vez de retomar la relajación pendiente
+
+> relajá el ZrO2
+espera: dato
+> tetragonal
+espera: confirmacion
+no_contiene: No pude interpretar
+contiene: ZrO2

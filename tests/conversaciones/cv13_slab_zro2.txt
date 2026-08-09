@@ -1,0 +1,12 @@
+# Armar una losa de un compuesto. El pedido trae todo lo geométrico
+# (índice de Miller, capas, supercelda); lo único que puede faltar es la
+# estructura cristalina, y eso hay que pedirlo BIEN, no tirar el error de ASE.
+id: CV13
+titulo: armar un slab de ZrO2 (001), 5 capas, 2x1
+origen: chat_messages 70,72,74,76 (4 intentos, 3 respuestas distintas)
+sintoma: "Decime qué estructura querés (fórmula)" cuando la fórmula estaba en el mensaje; después el error crudo de ASE
+
+> Armá un slab de ZrO2 (001) de 5 capas, 2x1
+no_contiene: Decime qué estructura querés
+no_contiene: No suitable reference data
+no_contiene: Traceback

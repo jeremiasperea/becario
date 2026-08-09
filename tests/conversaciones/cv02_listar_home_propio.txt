@@ -1,0 +1,11 @@
+# "mi home" es el home de LA CUENTA del roster, no un literal que el LLM
+# invente ni el directorio de corridas.
+id: CV02
+titulo: listá mi home
+origen: chat_messages 9,11,13,17 (4 intentos)
+sintoma: devolvió /home/ana (usuario ajeno inventado por el LLM) y después el remote_base en vez del home
+
+> listá mi home
+espera: ok
+contiene: {home}
+no_contiene: /home/ana

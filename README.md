@@ -283,6 +283,51 @@ Los planes de un solo paso salen con `params:`, que es lo que hace que el
 fixture detecte la pérdida de `formula` — sin esa línea pasan en verde aunque
 el modelo suelte el material.
 
+### Batería de conversaciones (replay del chat real)
+
+El tablero del router mide **texto → pasos**. Lo que no mide es qué pasa
+después: un plan correcto que pierde la fórmula entre paso y paso pasa el
+tablero en verde y le arruina la tarde al usuario igual. Casi todas las
+fallas que aparecen en la bitácora de Telegram son de ese tipo — del
+sistema completo, no del clasificador.
+
+Para eso está la batería de conversaciones, que corre contra el cluster de
+prueba, Ollama y Materials Project **reales**:
+
+```bash
+.venv/bin/python scripts/replay_conversaciones.py
+.venv/bin/python scripts/replay_conversaciones.py --solo CV17,CV26 --verboso
+.venv/bin/python scripts/replay_conversaciones.py --repeticiones 3   # mide inestabilidad
+```
+
+Los escenarios (`tests/conversaciones/*.txt`) no son inventados: salen de
+los pedidos que un usuario efectivamente le hizo al bot, leídos de la tabla
+`chat_messages`. Cada archivo dice de qué mensajes viene (`origen:`) y qué
+se vio fallar (`sintoma:`), así que un caso en rojo se puede contrastar
+contra la conversación original.
+
+Dos criterios al armarlos:
+
+- **Los mensajes que solos no significan nada van con su contexto.**
+  «tetragonal» es la respuesta a «¿con qué fase voy?»; sin el turno que la
+  provoca el escenario no prueba nada. Cada archivo es una conversación
+  entera y autocontenida.
+- **Los reintentos se colapsan en un caso.** El mismo pedido aparece hasta
+  cinco veces seguidas en la bitácora porque falló cinco veces, no porque
+  sean cinco pruebas distintas.
+
+El runner maneja los botones (✅ ❌ ✏️) llamando a `confirm` / `reject` /
+`start_modification`, que es lo que la consola local no puede hacer.
+
+Por defecto **no toca producción**: copia la base a un archivo temporal y
+usa un `remote_base` propio bajo `<remote_base>_qa/<timestamp>`, así el
+replay no ensucia la bitácora que le da origen. `--sin-aislar` corre contra
+lo que diga el `.env`.
+
+Como depende del LLM, la salida es una tasa de acierto, no un booleano:
+`--repeticiones N` distingue «está roto» de «sale una de cada tres», que es
+la diferencia entre un bug y una inestabilidad del muestreo.
+
 ### Consola local (sin Telegram)
 
 ```bash

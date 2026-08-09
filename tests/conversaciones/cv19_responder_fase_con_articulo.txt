@@ -1,0 +1,11 @@
+# "la tetragonal" — con artículo, exactamente como lo sugiere la propia
+# repregunta del bot ("«la monoclínica» para la estable").
+id: CV19
+titulo: contestar la fase con artículo ("la tetragonal")
+origen: chat_messages 84
+sintoma: llegó hasta el POTCAR, así que la fase se entendió; se fija como regresión
+
+> relajá el ZrO2
+espera: dato
+> la tetragonal
+no_contiene: No pude interpretar

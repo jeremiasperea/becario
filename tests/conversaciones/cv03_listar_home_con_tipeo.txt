@@ -1,0 +1,10 @@
+# El mismo pedido con una letra comida. Un tipeo no puede cambiar a qué
+# directorio apunta la respuesta.
+id: CV03
+titulo: listá mi home (con tipeo, "stá mi home")
+origen: chat_messages 15
+sintoma: con el tipeo listó /root/becario_runs (el directorio de corridas) en vez del home
+
+> stá mi home
+espera: ok
+contiene: {home}

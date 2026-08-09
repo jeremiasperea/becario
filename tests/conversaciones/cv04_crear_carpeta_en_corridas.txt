@@ -1,0 +1,10 @@
+# "la carpeta de corridas" es el remote_base configurado. La ruta creada
+# tiene que colgar de ahí, no de una raíz inventada.
+id: CV04
+titulo: crear una carpeta dentro del directorio de corridas
+origen: chat_messages 21,34
+sintoma: creó /home/becario_runs/Zr — un remote_base que no es el configurado
+
+> quiero que crees una carpeta en la carpeta de corridas, llamada Zr
+espera: ok
+contiene: {base}/Zr
