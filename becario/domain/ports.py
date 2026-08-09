@@ -97,6 +97,18 @@ class ClusterGateway(Protocol):
         usuario. None si no se pudo determinar."""
         ...
 
+    def job_exit_code(self, job_id: JobId) -> Optional[int]:
+        """Código de salida del trabajo, según Slurm. None si no se pudo
+        determinar.
+
+        Existe porque el diagnóstico de un fallo venía CONJETURANDO desde
+        la ausencia de archivos de salida («lo más probable es que el
+        script nunca llegara a ejecutarse»), teniendo este dato a un
+        `sacct` de distancia. Un 127 es «comando o script no encontrado» y
+        no se parece a un 1 de VASP: decirlo cambia dónde busca el
+        usuario."""
+        ...
+
     def make_directory(self, path: str) -> CommandResult:
         """Crea un directorio remoto (mkdir -p: idempotente, con padres).
         La ruta ya viene validada por el dominio (`RemoteDirRequest`)."""

@@ -181,6 +181,25 @@ class SSHClusterGateway:
             return None
         return result.stdout.strip().splitlines()[0].strip() or None
 
+    def job_exit_code(self, job_id: JobId) -> Optional[int]:
+        """`ExitCode` viene como 'N:M' (salida:señal); interesa el primero.
+
+        `-X` limita a la línea del trabajo (sin los pasos .batch/.extern),
+        que es la que resume el desenlace.
+        """
+        result = self._run(
+            "sacct -j "
+            + shlex.quote(job_id.value)
+            + " --format=ExitCode --noheader --parsable2 -X"
+        )
+        if not result.ok or not result.stdout.strip():
+            return None
+        crudo = result.stdout.strip().splitlines()[0].strip()
+        try:
+            return int(crudo.split(":")[0])
+        except (ValueError, IndexError):
+            return None
+
     def make_directory(self, path: str) -> CommandResult:
         result = self._run(f"mkdir -p {shlex.quote(path)}")
         if result.ok and not result.stdout.strip():

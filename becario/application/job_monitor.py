@@ -157,12 +157,43 @@ class JobMonitorService:
             sections.append(f"— {vasp_label}:\n{_tail(vasp_out)}")
 
         if not sections:
-            sections.append(
-                "No encontré archivos de salida en la corrida: lo más "
-                "probable es que el script nunca llegara a ejecutarse en el "
-                "nodo (¿el directorio es visible desde los nodos de cómputo?)."
-            )
+            sections.append(self._sin_salida(cluster, job_id))
         return "\n🔍 Diagnóstico:\n" + "\n".join(sections)
+
+    # Códigos de salida que dicen algo concreto. Un 127 manda a mirar el
+    # PATH del nodo; un 1 de VASP manda a mirar el INCAR. Son búsquedas
+    # distintas, y antes las dos recibían la misma conjetura.
+    _CODIGOS = {
+        126: "el script existe pero no se pudo ejecutar (¿permisos?, ¿falta el shebang?)",
+        127: "comando o script no encontrado en el nodo (revisá el PATH, "
+             "los `module load` del prelude, o si el directorio de la corrida "
+             "se ve desde los nodos de cómputo)",
+        137: "lo mató una señal 9: casi siempre falta de memoria",
+        139: "violación de segmento en el binario",
+    }
+
+    def _sin_salida(self, cluster: ClusterGateway, job_id: str) -> str:
+        """Qué decir cuando la corrida no dejó ningún archivo de salida.
+
+        Antes esto afirmaba, con seguridad, que el script nunca había
+        llegado a ejecutarse. A veces acertaba —y en el caso que motivó
+        el mensaje, acertó— pero lo hacía por INFERENCIA desde la ausencia
+        de archivos, con el código de salida a un `sacct` de distancia y
+        sin consultarlo. Una hipótesis enunciada con esa seguridad manda a
+        investigar al lugar equivocado cuando falla.
+        """
+        code = cluster.job_exit_code(JobId(value=job_id))
+        if code is None:
+            return (
+                "No encontré archivos de salida ni pude leer el código de "
+                "salida del trabajo, así que no puedo decirte por qué falló."
+            )
+        explicacion = self._CODIGOS.get(code)
+        detalle = f": {explicacion}" if explicacion else " (sin una causa que sepa traducir)"
+        return (
+            f"No encontré archivos de salida en la corrida. Slurm reporta "
+            f"código de salida {code}{detalle}."
+        )
 
     # ------------------------------------------------------------------
     # Cosecha del barrido de ENCUT (sin estado local: relee el cluster)

@@ -21,8 +21,12 @@ class FakeRegistry:
 
 
 class FakeCluster:
-    def __init__(self, state: Optional[str]):
+    def __init__(self, state: Optional[str], exit_code: Optional[int] = None):
         self.state = state
+        # Lo que reporta `sacct` como código de salida. None = no se pudo
+        # determinar, que es un caso que el diagnóstico tiene que manejar
+        # sin inventar una causa.
+        self.exit_code = exit_code
         self.queried: list[str] = []
         # Sistema de archivos remoto de mentira para la cosecha:
         self.remote_dirs: dict[str, list[str]] = {}
@@ -31,6 +35,9 @@ class FakeCluster:
     def job_state(self, job_id: JobId) -> Optional[str]:
         self.queried.append(job_id.value)
         return self.state
+
+    def job_exit_code(self, job_id: JobId) -> Optional[int]:
+        return self.exit_code
 
     def list_dir(self, remote_dir: str) -> Optional[list[str]]:
         return self.remote_dirs.get(remote_dir)
@@ -42,8 +49,8 @@ class FakeCluster:
 
 
 class FakeClusterFactory:
-    def __init__(self, state: Optional[str] = "RUNNING"):
-        self.cluster = FakeCluster(state)
+    def __init__(self, state: Optional[str] = "RUNNING", exit_code: Optional[int] = None):
+        self.cluster = FakeCluster(state, exit_code)
 
     def for_identity(self, identity):
         return self.cluster
@@ -255,17 +262,46 @@ class TestJobMonitorService:
         assert len(notes) == 2
         assert "No pude leer" in notes[1].text
 
-    def test_failed_job_without_remote_logs_explains_probable_cause(self):
+    def _diagnostico(self, exit_code):
         tracker = FakeTracker([_job(
             status=JobStatus.RUNNING, script_path="/root/runs/x/run_vasp.sh",
         )])
         monitor = JobMonitorService(
-            registry=FakeRegistry(), cluster_factory=FakeClusterFactory("FAILED"),
+            registry=FakeRegistry(),
+            cluster_factory=FakeClusterFactory("FAILED", exit_code=exit_code),
             tracker=tracker, history=FakeHistory(),
         )
-        notes = monitor.poll_and_notify()
-        assert "🔍 Diagnóstico" in notes[0].text
-        assert "nunca llegara a ejecutarse" in notes[0].text
+        return monitor.poll_and_notify()[0].text
+
+    def test_sin_logs_reporta_el_codigo_de_salida(self):
+        # 127 es «no encontré el comando o el script». Antes esto decía,
+        # con seguridad, que el script nunca había llegado a ejecutarse:
+        # conjeturaba desde la ausencia de archivos teniendo el código a
+        # un `sacct` de distancia.
+        text = self._diagnostico(exit_code=127)
+
+        assert "🔍 Diagnóstico" in text
+        assert "código de salida 127" in text
+        assert "no encontrado" in text
+
+    def test_traduce_el_codigo_de_falta_de_memoria(self):
+        text = self._diagnostico(exit_code=137)
+
+        assert "137" in text
+        assert "memoria" in text
+
+    def test_un_codigo_que_no_sabe_traducir_no_lo_inventa(self):
+        text = self._diagnostico(exit_code=42)
+
+        assert "código de salida 42" in text
+        assert "sin una causa que sepa traducir" in text
+
+    def test_sin_codigo_admite_que_no_sabe(self):
+        # Ni archivos ni código: lo honesto es decirlo, no elegir una
+        # hipótesis y enunciarla como si fuera un hallazgo.
+        text = self._diagnostico(exit_code=None)
+
+        assert "no puedo decirte por qué falló" in text
 
     def test_failed_job_includes_log_tails(self):
         factory = FakeClusterFactory("FAILED")
