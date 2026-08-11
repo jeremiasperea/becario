@@ -26,6 +26,7 @@ from typing import Callable, Optional
 
 from pydantic import ValidationError
 
+from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
 from ..domain.models import (
     _MATERIAL_INTENTS,
     _MAX_AUTOMATERIALIZE_STEPS,
@@ -1053,8 +1054,33 @@ class BecarioService:
         executor = self._step_executors().get(action.intent)
         if executor is None:  # pragma: no cover - defensivo
             return Reply(text="⚠️ Acción pendiente desconocida.")
-        _ok, text = executor(ctx, action)
+        try:
+            _ok, text = executor(ctx, action)
+        except Exception:
+            return self._fallo_tras_confirmar(action)
         return Reply(text=text)
+
+    def _fallo_tras_confirmar(self, action: PendingAction) -> Reply:
+        """Qué hacer cuando la ejecución de una acción YA confirmada revienta.
+
+        El token se consumió más arriba y **no se devuelve**, aunque tiente:
+        `pop` es atómico justamente para que dos toques de ✅ no manden dos
+        `sbatch` (`storage.py`, `UPDATE ... WHERE consumed_at IS NULL`), y
+        reponerlo abriría esa puerta desde el otro lado. Peor: la excepción
+        pudo saltar DESPUÉS de que el `sbatch` saliera, así que reponer el
+        token es ofrecerle al usuario un botón que duplica un trabajo que ya
+        está en la cola.
+
+        Lo único honesto es decir que no sabemos, y mandar a verificar en vez
+        de a reintentar. El id del incidente conecta este mensaje con el
+        traceback del log.
+        """
+        incidente = nuevo_incidente()
+        logger.exception(
+            "Incidente %s ejecutando %s tras confirmar (token ya consumido)",
+            incidente, action.intent.value,
+        )
+        return Reply(text=FALLO_TRAS_CONFIRMAR.format(incidente=incidente), ok=False)
 
     def _execute_batch(
         self, plan: PendingPlan, requester_id: int, identity, cluster,
@@ -1072,7 +1098,14 @@ class BecarioService:
             if not ok_all:
                 lines.append(f"{i}. ⏸ {action.description} — omitido")
                 continue
-            reply = self._execute_batch_step(ctx, action)
+            try:
+                reply = self._execute_batch_step(ctx, action)
+            except Exception:
+                # Un paso que revienta corta el batch igual que uno que
+                # falla (misma semántica sin-rollback de ADR-0006): lo ya
+                # ejecutado queda hecho y los que siguen se omiten. La
+                # diferencia es que de ESTE paso no sabemos el desenlace.
+                reply = self._fallo_tras_confirmar(action)
             # El texto del handler ya trae su propio ✅/🚀/⚠️; solo lo
             # numeramos (evita duplicar el mark).
             lines.append(f"{i}. {reply.text}")
