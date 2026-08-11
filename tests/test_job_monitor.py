@@ -68,6 +68,18 @@ class FakeTracker:
     def active_jobs(self) -> list[TrackedJob]:
         return [j for j in self._jobs if not j.notified]
 
+    def record_unreachable(self, job_id, owner_id) -> int:
+        for j in self._jobs:
+            if j.job_id == job_id and j.owner_id == owner_id:
+                j.poll_attempts += 1
+                return j.poll_attempts
+        return 0
+
+    def clear_unreachable(self, job_id, owner_id) -> None:
+        for j in self._jobs:
+            if j.job_id == job_id and j.owner_id == owner_id:
+                j.poll_attempts = 0
+
     def update_status(self, job_id, owner_id, status) -> None:
         self.status_updates.append((job_id, owner_id, status))
         for j in self._jobs:
@@ -153,13 +165,39 @@ class TestJobMonitorService:
         assert notes[0].chat_id == 999
         assert "terminó" in notes[0].text
         assert "1" in notes[0].text
+
+        # El asiento NO ocurre al armar la notificación: hasta que el aviso
+        # salga de verdad, el trabajo sigue activo. Antes se marcaba acá, y
+        # un `send_message` fallido se llevaba el aviso para siempre.
+        assert tracker.notified_calls == []
+        assert history.added == []
+        assert tracker.active_jobs(), "se dejó de rastrear sin haber avisado"
+
+        # Recién con el acuse de la presentación se asienta.
+        monitor.confirm_delivery(notes[0].acuse)
         assert tracker.notified_calls == [("1", ALICE.telegram_user_id)]
         assert len(history.added) == 1
         assert history.added[0]["estado"] == "completado"
 
-        # Una segunda vuelta no vuelve a notificar (ya no está en active_jobs).
+        # Y ahí sí, una segunda vuelta no vuelve a notificar.
         notes2 = monitor.poll_and_notify()
         assert notes2 == []
+
+    def test_sin_acuse_el_trabajo_se_reintenta(self):
+        """El caso que motivó todo: si el mensaje no sale, el aviso no se
+        pierde — el trabajo sigue activo y la próxima vuelta reintenta."""
+        tracker = FakeTracker([_job(status=JobStatus.RUNNING)])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=FakeClusterFactory("COMPLETED"),
+            tracker=tracker, history=FakeHistory(),
+        )
+
+        primera = monitor.poll_and_notify()   # el envío "falla": no se acusa
+        segunda = monitor.poll_and_notify()
+
+        assert len(primera) == 1
+        assert len(segunda) == 1, "el aviso se perdió al fallar el envío"
+        assert segunda[0].text == primera[0].text
 
     def test_failed_job_uses_warning_icon(self):
         tracker = FakeTracker([_job(status=JobStatus.RUNNING)])
@@ -189,6 +227,7 @@ class TestJobMonitorService:
         notes = monitor.poll_and_notify()
         assert notes == []
         assert tracker.status_updates == []  # no se pudo consultar, no se toca nada
+        assert tracker.active_jobs()[0].poll_attempts == 1  # pero queda anotado
 
     def test_deregistered_user_stops_tracking_without_notification(self):
         tracker = FakeTracker([_job()])

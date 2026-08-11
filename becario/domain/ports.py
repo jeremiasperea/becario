@@ -201,7 +201,24 @@ class JobTracker(Protocol):
 
     def update_status(self, job_id: str, owner_id: int, status: JobStatus) -> None: ...
 
-    def mark_notified(self, job_id: str, owner_id: int) -> None: ...
+    def mark_notified(self, job_id: str, owner_id: int) -> None:
+        """Deja de rastrear el trabajo.
+
+        OJO con cuándo llamarlo: solo después de que el aviso haya SALIDO
+        de verdad. Marcarlo antes convierte un envío fallido en un aviso
+        perdido para siempre, porque el trabajo ya no vuelve a aparecer en
+        `active_jobs()`."""
+        ...
+
+    def record_unreachable(self, job_id: str, owner_id: int) -> int:
+        """Anota una consulta en la que no se pudo leer el estado y
+        devuelve cuántas van SEGUIDAS. El monitor lo usa para dejar de
+        perseguir un trabajo del que ya no hay noticias."""
+        ...
+
+    def clear_unreachable(self, job_id: str, owner_id: int) -> None:
+        """Reinicia la racha: se pudo volver a leer el estado."""
+        ...
 
 
 class CalcRunRepository(Protocol):

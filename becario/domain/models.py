@@ -1499,6 +1499,12 @@ class TrackedJob:
     status: JobStatus = JobStatus.PENDING
     notified: bool = False
     created_at: float = field(default_factory=time.time)
+    # Consultas SEGUIDAS en las que no se pudo leer el estado. Se reinicia
+    # con cualquier lectura buena, así que cuenta rachas, no acumulado: un
+    # SSH que se cayó una vez no acerca al trabajo a darse por perdido.
+    # Sin esto, un trabajo que Slurm ya purgó (`MinJobAge`) se consultaba
+    # cada 60 segundos hasta el fin de los tiempos.
+    poll_attempts: int = 0
 
 
 # ---------------------------------------------------------------------------

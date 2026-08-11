@@ -464,7 +464,14 @@ class TelegramBot:
                     monospace=note.monospace,
                 )
             except Exception as exc:
+                # Sin acuse: el trabajo sigue activo y el próximo tick lo
+                # reintenta. Antes el monitor ya lo había dado por avisado
+                # antes de llegar acá, así que este `except` loguea… y el
+                # aviso se perdía para siempre.
                 logger.error("No pude notificar a chat_id=%s: %s", note.chat_id, exc)
+                continue
+            if note.acuse is not None:
+                await self._en_hilo(self._job_monitor.confirm_delivery, note.acuse)
 
     @staticmethod
     def _bot_sender(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
