@@ -1049,6 +1049,46 @@ class StructureResolutionError(RuntimeError):
         super().__init__(message or reason.value)
 
 
+class RouterFailureReason(str, Enum):
+    """Por qué no se pudo interpretar el pedido, cuando la culpa NO es del
+    pedido. Cada valor lleva a un mensaje distinto porque llevan a acciones
+    distintas: ante un timeout tiene sentido reintentar, ante un servidor
+    caído no."""
+
+    TIMEOUT = "timeout"          # el modelo no contestó a tiempo
+    UNREACHABLE = "unreachable"  # no se pudo llegar al servidor del modelo
+    API = "api"                  # el servidor contestó, pero con un error
+
+
+class RouterUnavailableError(RuntimeError):
+    """El router no pudo pronunciarse por un fallo de INFRAESTRUCTURA.
+
+    Mismo patrón que `StructureResolutionError`: lo lanza el adaptador y lo
+    traduce la capa de aplicación, sin que el dominio vea excepciones de
+    httpx.
+
+    Existe para separar dos cosas que se venían confundiendo, y la confusión
+    tenía costo. Un `Plan` con `Intent.UNKNOWN` significa «el modelo leyó tu
+    mensaje y no supo qué hacer con él», y el bot contesta con la ayuda —
+    razonable. Cuando Ollama expiraba o no estaba, el adaptador devolvía ESE
+    MISMO plan, así que un fallo del servidor terminaba diciéndole al usuario
+    «no pude interpretar tu pedido»: lo mandaba a reescribir un mensaje que
+    estaba perfecto. En la bitácora ese texto aparece tres veces.
+    """
+
+    def __init__(
+        self,
+        reason: RouterFailureReason,
+        message: str = "",
+        timeout_seconds: Optional[float] = None,
+    ) -> None:
+        self.reason = reason
+        # Solo para TIMEOUT: cuánto se esperó, para poder decirlo. El
+        # adaptador lo sabe (es su config); el dominio solo lo transporta.
+        self.timeout_seconds = timeout_seconds
+        super().__init__(message or reason.value)
+
+
 class StructureQuery(BaseModel):
     """Pedido neutral de estructura que la capa de aplicación arma a partir
     del request del usuario y le pasa al `StructureProvider`.
