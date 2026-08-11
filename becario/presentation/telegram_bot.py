@@ -16,7 +16,7 @@ import logging
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -92,8 +92,6 @@ def _trocear(text: str, medir=len, presupuesto: int = _PRESUPUESTO) -> list[str]
     return trozos
 
 
-
-
 def _keyboard(token: str, allow_modify: bool = False) -> InlineKeyboardMarkup:
     row = [
         InlineKeyboardButton("✅ Confirmar", callback_data=f"confirm:{token}"),
@@ -114,11 +112,16 @@ class TelegramBot:
         transcriber: Optional[Transcriber] = None,
         chat_log: Optional[ChatLogRepository] = None,
         max_workers: int = 8,
+        al_cerrar: Optional[Callable[[], None]] = None,
     ) -> None:
         self._service = service
         self._job_monitor = job_monitor
         self._transcriber = transcriber
         self._chat_log = chat_log
+        # Qué hacer al terminar (cerrar las conexiones SSH, típicamente).
+        # Se inyecta un callable y no el factory para que la presentación
+        # siga sin conocer la infraestructura.
+        self._al_cerrar = al_cerrar
         # Pool PROPIO para el trabajo bloqueante (LLM, SSH, transcripción),
         # en vez del executor default de asyncio.
         #
@@ -183,12 +186,23 @@ class TelegramBot:
         """Long polling: PTB maneja offset, reintentos y backoff solo."""
         logger.info("B.E.C.A.R.I.O. iniciando en modo polling…")
         try:
+            # PTB ya atiende SIGINT/SIGTERM y devuelve el control acá, así
+            # que el `finally` corre también en un `systemctl stop`. No hace
+            # falta instalar handlers propios (y pelearlos con los suyos).
             self._app.run_polling(allowed_updates=["message", "callback_query"])
         finally:
             # `wait=False`: al salir puede haber un hilo esperando al cluster,
             # y no tiene sentido demorar el apagado por él. Los hilos son
             # daemon, así que no impiden que el proceso termine.
             self._executor.shutdown(wait=False)
+            if self._al_cerrar is not None:
+                try:
+                    self._al_cerrar()
+                except Exception:
+                    # Un apagado que revienta no puede tapar el motivo real
+                    # de la salida.
+                    logger.exception("Falló el cierre ordenado")
+            logger.info("B.E.C.A.R.I.O. terminó.")
 
     # ------------------------------------------------------------------
     async def _log_chat(self, chat_id: Optional[int], role: str, text: str) -> None:
