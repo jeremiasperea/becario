@@ -247,16 +247,33 @@ def run_scenario(sc: Scenario, build_service, user_id: int, chat_id: int,
                  subs: dict[str, str]) -> RunResult:
     """Corre un escenario sobre un servicio recién construido.
 
-    Servicio nuevo por escenario a propósito: los pendientes y las
-    confirmaciones viven en memoria por usuario, y compartirlos haría que
-    una conversación contamine a la siguiente — justo el tipo de acople que
-    la batería tiene que poder detectar, no producir.
+    Servicio nuevo por escenario, PERO eso ya no alcanza para aislar. El
+    comentario que estaba acá decía que los pendientes y las confirmaciones
+    "viven en memoria por usuario", y era cierto cuando se escribió: desde
+    que se persistieron en SQLite, dos servicios distintos comparten el
+    mismo archivo y construir uno nuevo no limpia nada.
+
+    Lo que quedaba sucio era el pendiente, y se notaba solo con
+    `--repeticiones`: un escenario que termina con una repregunta abierta
+    (CV11 cierra preguntando la fase del ZrO2) dejaba ese pendiente vivo, y
+    la repetición siguiente interpretaba su PRIMER mensaje como la respuesta
+    a la pregunta anterior en vez de rutearlo de cero. El runner creía estar
+    aislando por `chat_id` —"chat_id propio por corrida"— pero los
+    pendientes se indexan por `user_id`, que era el mismo siempre. Resultado:
+    CV11 daba 1/1 y 1/5, y esa diferencia parecía inestabilidad del modelo
+    cuando era del harness.
     """
     turns: list[TurnResult] = []
     try:
         service = build_service()
     except Exception:
         return RunResult(scenario_id=sc.id, turns=[], error=traceback.format_exc(limit=3))
+
+    # Arrancar sin pendiente heredado. No se toca nada más: el turno
+    # `reiniciar` existe justamente para probar que el estado SOBREVIVE a un
+    # reinicio (CV28), así que la limpieza va acá, una vez, antes del primer
+    # mensaje — no entre turnos.
+    service._pending_edits.pop(user_id)
 
     token: Optional[str] = None
     for turn in sc.turns:
