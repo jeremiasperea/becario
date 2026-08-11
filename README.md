@@ -519,6 +519,13 @@ máximo del barrido):
 ✅ ENCUT recomendado: 300 eV (ΔE < 1 meV/át respecto de 450 eV)
 ```
 
+Los inputs se suben a un `.pending/` dentro de la base de corridas y se
+mueven a su lugar definitivo recién al confirmar (un `mv` remoto, atómico
+dentro del mismo filesystem). Así una corrida aparece entera o no aparece,
+y lo que quedó sin confirmar es reconocible como tal: cancelar lo borra en
+el acto, y lo que se dejó vencer lo levanta un barrido por edad al preparar
+el cálculo siguiente.
+
 La confirmación ofrece tres botones: **✅ Confirmar**, **❌ Cancelar** y
 **✏️ Modificar** — este último espera un mensaje con el cambio ("usá 2
 nodos", "subí el ENCUT máximo a 600"); el resto del plan se mantiene y se

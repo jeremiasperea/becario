@@ -1225,4 +1225,36 @@ class BecarioService:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         self._confirmations.pop(token)
         self._set_decision_outcome(plan.decision_id, "cancelled")
+        self._descartar_pendientes(requester_id, plan)
         return Reply(text="❌ Operación cancelada.")
+
+    def _descartar_pendientes(self, requester_id: int, plan: PendingPlan) -> None:
+        """Borra del cluster los inputs de una corrida que se canceló.
+
+        Nunca hace fallar la cancelación: cancelar es lo que el usuario
+        pidió y ya está hecho: el token se consumió. Si la limpieza no sale,
+        queda el barrido por edad (`sweep_pending`), que existe justamente
+        porque este camino puede fallar o ni siquiera ejecutarse — nadie
+        aprieta ❌ cuando deja vencer una confirmación.
+        """
+        pendientes = [
+            paso.payload["pending_dir"]
+            for paso in plan.steps
+            if paso.payload.get("pending_dir")
+        ]
+        if not pendientes:
+            return
+        try:
+            identity = self._registry.get_identity(requester_id)
+            if identity is None:  # pragma: no cover - se dio de baja en el medio
+                return
+            cluster = self._cluster_factory.for_identity(identity)
+            for ruta in pendientes:
+                resultado = cluster.discard_pending(ruta)
+                if not resultado.ok:
+                    logger.warning(
+                        "No pude borrar la corrida cancelada %s: %s",
+                        ruta, resultado.message,
+                    )
+        except Exception:
+            logger.exception("Falló la limpieza de una corrida cancelada")

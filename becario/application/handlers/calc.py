@@ -6,6 +6,7 @@ primer argumento `svc` y conservan el comportamiento original sin cambios.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -15,6 +16,7 @@ from ...domain.models import (
     Axis,
     CalcKind,
     CRYSTAL_SYSTEM_ES,
+    DIR_PENDIENTES,
     Intent,
     OutputFormat,
     PendingAction,
@@ -38,6 +40,14 @@ from ..relaxed_source import RelaxedSourceError, resolve_relaxed_structure
 
 if TYPE_CHECKING:
     from ..services import BecarioService
+
+logger = logging.getLogger(__name__)
+
+# Edad a partir de la cual una corrida sin confirmar se considera basura.
+# Bien por encima del TTL de las confirmaciones (10 min) y del de los
+# pedidos pendientes (30 min): lo que se barre acá ya no lo puede reclamar
+# nadie, ni siquiera alguien que vuelva al chat un rato después.
+_EDAD_PENDIENTE_MIN = 120
 
 
 def _ask_for_miller(formula: str) -> Reply:
@@ -587,12 +597,27 @@ def _generate_and_upload(
             )
         base = f"{home}/{base}"
     remote_run_dir = f"{base}/{result.run_name}"
+    # Los inputs se suben a `.pending/` y se mueven al lugar bueno recién
+    # al confirmar (`jobs.execute_submit`). Antes se subían derecho al
+    # destino, así que una confirmación que se cancelaba, se dejaba vencer
+    # o pillaba un reinicio del bot dejaba un directorio de corrida tirado
+    # en el cluster — indistinguible de una corrida de verdad, y por eso
+    # nadie lo borraba nunca.
+    pending_dir = f"{base}/{DIR_PENDIENTES}/{result.run_name}"
 
-    up = ctx.cluster.upload_dir(result.local_dir, remote_run_dir)
+    # De paso, barrer lo que haya quedado de antes en esta cuenta. Es la
+    # red que cubre lo que el borrado explícito no puede (ver
+    # `sweep_pending`), y sale gratis: la conexión ya está abierta. Si
+    # falla no importa, se reintenta en el próximo pedido.
+    barrido = ctx.cluster.sweep_pending(f"{base}/{DIR_PENDIENTES}", _EDAD_PENDIENTE_MIN)
+    if not barrido.ok:
+        logger.warning("No pude barrer pendientes viejos: %s", barrido.message)
+
+    up = ctx.cluster.upload_dir(result.local_dir, pending_dir)
     if not up.ok:
         return Reply(text=f"⚠️ Falló la subida de los inputs: {up.message}", ok=False)
 
-    cat = ctx.cluster.concat_files(potcar_sources, f"{remote_run_dir}/POTCAR")
+    cat = ctx.cluster.concat_files(potcar_sources, f"{pending_dir}/POTCAR")
     if not cat.ok:
         return Reply(text=f"⚠️ No pude armar el POTCAR en el cluster: {cat.message}", ok=False)
 
@@ -614,6 +639,10 @@ def _generate_and_upload(
     payload["workflow"] = "encut_scan" if req.calc_kind is CalcKind.ENCUT_SCAN else ""
     payload["calc_fingerprint"] = fingerprint
     payload["run_dir"] = remote_run_dir
+    # De dónde hay que mover la corrida al confirmar, y qué hay que borrar
+    # si se cancela. `script_path` ya apunta al destino FINAL: para cuando
+    # el `sbatch` corra, el `mv` ya pasó.
+    payload["pending_dir"] = pending_dir
     mp_block = f"{mp_note}\n" if mp_note else ""
     # Avisos de física ANTES de confirmar: es el único momento en que sirven.
     # Después del envío ya se gastaron horas de cluster en una corrida que el

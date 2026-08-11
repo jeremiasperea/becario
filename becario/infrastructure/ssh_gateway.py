@@ -16,6 +16,7 @@ from typing import Optional
 import paramiko
 
 from ..domain.models import (
+    DIR_PENDIENTES,
     ClusterIdentity,
     CommandFailureReason,
     CommandResult,
@@ -28,6 +29,35 @@ from ..reintentos import reintentar
 logger = logging.getLogger(__name__)
 
 _SBATCH_JOB_ID_RE = re.compile(r"Submitted batch job (\d+)")
+
+
+def _partes_sanas(path: str) -> Optional[tuple[str, ...]]:
+    """Partes de una ruta remota que se puede borrar, o None si no.
+
+    Exige absoluta y sin `..`: lo primero para que no dependa del cwd de la
+    sesión, lo segundo porque `.pending/../..` cumpliría cualquier chequeo
+    que se limite a buscar el segmento.
+    """
+    if not path.startswith("/"):
+        return None
+    partes = PurePosixPath(path).parts
+    return None if ".." in partes else partes
+
+
+def _es_ruta_de_pendientes(path: str) -> bool:
+    """¿`path` es UNA corrida sin confirmar (no el contenedor)?"""
+    partes = _partes_sanas(path)
+    if partes is None or DIR_PENDIENTES not in partes:
+        return False
+    # Tiene que haber algo DESPUÉS del `.pending/`: borrar el contenedor
+    # entero se llevaría por delante los pendientes de otras corridas.
+    return partes.index(DIR_PENDIENTES) < len(partes) - 1
+
+
+def _es_base_de_pendientes(path: str) -> bool:
+    """¿`path` es exactamente el contenedor `.../.pending`?"""
+    partes = _partes_sanas(path)
+    return bool(partes) and partes[-1] == DIR_PENDIENTES
 
 
 def _format_tree(base: str, find_output: str) -> str:
@@ -440,6 +470,71 @@ class SSHClusterGateway:
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SFTP (read %s): %s", remote_path, exc)
             return None
+
+    # ------------------------------------------------------------------
+    # Corridas sin confirmar: mover al lugar bueno, o borrarlas
+    # ------------------------------------------------------------------
+    def move_run(self, src: str, dest: str) -> CommandResult:
+        """Mueve una corrida de `.pending/` a su lugar definitivo.
+
+        Un `mv` dentro del mismo sistema de archivos es atómico, así que la
+        corrida aparece entera o no aparece: nunca a medias. Por eso se sube
+        a un lado y se mueve, en vez de subir directo al destino — una
+        subida cortada a la mitad deja un directorio que existe, parece
+        válido y le falta el POTCAR.
+
+        NO es reintentable: si el `mv` salió bien y la respuesta se perdió,
+        el segundo intento falla con «no existe» e informaría un fallo
+        falso sobre algo que sí pasó.
+        """
+        return self._run(f"mv -T {shlex.quote(src)} {shlex.quote(dest)}")
+
+    def discard_pending(self, path: str) -> CommandResult:
+        """Borra una corrida que quedó sin confirmar.
+
+        El `rm -rf` es la única operación destructiva del gateway, así que
+        va con su propio guard además del `shlex.quote`: solo se acepta una
+        ruta absoluta, sin `..`, que esté DENTRO de un `.pending/` y no sea
+        el `.pending/` mismo. La ruta la arma la aplicación, no el usuario
+        ni el LLM — pero eso ya era cierto de todo lo demás, y el patrón de
+        este proyecto es validar igual (ver el README, defensa en
+        profundidad).
+        """
+        if not _es_ruta_de_pendientes(path):
+            logger.error("Me negué a borrar una ruta fuera de pendientes: %r", path)
+            return CommandResult(
+                ok=False,
+                stderr="Ruta fuera del área de pendientes; no borro nada.",
+                reason=CommandFailureReason.COMMAND,
+            )
+        return self._run(f"rm -rf -- {shlex.quote(path)}", reintentable=True)
+
+    def sweep_pending(self, pending_base: str, older_than_minutes: int) -> CommandResult:
+        """Barre las corridas sin confirmar más viejas que N minutos.
+
+        Es la red que cubre lo que el borrado explícito no puede: una
+        confirmación que venció sin que nadie la tocara, y un bot que se
+        reinició entre la subida y el botón. Barrer por EDAD no necesita
+        llevar registro de nada — el estado está en el propio cluster.
+
+        `-mindepth 1 -maxdepth 1` toca solo los hijos directos: nunca el
+        contenedor. Si `.pending` no existe todavía, `find` sale con error
+        y no pasa nada; por eso el `-o -true` del final no hace falta y el
+        resultado se ignora río arriba.
+        """
+        if not _es_base_de_pendientes(pending_base):
+            logger.error("Me negué a barrer una ruta que no es de pendientes: %r", pending_base)
+            return CommandResult(
+                ok=False,
+                stderr="Ruta fuera del área de pendientes; no barro nada.",
+                reason=CommandFailureReason.COMMAND,
+            )
+        quoted = shlex.quote(pending_base)
+        return self._run(
+            f"[ -d {quoted} ] && find {quoted} -mindepth 1 -maxdepth 1 "
+            f"-mmin +{int(older_than_minutes)} -exec rm -rf -- {{}} + || true",
+            reintentable=True,
+        )
 
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
         """`cat` remoto: arma el POTCAR concatenando los de la biblioteca.

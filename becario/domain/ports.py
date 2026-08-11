@@ -160,6 +160,22 @@ class ClusterGateway(Protocol):
         gigante (WAVECAR/CHGCAR pueden pesar GB). None = sin límite."""
         ...
 
+    def move_run(self, src: str, dest: str) -> CommandResult:
+        """Mueve una corrida de `.pending/` a su lugar definitivo. Dentro
+        del mismo filesystem es atómico: aparece entera o no aparece."""
+        ...
+
+    def discard_pending(self, path: str) -> CommandResult:
+        """Borra una corrida sin confirmar. Solo acepta rutas dentro de un
+        `.pending/`; cualquier otra cosa se rechaza sin ejecutar nada."""
+        ...
+
+    def sweep_pending(self, pending_base: str, older_than_minutes: int) -> CommandResult:
+        """Barre las corridas sin confirmar más viejas que N minutos. Cubre
+        lo que el borrado explícito no puede: confirmaciones vencidas sin
+        que nadie las toque, y reinicios entre la subida y el botón."""
+        ...
+
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
         """`cat` remoto de varios archivos en uno (armar POTCAR desde la
         biblioteca del cluster). Rutas ya validadas por el dominio."""

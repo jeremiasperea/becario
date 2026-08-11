@@ -128,6 +128,22 @@ def execute_submit(svc: "BecarioService", ctx: _Ctx, action: PendingAction) -> t
     # `workflow` viaja junto a los campos del job pero no es parte de
     # SlurmJobRequest (Pydantic ignora las claves extra del payload).
     req = SlurmJobRequest(**action.payload)
+
+    # La corrida esperaba en `.pending/`: recién ahora, con el aval del
+    # usuario, se muda a su lugar definitivo. El `mv` va ANTES del `sbatch`
+    # porque `script_path` ya apunta al destino final; si falla, no se
+    # envía nada y no queda un trabajo apuntando a un directorio que no
+    # existe.
+    pending_dir = action.payload.get("pending_dir")
+    run_dir = action.payload.get("run_dir")
+    if pending_dir and run_dir:
+        movida = ctx.cluster.move_run(pending_dir, run_dir)
+        if not movida.ok:
+            return False, (
+                f"❌ 🚀 No pude mover la corrida a su lugar en el cluster: "
+                f"{movida.message}\nNo envié nada."
+            )
+
     result = ctx.cluster.submit_job(req)
     if result.ok and result.job_id:
         svc._job_tracker.track(TrackedJob(

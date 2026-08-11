@@ -1451,6 +1451,13 @@ class CommandFailureReason(str, Enum):
     TIMEOUT = "timeout"      # hubo conversación pero no terminó a tiempo
 
 
+# Subdirectorio donde esperan los inputs de una corrida que todavía no se
+# confirmó. Existe para que un directorio abandonado sea RECONOCIBLE: uno
+# suelto en la base de corridas es indistinguible de una corrida real, y
+# nadie se anima a borrar lo que no puede identificar. Bajo `.pending/` sí.
+DIR_PENDIENTES = ".pending"
+
+
 @dataclass(frozen=True)
 class JobStateReading:
     """Lo que se pudo averiguar del estado de un trabajo.
