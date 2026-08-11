@@ -31,12 +31,18 @@ _ENCUT_DIR_RE = re.compile(r"\Aencut_(\d+)\Z")
 # Criterio de convergencia estándar para el barrido de ENCUT.
 _CONVERGENCE_MEV_PER_ATOM = 1.0
 
-# Consultas SEGUIDAS sin poder leer el estado antes de dar un trabajo por
-# perdido. Con el intervalo por defecto (60 s) es una hora, que es holgado
-# a propósito: el mismo `None` significa «sacct no lo conoce» y «el SSH está
-# caído», y hasta que el gateway distinga esos dos casos conviene errar del
-# lado de seguir esperando.
-_MAX_CONSULTAS_SIN_RESPUESTA = 60
+# Consultas SEGUIDAS en las que `sacct` contestó y NO conoció el trabajo,
+# antes de darlo por perdido. Con el intervalo por defecto son cinco
+# minutos.
+#
+# Estuvo en 60 (una hora) mientras `job_state()` devolvía el mismo `None`
+# para «sacct no lo conoce» y para «el cluster no contesta»: con esa
+# ambigüedad había que errar del lado de esperar, porque soltar un trabajo
+# sano por un rato de red mala es peor que perseguir uno muerto. Ahora que
+# `JobStateReading` separa los dos casos, esto cuenta solo respuestas
+# EXPLÍCITAS del cluster diciendo que no lo conoce, y cinco de esas ya son
+# concluyentes.
+_MAX_CONSULTAS_SIN_RESPUESTA = 5
 
 
 @dataclass(frozen=True)
@@ -101,8 +107,20 @@ class JobMonitorService:
                 continue
 
             cluster = self._cluster_factory.for_identity(identity)
-            raw_state = cluster.job_state(JobId(value=job.job_id))
+            lectura = cluster.job_state(JobId(value=job.job_id))
+            if not lectura.reachable:
+                # No hubo conversación con el cluster. NO cuenta para la
+                # racha: el trabajo no tiene la culpa de que se haya caído
+                # la red, y contarlo acercaba a los trabajos SANOS a que se
+                # los diera por perdidos.
+                logger.warning(
+                    "No pude hablar con el cluster para consultar %s; reintento la próxima vuelta.",
+                    job.job_id,
+                )
+                continue
+            raw_state = lectura.state
             if raw_state is None:
+                # `sacct` contestó y no lo conoce. ESO sí cuenta.
                 aviso = self._sin_noticias(job)
                 if aviso is not None:
                     notifications.append(aviso)

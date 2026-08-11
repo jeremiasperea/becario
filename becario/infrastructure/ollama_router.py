@@ -21,6 +21,7 @@ from ..domain.models import (
     RouterFailureReason,
     RouterUnavailableError,
 )
+from ..reintentos import reintentar
 
 logger = logging.getLogger(__name__)
 
@@ -526,15 +527,43 @@ class OllamaRouter:
         if not self._model_matches(self._model, names):
             raise OllamaModelMissingError(self._model, available=names)
 
-    def _chat(self, system_prompt: str, user_text: str, schema: dict) -> str:
-        """Una llamada al modelo. Levanta `RouterUnavailableError` si el
-        problema fue de infraestructura.
+    @staticmethod
+    def _vale_reintentar(exc: BaseException) -> bool:
+        """Qué fallo del modelo tiene sentido repetir.
 
-        Antes devolvía `None` y cada llamador lo traducía a "no entendí".
-        Eso borraba la diferencia entre «el modelo leyó tu mensaje y no supo
-        qué hacer» y «el modelo nunca llegó a leerlo», que para el usuario es
-        la diferencia entre reescribir el pedido y esperar un rato.
+        Un TIMEOUT **no**: ya se esperaron los 180 segundos configurados,
+        y volver a intentar le suma otros 180 al usuario para llegar casi
+        seguro al mismo lugar. Reintentar algo que falló por lento es
+        cambiarle al usuario un mensaje de error por tres minutos más de
+        silencio.
+
+        Un servidor inalcanzable **sí**: falla en milisegundos y se arregla
+        solo bastante seguido (Ollama reiniciándose, por ejemplo). Un error
+        de la API, también.
         """
+        return (
+            isinstance(exc, RouterUnavailableError)
+            and exc.reason is not RouterFailureReason.TIMEOUT
+        )
+
+    def _chat(self, system_prompt: str, user_text: str, schema: dict) -> str:
+        """Una llamada al modelo, con reintento si el fallo lo amerita.
+
+        Levanta `RouterUnavailableError` si el problema fue de
+        infraestructura. Antes devolvía `None` y cada llamador lo traducía a
+        "no entendí": eso borraba la diferencia entre «el modelo leyó tu
+        mensaje y no supo qué hacer» y «el modelo nunca llegó a leerlo», que
+        para el usuario es la diferencia entre reescribir el pedido y
+        esperar un rato.
+        """
+        return reintentar(
+            lambda: self._chat_once(system_prompt, user_text, schema),
+            intentos=3,
+            excepcion_transitoria=self._vale_reintentar,
+            etiqueta=f"llamada a Ollama ({self._model})",
+        )
+
+    def _chat_once(self, system_prompt: str, user_text: str, schema: dict) -> str:
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",

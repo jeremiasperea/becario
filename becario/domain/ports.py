@@ -14,6 +14,7 @@ from .models import (
     CommandResult,
     HistoryFilter,
     JobId,
+    JobStateReading,
     JobStatus,
     PendingEdit,
     PendingPlan,
@@ -91,10 +92,15 @@ class ClusterGateway(Protocol):
 
     def job_status(self, job_id: Optional[JobId]) -> CommandResult: ...
 
-    def job_state(self, job_id: JobId) -> Optional[str]:
+    def job_state(self, job_id: JobId) -> JobStateReading:
         """Estado crudo de Slurm (una palabra, vía `sacct --parsable2`),
         pensado para que el monitor lo interprete — no para mostrar al
-        usuario. None si no se pudo determinar."""
+        usuario.
+
+        Devuelve `JobStateReading` y no `Optional[str]` porque «no lo pude
+        determinar» son dos cosas distintas: que el cluster conteste y no
+        conozca el trabajo, y que no se haya podido preguntar. El monitor
+        actúa distinto en cada caso (ver `JobStateReading`)."""
         ...
 
     def job_exit_code(self, job_id: JobId) -> Optional[int]:

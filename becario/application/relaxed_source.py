@@ -129,7 +129,14 @@ def _reject_if_unfinished(cluster: ClusterGateway, run: dict, job_name: str) -> 
     job_id = str(run.get("job_id") or "").strip()
     if not job_id:
         return  # sin id no se puede consultar; los chequeos de archivo deciden
-    status = JobStatus.from_slurm(cluster.job_state(JobId(value=job_id)))
+    lectura = cluster.job_state(JobId(value=job_id))
+    if not lectura.reachable:
+        # No se pudo ni preguntar. Se sigue igual: los chequeos de archivo
+        # que vienen después van contra el mismo cluster, así que si de
+        # verdad está caído van a fallar ellos, con un mensaje que habla de
+        # lo que el usuario pidió.
+        return
+    status = JobStatus.from_slurm(lectura.state)
     if status is JobStatus.UNKNOWN:
         # Slurm ya no la recuerda: normal en corridas viejas. Los chequeos de
         # archivo (CONTCAR + convergencia) alcanzan para decidir.

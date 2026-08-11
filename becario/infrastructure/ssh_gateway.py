@@ -15,7 +15,15 @@ from typing import Optional
 
 import paramiko
 
-from ..domain.models import ClusterIdentity, CommandResult, JobId, SlurmJobRequest
+from ..domain.models import (
+    ClusterIdentity,
+    CommandFailureReason,
+    CommandResult,
+    JobId,
+    JobStateReading,
+    SlurmJobRequest,
+)
+from ..reintentos import reintentar
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +123,30 @@ class SSHClusterGateway:
         self._client = client
         return client
 
-
     def close(self) -> None:
         if self._client is not None:
             self._client.close()
             self._client = None
 
-    def _run(self, command: str) -> CommandResult:
+    def _run(self, command: str, *, reintentable: bool = False) -> CommandResult:
+        """Corre un comando remoto.
+
+        `reintentable` es **opt-in y por buenas razones**: `sbatch` no es
+        idempotente, así que reintentarlo cuando la respuesta se perdió en
+        el camino manda el trabajo dos veces y le cobra al usuario dos veces
+        las horas de cómputo por un error que nunca vio. El default seguro
+        es no reintentar; cada operación que sí puede lo dice en su llamada.
+        """
+        if not reintentable:
+            return self._run_once(command)
+        return reintentar(
+            lambda: self._run_once(command),
+            intentos=3,
+            resultado_transitorio=lambda r: r.transitorio,
+            etiqueta=f"comando SSH ({command[:40]})",
+        )
+
+    def _run_once(self, command: str) -> CommandResult:
         try:
             client = self._connection()
             _, stdout, stderr = client.exec_command(
@@ -152,16 +177,24 @@ class SSHClusterGateway:
                         f"El cluster no respondió en {self._command_timeout:.0f} "
                         "segundos; corté la espera."
                     ),
+                    reason=CommandFailureReason.TIMEOUT,
                 )
             exit_code = channel.recv_exit_status()
             return CommandResult(
                 ok=exit_code == 0,
                 stdout=stdout.read().decode(errors="replace"),
                 stderr=stderr.read().decode(errors="replace"),
+                # El comando corrió y dijo que no. Eso NO se reintenta: un
+                # `permission denied` es igual de denegado la segunda vez.
+                reason=None if exit_code == 0 else CommandFailureReason.COMMAND,
             )
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SSH: %s", exc)
-            return CommandResult(ok=False, stderr=f"Error de conexión SSH: {exc}")
+            return CommandResult(
+                ok=False,
+                stderr=f"Error de conexión SSH: {exc}",
+                reason=CommandFailureReason.TRANSPORT,
+            )
 
     # ------------------------------------------------------------------
     # ClusterGateway
@@ -189,6 +222,12 @@ class SSHClusterGateway:
         script = "\n".join(lines)
         # sbatch acepta el script por stdin: evitamos archivo temporal remoto.
         command = f"sbatch <<'BECARIO_EOF'\n{script}\nBECARIO_EOF"
+        # SIN reintento, y es lo más importante de este archivo: si el
+        # `sbatch` llega al cluster y la respuesta se pierde, reintentar
+        # encola el trabajo DOS veces. El usuario no ve el primero (no
+        # tenemos su id) y paga las horas igual. Ante la duda, un envío que
+        # falla y se avisa es infinitamente mejor que uno que se duplica en
+        # silencio.
         result = self._run(command)
         if not result.ok:
             return result
@@ -199,29 +238,51 @@ class SSHClusterGateway:
         return CommandResult(ok=True, stdout=result.stdout, stderr=result.stderr, job_id=job_id)
 
     def cancel_job(self, job_id: JobId) -> CommandResult:
-        return self._run(f"scancel {shlex.quote(job_id.value)}")
+        # Reintentable: cancelar dos veces un trabajo ya cancelado no hace
+        # nada. Es la diferencia con `sbatch`, que crea algo nuevo cada vez.
+        return self._run(f"scancel {shlex.quote(job_id.value)}", reintentable=True)
 
     def job_status(self, job_id: Optional[JobId]) -> CommandResult:
         if job_id is not None:
             return self._run(
                 "sacct -j "
                 + shlex.quote(job_id.value)
-                + " --format=JobID,JobName,State,Elapsed,ExitCode"
+                + " --format=JobID,JobName,State,Elapsed,ExitCode",
+                reintentable=True,
             )
-        return self._run('squeue -u "$USER" --format="%.18i %.12j %.8T %.10M %.9P"')
+        return self._run(
+            'squeue -u "$USER" --format="%.18i %.12j %.8T %.10M %.9P"',
+            reintentable=True,
+        )
 
-    def job_state(self, job_id: JobId) -> Optional[str]:
+    def job_state(self, job_id: JobId) -> JobStateReading:
         """Estado crudo de un trabajo, en una sola palabra — pensado para
         que el monitor lo interprete (ver `JobStatus.from_slurm`), no para
-        mostrarlo directo al usuario."""
+        mostrarlo directo al usuario.
+
+        Devuelve `JobStateReading` y no `Optional[str]` porque el monitor
+        necesita distinguir dos cosas que el `None` pelado juntaba: que
+        `sacct` conteste y no conozca el trabajo (se lo purgó) y que no se
+        haya podido preguntar (cluster caído). Con la segunda contando como
+        «no hay noticias», un rato de red mala acercaba a los trabajos SANOS
+        a que se los diera por perdidos.
+        """
         result = self._run(
             "sacct -j "
             + shlex.quote(job_id.value)
-            + " --format=State --noheader --parsable2 -X"
+            + " --format=State --noheader --parsable2 -X",
+            reintentable=True,
         )
-        if not result.ok or not result.stdout.strip():
-            return None
-        return result.stdout.strip().splitlines()[0].strip() or None
+        if not result.ok:
+            # Distinguir es todo el punto: un fallo del comando (sacct que
+            # no existe, permisos) sí es una respuesta del cluster.
+            return JobStateReading(state=None, reachable=not result.transitorio)
+        if not result.stdout.strip():
+            return JobStateReading(state=None, reachable=True)
+        return JobStateReading(
+            state=result.stdout.strip().splitlines()[0].strip() or None,
+            reachable=True,
+        )
 
     def job_exit_code(self, job_id: JobId) -> Optional[int]:
         """`ExitCode` viene como 'N:M' (salida:señal); interesa el primero.
@@ -232,7 +293,8 @@ class SSHClusterGateway:
         result = self._run(
             "sacct -j "
             + shlex.quote(job_id.value)
-            + " --format=ExitCode --noheader --parsable2 -X"
+            + " --format=ExitCode --noheader --parsable2 -X",
+            reintentable=True,  # solo lee
         )
         if not result.ok or not result.stdout.strip():
             return None
@@ -243,7 +305,9 @@ class SSHClusterGateway:
             return None
 
     def make_directory(self, path: str) -> CommandResult:
-        result = self._run(f"mkdir -p {shlex.quote(path)}")
+        # `mkdir -p` es idempotente por definición: correrlo de nuevo sobre
+        # un directorio que ya existe no hace nada ni falla.
+        result = self._run(f"mkdir -p {shlex.quote(path)}", reintentable=True)
         if result.ok and not result.stdout.strip():
             # mkdir -p es silencioso al tener éxito: darle algo al usuario.
             # "listo" y no "creado": si ya existía, mkdir -p no crea nada.
@@ -253,10 +317,14 @@ class SSHClusterGateway:
     def list_directory(self, path: str) -> CommandResult:
         # Vista de árbol de dos niveles. `tree` no está garantizado en
         # todos los clusters: si falta, se emula con find + indentación.
-        result = self._run(f"tree -L 2 --noreport -- {shlex.quote(path)}")
+        result = self._run(
+            f"tree -L 2 --noreport -- {shlex.quote(path)}", reintentable=True
+        )
         if result.ok or "not found" not in result.stderr:
             return result
-        found = self._run(f"find {shlex.quote(path)} -mindepth 1 -maxdepth 2 | sort")
+        found = self._run(
+            f"find {shlex.quote(path)} -mindepth 1 -maxdepth 2 | sort", reintentable=True
+        )
         if not found.ok:
             return found
         return CommandResult(
@@ -273,14 +341,17 @@ class SSHClusterGateway:
             try:
                 # Crear el directorio destino si no existe (mkdir -p simple)
                 remote_dir = str(PurePosixPath(remote_path).parent)
-                self._run(f"mkdir -p {shlex.quote(remote_dir)}")
+                self._run(f"mkdir -p {shlex.quote(remote_dir)}", reintentable=True)
                 sftp.put(local_path, remote_path)
             finally:
                 sftp.close()
             return CommandResult(ok=True, stdout=f"Archivo subido a {remote_path}")
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SFTP: %s", exc)
-            return CommandResult(ok=False, stderr=f"Error subiendo archivo: {exc}")
+            return CommandResult(
+                ok=False, stderr=f"Error subiendo archivo: {exc}",
+                reason=CommandFailureReason.TRANSPORT,
+            )
 
     def upload_dir(self, local_dir: str, remote_dir: str) -> CommandResult:
         """Sube un directorio completo por SFTP (recursivo)."""
@@ -293,22 +364,28 @@ class SSHClusterGateway:
                     rel = path.relative_to(base).as_posix()
                     remote_path = f"{remote_dir.rstrip('/')}/{rel}"
                     if path.is_dir():
-                        self._run(f"mkdir -p {shlex.quote(remote_path)}")
+                        self._run(f"mkdir -p {shlex.quote(remote_path)}", reintentable=True)
                     else:
-                        self._run(f"mkdir -p {shlex.quote(str(PurePosixPath(remote_path).parent))}")
+                        self._run(
+                            f"mkdir -p {shlex.quote(str(PurePosixPath(remote_path).parent))}",
+                            reintentable=True,
+                        )
                         sftp.put(str(path), remote_path)
             finally:
                 sftp.close()
             return CommandResult(ok=True, stdout=f"Directorio subido a {remote_dir}")
         except (paramiko.SSHException, OSError) as exc:
             logger.error("Fallo SFTP subiendo directorio: %s", exc)
-            return CommandResult(ok=False, stderr=f"Error subiendo directorio: {exc}")
+            return CommandResult(
+                ok=False, stderr=f"Error subiendo directorio: {exc}",
+                reason=CommandFailureReason.TRANSPORT,
+            )
 
     def home_dir(self) -> Optional[str]:
         """Home remoto de la cuenta (cacheado): sirve para volver absolutas
         las rutas de corrida cuando la base configurada es relativa."""
         if self._home_dir is None:
-            result = self._run('printf "%s" "$HOME"')
+            result = self._run('printf "%s" "$HOME"', reintentable=True)
             if result.ok and result.stdout.strip().startswith("/"):
                 self._home_dir = result.stdout.strip()
         return self._home_dir

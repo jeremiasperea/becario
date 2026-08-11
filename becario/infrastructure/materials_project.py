@@ -22,6 +22,7 @@ from ..domain.models import (
     StructureResolutionError,
     StructureResolutionReason,
 )
+from ..reintentos import reintentar
 
 # Campos que pedimos a MP: lo mínimo para elegir y describir el material.
 _SUMMARY_FIELDS = [
@@ -56,6 +57,23 @@ class MaterialsProjectProvider:
 
     # ------------------------------------------------------------------
     def resolve(self, query: StructureQuery) -> StructureResolution:
+        """Resuelve una estructura, reintentando solo los fallos de red.
+
+        Consultar MP no tiene efectos: repetirlo es seguro, al revés que un
+        `sbatch`. Se reintenta únicamente `NETWORK` — un `NO_MATCH` no
+        cambia por insistir, y un error de la API tampoco suele hacerlo.
+        """
+        return reintentar(
+            lambda: self._resolve_once(query),
+            intentos=3,
+            excepcion_transitoria=lambda exc: (
+                isinstance(exc, StructureResolutionError)
+                and exc.reason is StructureResolutionReason.NETWORK
+            ),
+            etiqueta="consulta a Materials Project",
+        )
+
+    def _resolve_once(self, query: StructureQuery) -> StructureResolution:
         try:
             with self._rester_factory() as mpr:
                 if query.mp_id:

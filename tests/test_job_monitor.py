@@ -5,7 +5,14 @@ from typing import Optional
 import pytest
 
 from becario.application.job_monitor import JobMonitorService
-from becario.domain.models import ClusterIdentity, HistoryFilter, JobId, JobStatus, TrackedJob
+from becario.domain.models import (
+    ClusterIdentity,
+    HistoryFilter,
+    JobId,
+    JobStateReading,
+    JobStatus,
+    TrackedJob,
+)
 
 ALICE = ClusterIdentity(telegram_user_id=111, ssh_user="alice", ssh_key_path="/k/a")
 
@@ -21,8 +28,14 @@ class FakeRegistry:
 
 
 class FakeCluster:
-    def __init__(self, state: Optional[str], exit_code: Optional[int] = None):
+    def __init__(
+        self,
+        state: Optional[str],
+        exit_code: Optional[int] = None,
+        reachable: bool = True,
+    ):
         self.state = state
+        self.reachable = reachable
         # Lo que reporta `sacct` como código de salida. None = no se pudo
         # determinar, que es un caso que el diagnóstico tiene que manejar
         # sin inventar una causa.
@@ -32,9 +45,14 @@ class FakeCluster:
         self.remote_dirs: dict[str, list[str]] = {}
         self.remote_files: dict[str, str] = {}
 
-    def job_state(self, job_id: JobId) -> Optional[str]:
+    def job_state(self, job_id: JobId) -> JobStateReading:
         self.queried.append(job_id.value)
-        return self.state
+        # `reachable` se fija aparte de `state`: el fake tiene que poder
+        # expresar «el cluster contestó y no lo conoce» (state=None,
+        # reachable=True) y «no pude preguntar» (reachable=False), que es
+        # justo la distinción que el monitor usa para decidir si un trabajo
+        # se dio por perdido.
+        return JobStateReading(state=self.state, reachable=self.reachable)
 
     def job_exit_code(self, job_id: JobId) -> Optional[int]:
         return self.exit_code
@@ -49,8 +67,13 @@ class FakeCluster:
 
 
 class FakeClusterFactory:
-    def __init__(self, state: Optional[str] = "RUNNING", exit_code: Optional[int] = None):
-        self.cluster = FakeCluster(state, exit_code)
+    def __init__(
+        self,
+        state: Optional[str] = "RUNNING",
+        exit_code: Optional[int] = None,
+        reachable: bool = True,
+    ):
+        self.cluster = FakeCluster(state, exit_code, reachable=reachable)
 
     def for_identity(self, identity):
         return self.cluster

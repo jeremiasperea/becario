@@ -1412,10 +1412,58 @@ class CommandResult:
     stdout: str = ""
     stderr: str = ""
     job_id: Optional[str] = None
+    # Por qué falló, cuando falló. `None` con `ok=True`.
+    reason: Optional["CommandFailureReason"] = None
 
     @property
     def message(self) -> str:
         return self.stdout.strip() or self.stderr.strip() or "(sin salida)"
+
+    @property
+    def transitorio(self) -> bool:
+        """¿Tiene sentido volver a intentarlo?
+
+        Es la pregunta que `ok=False` no podía contestar, y por eso existe
+        `reason`. Un `permission denied` reintentado mil veces sigue siendo
+        `permission denied`: reintentarlo es ruido, latencia y ruido en el
+        log. Una conexión cortada, en cambio, se arregla sola bastante
+        seguido.
+        """
+        return self.reason in (
+            CommandFailureReason.TRANSPORT,
+            CommandFailureReason.TIMEOUT,
+        )
+
+
+class CommandFailureReason(str, Enum):
+    """Las tres formas de que algo salga mal en el cluster.
+
+    Hasta acá `CommandResult(ok=False)` las mezclaba a las tres, y esa
+    mezcla bloqueaba dos cosas a la vez: no se podía reintentar sin
+    reintentar también lo que nunca va a andar, y el monitor no podía
+    distinguir «`sacct` no conoce este trabajo» de «no pude hablar con el
+    cluster» — que es la diferencia entre soltar un trabajo perdido y
+    soltar uno sano porque se cayó la red.
+    """
+
+    COMMAND = "command"      # corrió y devolvió distinto de cero
+    TRANSPORT = "transport"  # no hubo conversación: no se pudo ni preguntar
+    TIMEOUT = "timeout"      # hubo conversación pero no terminó a tiempo
+
+
+@dataclass(frozen=True)
+class JobStateReading:
+    """Lo que se pudo averiguar del estado de un trabajo.
+
+    `state=None` con `reachable=True` significa algo MUY distinto de
+    `state=None` con `reachable=False`: en el primer caso `sacct` contestó
+    y no conoce el trabajo (se lo purgó, o nunca existió); en el segundo no
+    se pudo preguntar. El monitor cuenta rachas solo del primero — un
+    cluster caído no es culpa del trabajo.
+    """
+
+    state: Optional[str] = None
+    reachable: bool = True
 
 
 # ---------------------------------------------------------------------------

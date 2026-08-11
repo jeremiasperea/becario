@@ -25,6 +25,7 @@ from becario.domain.models import (
     HistoryFilter,
     Intent,
     JobId,
+    JobStateReading,
     JobStatus,
     PendingPlan,
     Plan,
@@ -191,8 +192,8 @@ class FakeCluster:
         self.concatenated.append((tuple(sources), dest))
         return CommandResult(ok=True)
 
-    def job_state(self, job_id: JobId) -> str:
-        return "RUNNING"
+    def job_state(self, job_id: JobId) -> JobStateReading:
+        return JobStateReading(state="RUNNING", reachable=True)
 
 
 class FakeClusterGatewayFactory:
