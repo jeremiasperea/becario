@@ -67,6 +67,7 @@ class SSHClusterGateway:
         port: int = 22,
         connect_timeout: float = 15.0,
         command_timeout: float = 120.0,
+        keepalive_interval: float = 30.0,
     ) -> None:
         self._host = host
         self._user = user
@@ -76,6 +77,7 @@ class SSHClusterGateway:
         self._port = port
         self._connect_timeout = connect_timeout
         self._command_timeout = command_timeout
+        self._keepalive_interval = keepalive_interval
         self._client: Optional[paramiko.SSHClient] = None
         self._home_dir: Optional[str] = None
 
@@ -97,8 +99,22 @@ class SSHClusterGateway:
             key_filename=self._key_path,
             timeout=self._connect_timeout,
         )
+        # Sin keepalive, una conexión que muere en silencio —VPN que se
+        # corta, wifi que cambia, una NAT que expira sin mandar RST— no se
+        # entera nunca: el TCP sigue "abierto" para los dos lados, el hilo
+        # lector de paramiko se queda esperando bytes que no van a llegar, y
+        # cualquier comando en curso cuelga PARA SIEMPRE. Con keepalive el
+        # peer muerto se detecta en decenas de segundos, paramiko cierra el
+        # transporte, y el `_run` de abajo lo ve como un error normal.
+        #
+        # Esto arregla la causa; el deadline de `_run` es el paracaídas para
+        # todo lo demás que pueda tardar sin límite.
+        transport = client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(int(self._keepalive_interval))
         self._client = client
         return client
+
 
     def close(self) -> None:
         if self._client is not None:
@@ -111,7 +127,33 @@ class SSHClusterGateway:
             _, stdout, stderr = client.exec_command(
                 command, timeout=self._command_timeout
             )
-            exit_code = stdout.channel.recv_exit_status()
+            channel = stdout.channel
+            # `recv_exit_status()` NO tiene timeout: por dentro es un
+            # `status_event.wait()` pelado (paramiko `channel.py`), y el
+            # `timeout=` de `exec_command` es el de LECTURA del canal, no el
+            # del código de salida — lo dice su propio docstring. O sea que
+            # esa línea podía esperar para siempre, y el hilo que la llamaba
+            # quedaba quemado hasta reiniciar el proceso.
+            #
+            # `wait(timeout)` devuelve False si venció. El evento también se
+            # setea cuando el canal se cierra, así que un canal que muere sin
+            # dejar código de salida sale por acá con exit_status = -1, que
+            # no es 0 y por lo tanto cuenta como fallo. Correcto: un comando
+            # que no pudo decir cómo terminó no terminó bien.
+            if not channel.status_event.wait(self._command_timeout):
+                channel.close()
+                logger.error(
+                    "Comando SSH sin respuesta tras %.0f s: %.80s",
+                    self._command_timeout, command,
+                )
+                return CommandResult(
+                    ok=False,
+                    stderr=(
+                        f"El cluster no respondió en {self._command_timeout:.0f} "
+                        "segundos; corté la espera."
+                    ),
+                )
+            exit_code = channel.recv_exit_status()
             return CommandResult(
                 ok=exit_code == 0,
                 stdout=stdout.read().decode(errors="replace"),
@@ -344,11 +386,13 @@ class SSHClusterGatewayFactory:
         default_port: int = 22,
         connect_timeout: float = 15.0,
         command_timeout: float = 120.0,
+        keepalive_interval: float = 30.0,
     ) -> None:
         self._default_host = default_host
         self._default_port = default_port
         self._connect_timeout = connect_timeout
         self._command_timeout = command_timeout
+        self._keepalive_interval = keepalive_interval
         self._cache: dict[str, SSHClusterGateway] = {}
 
     def for_identity(self, identity: ClusterIdentity) -> SSHClusterGateway:
@@ -361,6 +405,7 @@ class SSHClusterGatewayFactory:
                 port=self._default_port,
                 connect_timeout=self._connect_timeout,
                 command_timeout=self._command_timeout,
+                keepalive_interval=self._keepalive_interval,
             )
             self._cache[identity.ssh_user] = gateway
         return gateway

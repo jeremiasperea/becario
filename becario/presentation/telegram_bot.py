@@ -10,9 +10,11 @@ sobre "quién puede usar el bot" (una allowlist acá y el roster allá).
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -111,11 +113,23 @@ class TelegramBot:
         monitor_interval_seconds: float = 60.0,
         transcriber: Optional[Transcriber] = None,
         chat_log: Optional[ChatLogRepository] = None,
+        max_workers: int = 8,
     ) -> None:
         self._service = service
         self._job_monitor = job_monitor
         self._transcriber = transcriber
         self._chat_log = chat_log
+        # Pool PROPIO para el trabajo bloqueante (LLM, SSH, transcripción),
+        # en vez del executor default de asyncio.
+        #
+        # No es afinar: es aislar. El default lo comparte todo el proceso,
+        # así que un hilo trabado ahí se lleva capacidad de cualquier otra
+        # cosa que use `to_thread` — la bitácora, por ejemplo. Con un pool
+        # nombrado, la saturación se ve en los nombres de los hilos de un
+        # `py-spy`/`faulthandler` en vez de tener que adivinarla.
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="becario-blocking"
+        )
         self._app = Application.builder().token(token).build()
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text)
@@ -168,7 +182,13 @@ class TelegramBot:
     def run(self) -> None:
         """Long polling: PTB maneja offset, reintentos y backoff solo."""
         logger.info("B.E.C.A.R.I.O. iniciando en modo polling…")
-        self._app.run_polling(allowed_updates=["message", "callback_query"])
+        try:
+            self._app.run_polling(allowed_updates=["message", "callback_query"])
+        finally:
+            # `wait=False`: al salir puede haber un hilo esperando al cluster,
+            # y no tiene sentido demorar el apagado por él. Los hilos son
+            # daemon, así que no impiden que el proceso termine.
+            self._executor.shutdown(wait=False)
 
     # ------------------------------------------------------------------
     async def _log_chat(self, chat_id: Optional[int], role: str, text: str) -> None:
@@ -191,6 +211,18 @@ class TelegramBot:
                 "No pude registrar el mensaje en la bitácora (chat_id=%s): %s",
                 chat_id, exc,
             )
+
+    # ------------------------------------------------------------------
+    async def _en_hilo(self, fn, *args, **kwargs):
+        """Corre `fn` en el pool propio del bot.
+
+        Equivalente a `asyncio.to_thread` salvo por el executor, que es lo
+        único que interesa: el default es del proceso entero.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor, functools.partial(fn, *args, **kwargs)
+        )
 
     # ------------------------------------------------------------------
     async def _run_blocking(self, chat, fn, *args, **kwargs):
@@ -217,7 +249,7 @@ class TelegramBot:
 
         keeper = asyncio.create_task(_keep_typing()) if chat is not None else None
         try:
-            return await asyncio.to_thread(fn, *args, **kwargs)
+            return await self._en_hilo(fn, *args, **kwargs)
         finally:
             if keeper is not None:
                 keeper.cancel()
@@ -397,9 +429,33 @@ class TelegramBot:
     # Cierre del loop: aviso proactivo cuando un trabajo termina
     # ------------------------------------------------------------------
     async def _on_monitor_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Las dos consultas van A UN HILO, no al event loop.
+        #
+        # `poll_and_notify()` hace varias idas y vueltas SSH por cada trabajo
+        # activo, y hasta acá corría sincrónico acá adentro: mientras duraba,
+        # el bot no atendía a NADIE. `_on_text` ya usaba `_run_blocking`; el
+        # monitor se había quedado afuera, y es el que peor lo llevaba —
+        # corre cada 60 s hable alguien o no, así que un cluster lento
+        # congelaba el bot de forma periódica sin que nadie lo pidiera.
+        #
+        # Combinado con un `_run` que podía esperar para siempre (arreglado
+        # en `ssh_gateway`), esto no era lentitud: era un cuelgue definitivo
+        # del bot entero a partir de un solo trabajo.
+        vencidos = await self._en_hilo(self._service.sweep_expired_pendings)
+        # Pedidos que se quedaron esperando una respuesta que no llegó. Va
+        # ANTES de los trabajos y fuera del guard del monitor: cerrar una
+        # consulta abierta no depende de que haya seguimiento configurado.
+        for chat_id, text in vencidos:
+            try:
+                await self._enviar(
+                    self._bot_sender(context, chat_id), text, chat_id=chat_id
+                )
+            except Exception as exc:
+                logger.error("No pude avisar el vencimiento a chat_id=%s: %s", chat_id, exc)
+
         if self._job_monitor is None:  # pragma: no cover - guard defensivo
             return
-        for note in self._job_monitor.poll_and_notify():
+        for note in await self._en_hilo(self._job_monitor.poll_and_notify):
             try:
                 await self._enviar(
                     self._bot_sender(context, note.chat_id),
