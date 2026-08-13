@@ -23,7 +23,8 @@ infrastructure/
                                    (paramiko + shlex.quote + SFTP, una conexión por cuenta)
     user_registry.py             ← UserRegistry (roster JSON, sin altas por Telegram)
     storage.py                   ← HistoryRepository, JobTracker (SQLite, por owner_id)
-                                   ConfirmationStore (memoria + TTL, ownership por token)
+                                   ConfirmationStore + PendingEditStore (SQLite + TTL,
+                                   ownership por token; hay variante en memoria para tests)
 main.py                          ← Composition root (única DI del proyecto)
 scripts/manage_users.py          ← CLI para administrar el roster del grupo
 ```
