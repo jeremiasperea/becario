@@ -48,32 +48,97 @@ def _truncate_file_content(text: str) -> str:
     return text[:cut].rstrip() + "\n… (archivo truncado)"
 
 
-def _resolve_workspace_path(
-    svc: "BecarioService", ctx: _Ctx, raw: str
-) -> tuple[str | None, Reply | None]:
-    """Resuelve una ruta del usuario contra el workspace de corridas.
+_HOME_NO_RESUELTO = Reply(
+    text="⚠️ No pude resolver el home remoto. Revisá la conexión al cluster.",
+    ok=False,
+)
 
-    Una ruta absoluta pasa tal cual. Una relativa ('Zr/bcc') o vacía se
-    ancla en la base de corridas (`remote_base`, resuelta contra el home
-    remoto si la config es relativa). Este anclaje es lo que permite que
-    el router emita rutas relativas cuando el usuario habla en relativo
-    ('dentro de Zr…') en vez de verse forzado a inventar un prefijo
-    absoluto — el desparramo real que motivó esto: /Zr y /home/becario_runs
-    creados por rutas alucinadas, invisibles para el listado."""
-    raw = str(raw).strip()
-    if raw.startswith("/"):
-        return raw, None
+
+def _corridas_dir(svc: "BecarioService", ctx: _Ctx) -> str | None:
+    """El `remote_base` como ruta absoluta (anclado al home si es relativo)."""
     base = svc._remote_base
-    if not base.startswith("/"):
+    if base.startswith("/"):
+        return base
+    home = ctx.cluster.home_dir()
+    return f"{home}/{base}" if home else None
+
+
+def _resolve_workspace_path(
+    svc: "BecarioService",
+    ctx: _Ctx,
+    raw: str,
+    base: str | None = None,
+    solo_workspace: bool = False,
+) -> tuple[str | None, Reply | None]:
+    """Resuelve una ruta del usuario contra el ancla que declaró el router.
+
+    `base` es lo que el LLM eligió: 'home', 'corridas' o 'absoluta'. Existe
+    porque antes había solo dos formas —absoluta o relativa a las corridas—
+    y el home del usuario NO era representable: para decir «mi home» el
+    modelo tenía que inventar una ruta literal, y la inventaba
+    (`/home/ana`). No era un problema del modelo sino del vocabulario que
+    le dábamos.
+
+    Sin `base` (planes viejos, o un modelo que no lo completó) se cae al
+    criterio de antes: absoluta si empieza con '/', relativa a las
+    corridas si no. Eso mantiene andando todo lo que ya funcionaba.
+
+    `solo_workspace` acota las rutas absolutas al home o a las corridas.
+    Lo pide ESCRIBIR, no leer: así se crearon `/Zr/bcc` y compañía en la
+    raíz del cluster, invisibles para el listado que el usuario pedía
+    después. Leer una ruta compartida (`/data/otro_grupo`) es legítimo y
+    de eso se ocupan los permisos del cluster, que es donde vive el
+    aislamiento según ADR-0004 — no la lógica de la aplicación.
+    """
+    raw = str(raw or "").strip()
+    ancla = (base or "").strip().lower()
+
+    if ancla == "home":
         home = ctx.cluster.home_dir()
         if not home:
-            return None, Reply(
-                text="⚠️ No pude resolver el home remoto. "
-                "Revisá la conexión al cluster.",
-                ok=False,
+            return None, _HOME_NO_RESUELTO
+        return (f"{home}/{raw}" if raw else home), None
+
+    if ancla == "absoluta" or (not ancla and raw.startswith("/")):
+        if not raw.startswith("/"):
+            # El LLM dijo 'absoluta' pero mandó algo relativo: manda la
+            # forma real de la ruta, no la etiqueta — antes que fabricar
+            # una barra que el usuario nunca escribió.
+            return _resolve_workspace_path(
+                svc, ctx, raw, base="corridas", solo_workspace=solo_workspace
             )
-        base = f"{home}/{base}"
-    return (f"{base}/{raw}" if raw else base), None
+        return _validar_absoluta(svc, ctx, raw, solo_workspace)
+
+    # 'corridas' y cualquier cosa que no reconozcamos: el default seguro.
+    if raw.startswith("/"):
+        # Ancla 'corridas' con una ruta absoluta pegada: se trata como
+        # absoluta en vez de concatenar y producir '/corridas//Zr'.
+        return _validar_absoluta(svc, ctx, raw, solo_workspace)
+    corridas = _corridas_dir(svc, ctx)
+    if corridas is None:
+        return None, _HOME_NO_RESUELTO
+    return (f"{corridas}/{raw}" if raw else corridas), None
+
+
+def _validar_absoluta(
+    svc: "BecarioService", ctx: _Ctx, path: str, solo_workspace: bool
+) -> tuple[str | None, Reply | None]:
+    """Una ruta absoluta pasa tal cual.
+
+    Se evaluó acotarlas al home y a las corridas —era el punto por donde
+    entraron `/Zr/bcc` y compañía a la raíz del cluster— y se descartó:
+    bloqueaba pedidos legítimos («creá /data/proyectos/x» en un área
+    compartida) para tapar un síntoma cuya causa era otra. Esas rutas no
+    las escribió el usuario, las INVENTÓ el modelo porque «mi home» y «la
+    carpeta de corridas» no eran expresables; con `base` en el schema ya
+    no tiene que inventarlas (medido: 30/30). El aislamiento sigue donde
+    dice ADR-0004: en los permisos del cluster, no acá.
+
+    `solo_workspace` queda como parámetro porque la decisión puede
+    revisarse con datos —si la batería vuelve a mostrar rutas inventadas,
+    este es el lugar—, pero hoy nadie la activa.
+    """
+    return (path.rstrip("/") or "/"), None
 
 
 def create_directory(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
@@ -85,7 +150,9 @@ def create_directory(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
             "o una ruta absoluta.",
             ok=False,
         )
-    path, err = _resolve_workspace_path(svc, ctx, raw)
+    path, err = _resolve_workspace_path(
+        svc, ctx, raw, params.get("base"), solo_workspace=True
+    )
     if err is not None:
         return err
     try:
@@ -106,10 +173,10 @@ def create_directory(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
 
 
 def list_files(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
-    # Sin ruta lista la base de corridas; una relativa se ancla en ella
-    # (mismo criterio que `create_directory`).
+    # `base` dice contra qué se resuelve ('mi home' vs 'mis corridas'); sin
+    # él se cae al default de siempre, la base de corridas.
     raw = params.get("destino_remoto") or ""
-    path, err = _resolve_workspace_path(svc, ctx, raw)
+    path, err = _resolve_workspace_path(svc, ctx, raw, params.get("base"))
     if err is not None:
         return err
     try:

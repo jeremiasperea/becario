@@ -15,6 +15,7 @@ from .models import (
     HistoryFilter,
     JobId,
     JobStatus,
+    PendingEdit,
     PendingPlan,
     Plan,
     SlurmJobRequest,
@@ -94,6 +95,18 @@ class ClusterGateway(Protocol):
         """Estado crudo de Slurm (una palabra, vía `sacct --parsable2`),
         pensado para que el monitor lo interprete — no para mostrar al
         usuario. None si no se pudo determinar."""
+        ...
+
+    def job_exit_code(self, job_id: JobId) -> Optional[int]:
+        """Código de salida del trabajo, según Slurm. None si no se pudo
+        determinar.
+
+        Existe porque el diagnóstico de un fallo venía CONJETURANDO desde
+        la ausencia de archivos de salida («lo más probable es que el
+        script nunca llegara a ejecutarse»), teniendo este dato a un
+        `sacct` de distancia. Un 127 es «comando o script no encontrado» y
+        no se parece a un 1 de VASP: decirlo cambia dónde busca el
+        usuario."""
         ...
 
     def make_directory(self, path: str) -> CommandResult:
@@ -279,6 +292,37 @@ class ConfirmationStore(Protocol):
         ...
 
     def purge_expired(self) -> int: ...
+
+
+class PendingEditStore(Protocol):
+    """Pedidos esperando el próximo mensaje de cada usuario.
+
+    Uno por `user_id`: quien contesta una repregunta contesta la última.
+    Separado de `ConfirmationStore` a propósito — miden cosas distintas y
+    tienen TTL distintos (una confirmación es una acción destructiva a un
+    botón de distancia; una repregunta de física nadie la contesta con el
+    reloj corriendo)."""
+
+    def put(self, user_id: int, edit: PendingEdit) -> None: ...
+
+    def get(self, user_id: int) -> Optional[PendingEdit]:
+        """Sin consumir y SIN mirar el TTL: quien decide qué hacer con uno
+        vencido es el servicio, que tiene el mensaje para el usuario."""
+        ...
+
+    def pop(self, user_id: int) -> Optional[PendingEdit]:
+        """Lo saca, vencido o no. Un pendiente vencido también se saca: ya
+        no sirve, y el servicio necesita su contenido para avisar QUÉ se
+        venció."""
+        ...
+
+    def has(self, user_id: int) -> bool: ...
+
+    def pop_expired(self, ttl_seconds: float) -> list[tuple[int, PendingEdit]]:
+        """Saca todos los vencidos y los devuelve para poder avisar. Lo
+        llama el tick del monitor, así que el aviso sale SOLO cuando vence
+        y no cuando el usuario vuelve a escribir."""
+        ...
 
 
 class Transcriber(Protocol):

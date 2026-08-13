@@ -1,0 +1,11 @@
+# Pedir un archivo de salida sin dar la ruta: el bot tiene que resolverlo
+# contra la última corrida del usuario, que es dato que ya guarda.
+id: CV01
+titulo: ver el CONTCAR del último cálculo
+origen: chat_messages 1,3,5 (3 intentos)
+sintoma: respondió "No encontré corridas tuyas para resolver 'CONTCAR'" aunque el usuario tenía corridas registradas
+
+> Quiero ver el CONTCAR del último cálculo
+espera: ok
+no_contiene: No pude interpretar
+no_regex: pasame la ruta absoluta

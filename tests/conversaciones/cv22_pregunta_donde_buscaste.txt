@@ -1,0 +1,12 @@
+# Pregunta de seguimiento sobre el mensaje anterior del bot. No es un
+# comando: es "explicame lo que acabás de decir".
+id: CV22
+titulo: preguntar dónde buscó el POTCAR
+origen: chat_messages 86
+sintoma: ruteó a revisar_estado y contestó el estado de los trabajos — nada que ver con la pregunta
+
+> relajá el ZrO2
+espera: dato
+> tetragonal
+> donde buscaste?
+no_regex: Estado trabajos

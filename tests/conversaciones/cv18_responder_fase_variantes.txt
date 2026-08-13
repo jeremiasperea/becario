@@ -1,0 +1,13 @@
+# Las mismas respuestas que CV17 escritas como las escribe una persona:
+# con mayúscula, con artículo, con una letra comida. Ninguna de las tres
+# puede caerse — la repregunta del bot dice "respondé solo la fase".
+id: CV18
+titulo: contestar la fase con mayúscula ("Tetragonal")
+origen: chat_messages 91,84,111 ("Tetragonal", "la tetragonal", "tetragona")
+sintoma: variación de resultado entre intentos con la misma intención
+
+> relajá el ZrO2
+espera: dato
+> Tetragonal
+espera: confirmacion
+no_contiene: No pude interpretar

@@ -1,0 +1,12 @@
+# "fluorita a=5.07" es la RESPUESTA a "necesito la red cristalina y el
+# parámetro de red" para el ZrO2 pendiente. El bot la leyó como un material
+# nuevo: fluorita → CaF2, y perdió el ZrO2 que venía arrastrando.
+id: CV15
+titulo: contestar red cristalina y parámetro, y que arme la losa
+origen: chat_messages 80 (respuesta al pedido 76)
+sintoma: cambió el material a CaF2 y volvió a pedir exactamente el dato que le acababan de dar
+
+> Armá un slab de ZrO2 (001) de 5 capas, 2x1
+> fluorita a=5.07 y arma la losa
+no_contiene: CaF2
+no_regex: necesito la red cristalina y el par[áa]metro de red

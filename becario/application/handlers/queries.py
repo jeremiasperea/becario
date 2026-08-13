@@ -152,3 +152,50 @@ def query_results(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         lines.append(f"E0 = {energy:.6f} eV")
     lines.append(f"📂 {run_dir}")
     return Reply(text="\n".join(lines))
+
+
+def explain(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    """Contesta una pregunta sobre el bot mismo, SIN tocar el cluster.
+
+    Nace de un caso concreto: el bot dijo «No encontré POTCAR para O en
+    /data/potcars (busqué O_sv, O_pv, O)», el usuario preguntó «donde
+    buscaste?» y recibió la cola de trabajos. Como toda intención mapeaba
+    a una acción del cluster, una pregunta se ruteaba a la acción más
+    parecida — y la respuesta ya estaba en el mensaje anterior del propio
+    bot.
+
+    Responde con lo que el servicio YA tiene en la mano: dónde busca los
+    pseudopotenciales y en qué orden, dónde deja las corridas y con qué
+    cuenta entra. Nada de esto necesita red, así que tampoco puede fallar
+    por el cluster.
+
+    LIMITACIÓN conocida: mientras hay un pedido esperando respuesta,
+    `handle_text` deriva a `_apply_edit` y no llega a rutear, así que esta
+    intención es inalcanzable — preguntar «¿qué estabas esperando?» se
+    interpreta como el dato que falta. El caso de la bitácora no cae ahí
+    (la pregunta vino después de un error, sin pendiente vivo), pero la
+    puerta queda abierta: haría falta que `_apply_edit` reconozca una
+    pregunta como hoy reconoce «cancelar».
+    """
+    lines = ["🛠️ Así estoy configurado:"]
+
+    if svc._potcar_dir:
+        variantes = ", ".join(
+            f"<elemento>{v}" if v else "<elemento>" for v in svc._POTCAR_VARIANTS
+        )
+        lines.append(
+            f"• POTCAR: los busco en {svc._potcar_dir}, probando en este "
+            f"orden {variantes} (las variantes semi-core primero, como "
+            f"recomienda VASP para casi todos los metales de transición)."
+        )
+    else:
+        lines.append(
+            "• POTCAR: no tengo configurada la biblioteca de "
+            "pseudopotenciales (BECARIO_POTCAR_DIR), así que no puedo "
+            "preparar cálculos."
+        )
+
+    lines.append(f"• Corridas: las dejo en {svc._remote_base} de tu cuenta del cluster.")
+    lines.append(f"• Cuenta: entro como {ctx.identity.ssh_user}.")
+
+    return Reply(text="\n".join(lines))

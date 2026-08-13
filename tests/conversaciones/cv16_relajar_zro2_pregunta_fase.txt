@@ -1,0 +1,11 @@
+# El camino feliz de la repregunta por fase: ZrO2 tiene varios polimorfos
+# en Materials Project y elegir uno es una decisión de física.
+id: CV16
+titulo: relajá el ZrO2 → repregunta por la fase
+origen: chat_messages 82,88,89,98,102,109 (6 intentos)
+sintoma: el mensaje 88 no obtuvo respuesta; el resto contestó bien
+
+> relajá el ZrO2
+espera: dato
+regex: monocl[íi]nica
+contiene: tetragonal

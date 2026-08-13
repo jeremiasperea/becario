@@ -1,0 +1,21 @@
+# EL caso de la bitácora, ahora expresable: el bot pregunta la fase, el
+# proceso se reinicia, y el usuario contesta.
+#
+# En julio esto respondía «❓ No pude interpretar tu pedido» a una respuesta
+# perfecta, y no por el TTL: el mensaje 99 preguntó a las 15:10 y el 100
+# contestó a las 15:24 —trece minutos, con TTL de treinta—. El pendiente
+# vivía en un `dict` del proceso y el reinicio se lo llevó sin dejar rastro,
+# así que el servicio no podía distinguirlo de un mensaje que de verdad no
+# se entendía, y respondía lo segundo.
+id: CV28
+titulo: la respuesta a una repregunta sobrevive un reinicio del bot
+origen: chat_messages 99,100
+sintoma: «No pude interpretar tu pedido» contestando «tetragonal» 13 min después, con TTL de 30
+
+> relajá el ZrO2
+espera: dato
+reiniciar
+> tetragonal
+espera: confirmacion
+no_contiene: No pude interpretar
+contiene: ZrO2

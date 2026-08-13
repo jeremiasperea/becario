@@ -1,0 +1,13 @@
+# Pedido de FORMATO sobre la respuesta anterior. Solo tiene sentido después
+# de haber listado algo, por eso el escenario incluye el turno que lo precede.
+id: CV06
+titulo: re-formatear el listado anterior como árbol
+origen: chat_messages 32,40,42 (3 intentos, 3 resultados distintos)
+sintoma: primero "Ruta inválida: '/'", después un listado indentado sin árbol, y recién al tercer intento el árbol
+
+> mostrame la estructura de archivos en el cluster
+espera: ok
+> mostramelo en forma de tree
+espera: ok
+no_contiene: Ruta inválida
+regex: [├└│]

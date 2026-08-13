@@ -1,0 +1,14 @@
+# El único camino que llegó a enviar un trabajo de punta a punta: pedido,
+# tarjeta de confirmación con las condiciones, botón ✅, sbatch.
+id: CV23
+titulo: relajar Zr hcp y confirmar el envío
+origen: chat_messages 93,95,96
+sintoma: el trabajo se envió pero falló al instante — sin archivos de salida en el nodo
+
+> relajá el bulk de Zr hcp
+espera: confirmacion
+contiene: ENCUT
+contiene: k-points
+boton: confirmar
+espera: ok
+regex: Job|trabajo

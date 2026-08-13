@@ -1,0 +1,10 @@
+# Esto es una PREGUNTA, no una orden de construir. El bot la trató como un
+# pedido de estructura y contestó con el error del constructor.
+id: CV14
+titulo: preguntar el parámetro de red de ZrO2 tetragonal según Materials Project
+origen: chat_messages 78
+sintoma: respondió "No pude construir bulk de 'ZrO2': Please specify 1 atom for tetragonal and not 3"
+
+> segun Proyect marials cual es el parametro de red para ZrO2 en su forma tetragonal
+no_contiene: No pude construir
+no_contiene: Please specify 1 atom

@@ -1,0 +1,13 @@
+# Cuando el POTCAR de un elemento no está, el aviso tiene que decir qué
+# elemento, dónde buscó y qué variantes probó. Es el único caso de la
+# bitácora donde el mensaje de error del bot estuvo bien: se fija.
+id: CV21
+titulo: aviso claro cuando falta un POTCAR
+origen: chat_messages 85,92
+sintoma: ninguno — el mensaje era correcto; regresión para que no se degrade
+
+> relajá el ZrO2
+espera: dato
+> tetragonal
+no_contiene: Traceback
+no_contiene: FileNotFoundError

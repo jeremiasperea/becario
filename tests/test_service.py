@@ -1417,6 +1417,70 @@ _CONTCAR_ZR = (
 )
 
 
+class TestExplainRespondePreguntas:
+    """Una pregunta se responde, no se ejecuta.
+
+    El caso real: el bot avisó «No encontré POTCAR para O en /data/potcars
+    (busqué O_sv, O_pv, O)», el usuario preguntó «donde buscaste?» y el
+    router lo mandó a `revisar_estado` — le mostró la cola de trabajos. No
+    era una mala clasificación entre las que había: es que «pregunta» no
+    existía como categoría, así que caía en la acción más parecida.
+    """
+
+    def test_contesta_donde_busca_los_potcar(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="donde buscaste?"
+        )
+
+        assert reply.ok
+        assert service._potcar_dir in reply.text
+        # Y dice el ORDEN, que es la otra mitad de la pregunta.
+        assert "_sv" in reply.text
+
+    def test_dice_donde_deja_las_corridas(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="en qué carpeta dejás las corridas?",
+        )
+
+        assert service._remote_base in reply.text
+
+    def test_con_un_pendiente_vivo_la_pregunta_no_llega(self, env):
+        """LIMITACIÓN conocida, fijada para que se vea.
+
+        Mientras hay un pedido esperando respuesta, `handle_text` deriva a
+        `_apply_edit` y nunca rutea, así que `explicar` es inalcanzable: la
+        pregunta se interpreta como el dato que falta.
+
+        El caso de la bitácora no cae acá —«donde buscaste?» vino después
+        de un error, sin pendiente vivo—, pero el hueco existe. Para
+        cerrarlo, `_apply_edit` tendría que reconocer una pregunta como hoy
+        reconoce «cancelar».
+        """
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk")
+
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="qué estabas esperando?"
+        )
+
+        # No es la respuesta a la pregunta: es el flujo de edición.
+        assert service._potcar_dir not in reply.text
+        assert service._pending_edits.has(ALICE.telegram_user_id), (
+            "el pendiente no se pierde por preguntar"
+        )
+
+
 class TestQueryResults:
     """'dame los parámetros de red del Zr' lee la celda de la corrida
     previa (CONTCAR si hubo relajación) en vez de contestar el historial."""
@@ -2272,6 +2336,65 @@ class TestMissingMillerIsAsked:
         assert "cara" in reply.text
 
 
+class TestMissingMaterialIsAsked:
+    """Falta el MATERIAL: también es una pregunta, y también espera.
+
+    Antes salía con `ok=False` a secas, así que el bot preguntaba y no
+    escuchaba: la respuesta se ruteaba de cero y funcionaba de casualidad
+    en una conversación de a uno. Se rompía en un plan de varios cálculos,
+    donde la misma pregunta salía tres veces y ninguna esperaba a nadie
+    (bitácora, mensajes 47-51: tres «Decime qué material» seguidos después
+    de haber creado la carpeta).
+    """
+
+    def test_calculo_sin_material_pregunta_y_espera(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk"
+        )
+
+        assert "material" in reply.text.lower()
+        assert reply.awaiting_params, "preguntó, así que tiene que esperar la respuesta"
+        assert service._pending_edits.has(ALICE.telegram_user_id)
+
+    def test_estructura_sin_formula_pregunta_y_espera(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE, params={"tipo_estructura": "bulk"}
+        )
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="generá un POSCAR"
+        )
+
+        assert reply.awaiting_params
+        assert service._pending_edits.has(ALICE.telegram_user_id)
+
+    def test_contestar_el_material_completa_el_pedido_original(self, env):
+        # Lo que importa: el `tipo_calculo` del primer mensaje sobrevive.
+        # Sin pendiente, contestar «W» perdía que era una relajación.
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"tipo_calculo": "relajacion"}
+        )
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá el bulk")
+
+        # El fake resuelve `extract_params` desde `next.params`: así se
+        # simula que el usuario contestó solo el material.
+        router.next = RoutedRequest(
+            intent=Intent.PREPARE_CALC, params={"formula": "W", "red_cristalina": "bcc"}
+        )
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="W bcc")
+
+        assert not reply.awaiting_params
+        assert "material" not in reply.text.lower(), "no puede volver a preguntar lo mismo"
+        assert "W" in reply.text
+
+
 class TestMissingMillerInMultiStepPlans:
     """Un plan multi-paso ("armá el slab y mandalo a relajar") también queda
     esperando: el `Reply` no viaja por `PlanExecutor`, así que el paso anota
@@ -2310,7 +2433,7 @@ class TestMissingMillerInMultiStepPlans:
         assert reply.awaiting_params
         assert "cara" in reply.text
         assert not reply.needs_confirmation, "no se stagea un plan incumplible"
-        pending = service._pending_edits[ALICE.telegram_user_id]
+        pending = service._pending_edits.get(ALICE.telegram_user_id)
         assert pending.awaiting_index == 1
         assert len(pending.steps) == 2, "se guarda el plan entero, no solo el hueco"
 
@@ -2328,7 +2451,7 @@ class TestMissingMillerInMultiStepPlans:
 
         assert not reply.awaiting_params, "no puede volver a pedir la misma cara"
         assert reply.needs_confirmation, "con la cara completa, el plan se puede aprobar"
-        assert ALICE.telegram_user_id not in service._pending_edits
+        assert not service._pending_edits.has(ALICE.telegram_user_id)
         # Sigue siendo un batch: nada se armó todavía.
         assert structures.requests == []
 
@@ -2340,7 +2463,7 @@ class TestMissingMillerInMultiStepPlans:
         router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params={})
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="mmm no sé")
         assert reply.awaiting_params
-        pending = service._pending_edits[ALICE.telegram_user_id]
+        pending = service._pending_edits.get(ALICE.telegram_user_id)
         assert pending.awaiting_index == 1
         assert len(pending.steps) == 2
 
@@ -2353,7 +2476,7 @@ class TestMissingMillerInMultiStepPlans:
             chat_id=1, user_id=ALICE.telegram_user_id, text="cancelar"
         )
         assert "descartado" in reply.text.lower()
-        assert ALICE.telegram_user_id not in service._pending_edits
+        assert not service._pending_edits.has(ALICE.telegram_user_id)
 
     def test_batch_plan_waits_too(self, env):
         """Dos cálculos => plan BATCH, que va por otro camino (`_prepare_batch`)."""
@@ -2363,7 +2486,7 @@ class TestMissingMillerInMultiStepPlans:
             (Intent.PREPARE_CALC, self.CALC),
         ))
         assert reply.awaiting_params
-        assert service._pending_edits[ALICE.telegram_user_id].awaiting_index == 2
+        assert service._pending_edits.get(ALICE.telegram_user_id).awaiting_index == 2
 
     def test_the_face_is_never_targeted_by_the_ambiguous_extractor(self, env):
         """Sabiendo cuál es el hueco no hace falta targetear: `extract_edit`
@@ -2393,7 +2516,7 @@ class TestExpiredPendingIsExplained:
             awaiting_index=1,
         )
         # Envejecerlo más allá del TTL sin esperar.
-        service._pending_edits[uid].created_at -= service._edit_ttl + 1
+        service._pending_edits.get(uid).created_at -= service._edit_ttl + 1
 
     def test_unintelligible_answer_after_expiry_says_so(self, env):
         service, router, *_ = env
@@ -2437,7 +2560,7 @@ class TestExpirySweepNotifies:
             ALICE.telegram_user_id, 4242,
             [(Intent.PREPARE_CALC, {"formula": "ZrO2"})], awaiting_index=1,
         )
-        service._pending_edits[ALICE.telegram_user_id].created_at -= service._edit_ttl + 1
+        service._pending_edits.get(ALICE.telegram_user_id).created_at -= service._edit_ttl + 1
         avisos = service.sweep_expired_pendings()
         assert len(avisos) == 1
         chat_id, texto = avisos[0]
@@ -2445,7 +2568,7 @@ class TestExpirySweepNotifies:
         assert "no recibí respuesta" in texto.lower()
         assert "ZrO2" in texto
         # Y se cerró: no se avisa dos veces.
-        assert ALICE.telegram_user_id not in service._pending_edits
+        assert not service._pending_edits.has(ALICE.telegram_user_id)
         assert service.sweep_expired_pendings() == []
 
     def test_a_live_pending_is_not_swept(self, env):
@@ -2454,7 +2577,7 @@ class TestExpirySweepNotifies:
             ALICE.telegram_user_id, 1, [(Intent.PREPARE_CALC, {"formula": "Zr"})],
         )
         assert service.sweep_expired_pendings() == []
-        assert ALICE.telegram_user_id in service._pending_edits
+        assert service._pending_edits.has(ALICE.telegram_user_id)
 
 
 class TestStaleTokenSaysWhichKind:
@@ -2551,7 +2674,7 @@ class TestFailedEditKeepsThePlan:
             chat_id=1, user_id=ALICE.telegram_user_id, text="poné el ENCUT en 99999"
         )
         assert not reply.ok
-        assert ALICE.telegram_user_id in service._pending_edits, "el plan sobrevive"
+        assert service._pending_edits.has(ALICE.telegram_user_id), "el plan sobrevive"
 
     def test_and_the_next_change_still_applies(self, env):
         service, router, *_ = env

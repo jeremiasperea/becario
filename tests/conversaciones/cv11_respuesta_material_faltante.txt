@@ -1,0 +1,18 @@
+# "ZrO2 bulk" es la RESPUESTA a la repregunta "¿qué material querés
+# calcular?". Solo tiene sentido con el turno que la provoca, por eso está.
+id: CV11
+titulo: contestar el material que faltaba ("ZrO2 bulk")
+origen: chat_messages 51 (respuesta al pedido 46)
+sintoma: ASE intentó bulk('ZrO2') y falló — un compuesto no sale de la tabla de referencia de ASE, hay que ir a Materials Project
+
+# La aserción del primer turno es a propósito más exigente que el código de
+# hoy: «Decime qué material querés calcular» es una PREGUNTA, y hoy sale con
+# ok=False y sin dejar nada esperando. La respuesta funciona igual porque se
+# rutea de cero, pero entonces el bot preguntó sin escuchar — y en un plan de
+# varios cálculos esa pregunta sale repetida y ninguna copia espera a nadie
+# (bitácora 47-50).
+> relajá el bulk
+espera: dato
+> ZrO2 bulk
+no_contiene: No suitable reference data
+no_contiene: Traceback

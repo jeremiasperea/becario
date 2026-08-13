@@ -14,6 +14,7 @@ from becario.domain.models import (
     JobId,
     JobStatus,
     PendingAction,
+    PendingEdit,
     PendingPlan,
     SlurmJobRequest,
     TrackedJob,
@@ -25,8 +26,10 @@ from becario.infrastructure.ssh_gateway import (
 from becario.infrastructure.storage import (
     InMemoryConfirmationStore,
     SQLiteChatLogRepository,
+    SQLiteConfirmationStore,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
+    SQLitePendingEditStore,
     SQLiteRouterDecisionLog,
 )
 from becario.infrastructure.user_registry import JSONUserRegistry
@@ -134,6 +137,18 @@ class TestConfirmationStore:
         time.sleep(0.05)
         assert store.purge_expired() == 2
 
+    def test_pop_de_un_vencido_no_lo_marca_consumido(self):
+        # Un plan vencido no se ejecutó. Si el pop dejara lápida, el
+        # siguiente status diría "consumido" y el usuario leería «ya se usó
+        # — la acción se hizo con el primer toque» sobre algo que nunca
+        # pasó. "vencido" manda a rehacer el pedido, que es lo correcto.
+        store = InMemoryConfirmationStore(ttl_seconds=0.01)
+        token = store.put(_action())
+        time.sleep(0.05)
+
+        assert store.pop(token) is None
+        assert store.status(token) == "vencido"
+
 
 def _plan(requester_id: int = 1) -> PendingPlan:
     return PendingPlan(chat_id=1, requester_id=requester_id, steps=[_action(requester_id)])
@@ -160,6 +175,141 @@ class TestConfirmationStoreWithPendingPlan:
         assert store.peek(token) is not None
         assert store.pop(token) is not None
         assert store.peek(token) is None
+
+
+class TestSQLiteConfirmationStore:
+    """Mismo contrato que el store en memoria, pero en disco.
+
+    La diferencia que importa no es de API sino de vida útil: acá el plan
+    sobrevive al proceso. Era lo único volátil del sistema y lo que hacía
+    que un reinicio se comiera la conversación en silencio.
+    """
+
+    def _store(self, tmp_path, ttl=600.0) -> SQLiteConfirmationStore:
+        return SQLiteConfirmationStore(str(tmp_path / "becario.db"), ttl_seconds=ttl)
+
+    def test_put_pop_round_trip(self, tmp_path):
+        store = self._store(tmp_path)
+        token = store.put(_plan())
+
+        recuperado = store.pop(token)
+
+        assert recuperado is not None
+        assert recuperado.steps[0].payload == {"job_id": "1"}
+        assert recuperado.steps[0].intent is Intent.CANCEL_JOB
+        assert store.pop(token) is None  # segundo pop: consumido
+
+    def test_conserva_el_pedido_original_para_modificar(self, tmp_path):
+        # `request_intent`/`request_params` son lo que hace editable un plan
+        # (`allow_modify`); si no sobreviven al round-trip, el botón ✏️
+        # desaparece después de un reinicio.
+        store = self._store(tmp_path)
+        accion = PendingAction(
+            chat_id=1, requester_id=1, intent=Intent.SUBMIT_SLURM,
+            description="d", payload={"a": 1},
+            request_intent=Intent.PREPARE_CALC,
+            request_params={"formula": "Zr", "red_cristalina": "hcp"},
+        )
+        plan = PendingPlan(chat_id=1, requester_id=1, steps=[accion],
+                           decision_id=42, execute_all=True)
+        token = store.put(plan)
+
+        recuperado = store.pop(token)
+
+        assert recuperado.allow_modify is True
+        assert recuperado.steps[0].request_intent is Intent.PREPARE_CALC
+        assert recuperado.steps[0].request_params == {
+            "formula": "Zr", "red_cristalina": "hcp",
+        }
+        assert recuperado.decision_id == 42
+        assert recuperado.execute_all is True
+
+    def test_sobrevive_al_reinicio_del_proceso(self, tmp_path):
+        # El caso de la bitácora: el usuario ve la tarjeta, el bot se
+        # reinicia, el usuario aprieta el botón. Antes eso daba "expiró"
+        # con el TTL entero por delante.
+        token = self._store(tmp_path).put(_plan())
+
+        otro_proceso = self._store(tmp_path)
+
+        assert otro_proceso.status(token) == "vigente"
+        assert otro_proceso.pop(token) is not None
+
+    def test_consumido_sigue_siendo_consumido_tras_reiniciar(self, tmp_path):
+        # Doble toque con un reinicio en el medio: hay que poder decir "ya
+        # se hizo", no "no lo conozco". Decirle a alguien que expiró algo
+        # que en realidad se ejecutó lo manda a repetir un sbatch.
+        store = self._store(tmp_path)
+        token = store.put(_plan())
+        store.pop(token)
+
+        assert self._store(tmp_path).status(token) == "consumido"
+
+    def test_token_nunca_visto_es_desconocido(self, tmp_path):
+        assert self._store(tmp_path).status("no-existe") == "desconocido"
+
+    def test_peek_no_consume(self, tmp_path):
+        store = self._store(tmp_path)
+        token = store.put(_plan())
+
+        assert store.peek(token) is not None
+        assert store.peek(token) is not None
+        assert store.status(token) == "vigente"
+        assert store.pop(token) is not None
+        assert store.peek(token) is None
+
+    def test_ttl_vence_peek_pop_y_status(self, tmp_path):
+        store = self._store(tmp_path, ttl=0.01)
+        token = store.put(_plan())
+        time.sleep(0.05)
+
+        assert store.peek(token) is None
+        assert store.pop(token) is None
+        assert store.status(token) == "vencido"
+
+    def test_purge_borra_los_vencidos_y_deja_las_lapidas(self, tmp_path):
+        store = self._store(tmp_path, ttl=0.01)
+        consumido = store.put(_plan())
+        store.pop(consumido)
+        store.put(_plan())
+        store.put(_plan())
+        time.sleep(0.05)
+
+        assert store.purge_expired() == 2  # solo los vencidos sin consumir
+        assert store.status(consumido) == "consumido"
+
+    def test_pop_de_un_vencido_no_deja_lapida(self, tmp_path):
+        # Mismo criterio que el store en memoria: un plan vencido no se
+        # ejecutó, así que no puede quedar como "consumido".
+        store = self._store(tmp_path, ttl=0.01)
+        token = store.put(_plan())
+        time.sleep(0.05)
+
+        assert store.pop(token) is None
+        assert store.status(token) == "vencido"
+
+    def test_dos_pop_simultaneos_ejecutan_una_sola_vez(self, tmp_path):
+        # El lock de proceso del store en memoria no sirve si mañana corren
+        # dos; acá lo garantiza el UPDATE condicional.
+        import threading
+
+        store = self._store(tmp_path)
+        token = store.put(_plan())
+        recuperados = []
+        arranquen = threading.Event()
+
+        def toque():
+            arranquen.wait()
+            recuperados.append(store.pop(token))
+
+        hilos = [threading.Thread(target=toque) for _ in range(8)]
+        for h in hilos:
+            h.start()
+        arranquen.set()
+        for h in hilos:
+            h.join()
+
+        assert sum(1 for r in recuperados if r is not None) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -801,3 +951,104 @@ class TestFormatTree:
 
         out = _format_tree("/base", "/base/solo")
         assert out == "/base\n└── solo"
+
+
+class TestSQLitePendingEditStore:
+    """Pedidos esperando respuesta, en disco.
+
+    El caso que lo justifica es el de la bitácora: el bot pregunta con qué
+    fase de ZrO2 seguir, el usuario contesta «tetragonal» trece minutos
+    después —con un TTL de treinta— y recibe «No pude interpretar tu
+    pedido». No había vencido: el proceso se reinició y el pendiente vivía
+    en un `dict`.
+    """
+
+    def _store(self, tmp_path) -> SQLitePendingEditStore:
+        return SQLitePendingEditStore(str(tmp_path / "becario.db"))
+
+    def _edit(self, chat_id: int = 77, awaiting_index=None) -> PendingEdit:
+        return PendingEdit(
+            steps=[(Intent.PREPARE_CALC, {"formula": "ZrO2", "tipo_calculo": "relajacion"})],
+            chat_id=chat_id,
+            awaiting_index=awaiting_index,
+        )
+
+    def test_round_trip_conserva_pasos_intent_y_hueco(self, tmp_path):
+        store = self._store(tmp_path)
+        store.put(5, self._edit(awaiting_index=2))
+
+        recuperado = store.get(5)
+
+        assert recuperado.steps == [
+            (Intent.PREPARE_CALC, {"formula": "ZrO2", "tipo_calculo": "relajacion"})
+        ]
+        assert recuperado.awaiting_index == 2
+        assert recuperado.chat_id == 77
+
+    def test_sobrevive_al_reinicio_del_proceso(self, tmp_path):
+        # El «tetragonal» de la bitácora, en un test.
+        self._store(tmp_path).put(5, self._edit())
+
+        recuperado = self._store(tmp_path).get(5)
+
+        assert recuperado is not None
+        assert recuperado.steps[0][1]["formula"] == "ZrO2"
+
+    def test_get_no_consume_y_pop_si(self, tmp_path):
+        store = self._store(tmp_path)
+        store.put(5, self._edit())
+
+        assert store.get(5) is not None
+        assert store.has(5) is True
+        assert store.pop(5) is not None
+        assert store.get(5) is None
+        assert store.has(5) is False
+
+    def test_un_pedido_nuevo_pisa_al_anterior(self, tmp_path):
+        # Uno por usuario: quien contesta una repregunta contesta la última.
+        store = self._store(tmp_path)
+        store.put(5, self._edit())
+        store.put(5, PendingEdit(steps=[(Intent.LIST_FILES, {})], chat_id=99))
+
+        recuperado = store.get(5)
+
+        assert recuperado.steps[0][0] is Intent.LIST_FILES
+        assert recuperado.chat_id == 99
+
+    def test_pop_de_un_vencido_lo_devuelve_para_poder_avisar(self, tmp_path):
+        # Vencido igual se saca: el servicio necesita su contenido para
+        # decir QUÉ se venció, en vez de dejar al usuario esperando.
+        store = self._store(tmp_path)
+        viejo = self._edit()
+        viejo.created_at -= 5000
+        store.put(5, viejo)
+
+        recuperado = store.pop(5)
+
+        assert recuperado is not None
+        assert recuperado.steps[0][1]["formula"] == "ZrO2"
+
+    def test_pop_expired_saca_solo_los_vencidos(self, tmp_path):
+        store = self._store(tmp_path)
+        vencido = self._edit(chat_id=11)
+        vencido.created_at -= 5000
+        store.put(1, vencido)
+        store.put(2, self._edit(chat_id=22))
+
+        vencidos = store.pop_expired(ttl_seconds=1800)
+
+        assert [(u, e.chat_id) for u, e in vencidos] == [(1, 11)]
+        assert store.has(1) is False
+        assert store.has(2) is True
+
+    def test_una_fila_ilegible_no_tira_abajo_la_conversacion(self, tmp_path):
+        # Perder un pendiente es malo; propagar la excepción hasta el
+        # handler y dejar al usuario sin ninguna respuesta, peor.
+        import sqlite3 as _sq
+
+        store = self._store(tmp_path)
+        store.put(5, self._edit())
+        with _sq.connect(str(tmp_path / "becario.db")) as conn:
+            conn.execute("UPDATE pedidos_pendientes SET edit_json = '{no json'")
+
+        assert store.get(5) is None

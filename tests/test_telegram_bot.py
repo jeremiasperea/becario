@@ -58,7 +58,11 @@ class FakeService:
         return self._reply
 
     def start_modification(self, token: str, requester_id: int, chat_id: int) -> Reply:
-        self.calls.append(("modify", token, requester_id))
+        # `chat_id` se registra a propósito: mientras el doble lo descartaba,
+        # la presentación pasó durante meses el objeto `Chat` entero en vez
+        # del entero y ningún test lo vio (el aviso de vencimiento moría
+        # después, en el `send_message` del barrido).
+        self.calls.append(("modify", token, requester_id, chat_id))
         return self._reply
 
     def sweep_expired_pendings(self) -> list[tuple[int, str]]:
@@ -291,7 +295,42 @@ class TestCallbackChatLogging:
         chat_log, _, service = self._run_callback("modify:tok1", "¿Qué cambiamos?")
 
         assert chat_log.entries[0] == (555, "user", "modificar")
-        assert ("modify", "tok1", 7) in service.calls
+        assert ("modify", "tok1", 7, 555) in service.calls
+
+
+class TestCallbackPasaTiposDeclarados:
+    """La frontera presentación↔aplicación, con los tipos que declara.
+
+    Los tests del servicio pasan `chat_id=1` a mano, así que verifican la
+    función pero nunca la LLAMADA. Este es el hueco por el que se coló que
+    `_on_callback` mandara un `telegram.Chat` donde la firma pide un `int`:
+    943 tests en verde y el aviso de vencimiento muerto en producción,
+    porque el `send_message` del barrido fallaba y el `except` lo tapaba.
+    """
+
+    def _modify(self, con_mensaje: bool = True):
+        bot, service = _make_bot(Reply(text="¿Qué cambiamos?"), FakeChatLog())
+        query = FakeCallbackQuery(FakeChat(chat_id=555), user_id=7, data="modify:tok1")
+        if not con_mensaje:
+            query.message = None
+        asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+        return [c for c in service.calls if c[0] == "modify"][0]
+
+    def test_modify_manda_el_id_del_chat_no_el_objeto(self):
+        _, _, _, chat_id = self._modify()
+
+        assert chat_id == 555
+        # `bool` es subclase de `int` y un `Chat` no lo es: lo que importa
+        # es que sea el entero que `send_message` sabe usar.
+        assert type(chat_id) is int
+
+    def test_sin_mensaje_manda_el_centinela_de_no_avisar(self):
+        # `query.message` es None en un mensaje viejo: no hay a quién
+        # avisarle. 0 es el centinela que `sweep_expired_pendings` ya trata
+        # como "vencer callado" (`if edit.chat_id:`).
+        _, _, _, chat_id = self._modify(con_mensaje=False)
+
+        assert chat_id == 0
 
 
 class TestMonitorTickChatLogging:

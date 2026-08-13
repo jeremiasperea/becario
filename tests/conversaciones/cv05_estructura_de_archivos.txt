@@ -1,0 +1,11 @@
+# Pedido de panorama general. Lo importante es que SIEMPRE conteste: en la
+# bitácora hay un pedido idéntico que se quedó sin respuesta.
+id: CV05
+titulo: mostrame la estructura de archivos en el cluster
+origen: chat_messages 23,26,38
+sintoma: el mensaje 23 no obtuvo NINGUNA respuesta del bot
+
+> mostrame la estructura de archivos en el cluster
+espera: ok
+regex: \S
+no_contiene: No pude interpretar

@@ -1,13 +1,26 @@
-"""Persistencia: historial SQLite (parametrizado) y confirmaciones en memoria."""
+"""Persistencia: historial SQLite (parametrizado) y confirmaciones."""
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..domain.models import HistoryFilter, JobStatus, PendingPlan, TrackedJob
+from ..domain.models import (
+    HistoryFilter,
+    Intent,
+    JobStatus,
+    PendingAction,
+    PendingEdit,
+    PendingPlan,
+    TrackedJob,
+)
+
+logger = logging.getLogger(__name__)
 
 # Cuánto espera un escritor a que se libere la base antes de fallar con
 # «database is locked». Con WAL las esperas reales son de milisegundos;
@@ -325,14 +338,24 @@ class InMemoryConfirmationStore:
         return "consumido" if consumido else "desconocido"
 
     def pop(self, token: str) -> Optional[PendingPlan]:
+        """Consume el plan. Sobre uno VENCIDO no hace nada.
+
+        Antes lo sacaba igual y dejaba lápida, así que el siguiente
+        `status()` respondía "consumido" y el usuario leía «ya se usó — la
+        acción se hizo con el primer toque» sobre algo que nunca corrió:
+        la clase de mentira creíble que este store viene evitando (ver
+        `status`). Dejarlo donde está hace que siga diciendo "vencido"
+        —que manda a rehacer el pedido, lo correcto— hasta que
+        `purge_expired` lo levante.
+        """
         with self._lock:
-            plan = self._items.pop(token, None)
-            if plan is not None:
-                # Lápida acotada: solo para poder distinguir después "ya se
-                # usó" de "no lo conozco". No guarda el plan, solo el id.
-                self._consumed.append(token)
-        if plan is None or plan.expired(self._ttl):
-            return None
+            plan = self._items.get(token)
+            if plan is None or plan.expired(self._ttl):
+                return None
+            del self._items[token]
+            # Lápida acotada: solo para poder distinguir después "ya se
+            # usó" de "no lo conozco". No guarda el plan, solo el id.
+            self._consumed.append(token)
         return plan
 
     def purge_expired(self) -> int:
@@ -341,6 +364,322 @@ class InMemoryConfirmationStore:
             for token in stale:
                 del self._items[token]
         return len(stale)
+
+
+# ---------------------------------------------------------------------------
+# Serialización de planes pendientes
+# ---------------------------------------------------------------------------
+# `PendingPlan`/`PendingAction` son dataclasses de contenido JSON-able: lo
+# único que no lo es son los `Intent`, que viajan por su `.value`. Se
+# serializa a mano en vez de con `asdict` para que el formato del archivo
+# sea explícito y un cambio en el dominio no lo rompa en silencio.
+def _accion_a_dict(a: PendingAction) -> dict:
+    return {
+        "chat_id": a.chat_id,
+        "requester_id": a.requester_id,
+        "intent": a.intent.value,
+        "description": a.description,
+        "payload": a.payload,
+        "request_intent": a.request_intent.value if a.request_intent else None,
+        "request_params": a.request_params,
+        "token": a.token,
+        "created_at": a.created_at,
+    }
+
+
+def _accion_desde_dict(d: dict) -> PendingAction:
+    crudo = d.get("request_intent")
+    return PendingAction(
+        chat_id=int(d["chat_id"]),
+        requester_id=int(d["requester_id"]),
+        intent=Intent(d["intent"]),
+        description=d.get("description", ""),
+        payload=d.get("payload") or {},
+        request_intent=Intent(crudo) if crudo else None,
+        request_params=d.get("request_params") or {},
+        token=d["token"],
+        created_at=float(d["created_at"]),
+    )
+
+
+def _plan_a_json(plan: PendingPlan) -> str:
+    return json.dumps({
+        "chat_id": plan.chat_id,
+        "requester_id": plan.requester_id,
+        "steps": [_accion_a_dict(s) for s in plan.steps],
+        "token": plan.token,
+        "created_at": plan.created_at,
+        "decision_id": plan.decision_id,
+        "execute_all": plan.execute_all,
+    }, ensure_ascii=False)
+
+
+def _plan_desde_json(raw: str) -> PendingPlan:
+    d = json.loads(raw)
+    return PendingPlan(
+        chat_id=int(d["chat_id"]),
+        requester_id=int(d["requester_id"]),
+        steps=[_accion_desde_dict(s) for s in d.get("steps", [])],
+        token=d["token"],
+        created_at=float(d["created_at"]),
+        decision_id=d.get("decision_id"),
+        execute_all=bool(d.get("execute_all", False)),
+    )
+
+
+class SQLiteConfirmationStore:
+    """Planes pendientes de confirmación, en disco (implementa
+    `ConfirmationStore`).
+
+    Por qué existe: el store en memoria era lo ÚNICO volátil del sistema
+    —historial, trabajos, bitácora y corridas ya viven en SQLite— y era
+    justo lo que hacía que una conversación fuera una conversación. Un
+    reinicio del bot se llevaba el token en silencio, y el usuario que
+    apretaba ✅ cuarenta segundos después de ver la tarjeta recibía
+    «expiró o ya fue usada» con un TTL de diez minutos. Pasó de verdad
+    (bitácora, mensajes 105-108).
+
+    La lápida de un token consumido se guarda para siempre (sin el plan,
+    solo el id y cuándo): es barata y es la que permite decirle a quien
+    apretó dos veces «ya se hizo» en vez de «no lo conozco», incluso si el
+    proceso se reinició entre los dos toques.
+    """
+
+    # Cuánto se conservan las lápidas de tokens consumidos. Un doble toque
+    # ocurre en segundos; una semana es holgura para que alguien vuelva al
+    # chat el lunes y siga leyendo «ya se hizo».
+    _RETENCION_CONSUMIDOS = 7 * 24 * 3600.0
+
+    def __init__(self, db_path: str, ttl_seconds: float = 600.0) -> None:
+        self._db_path = db_path
+        self._ttl = ttl_seconds
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        return _connect(self._db_path)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS confirmaciones_pendientes (
+                    token TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    requester_id INTEGER NOT NULL,
+                    plan_json TEXT,
+                    created_at REAL NOT NULL,
+                    consumed_at REAL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_confirmaciones_creado "
+                "ON confirmaciones_pendientes (created_at)"
+            )
+
+    # ------------------------------------------------------------------
+    def put(self, plan: PendingPlan) -> str:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO confirmaciones_pendientes "
+                "(token, chat_id, requester_id, plan_json, created_at, consumed_at) "
+                "VALUES (?, ?, ?, ?, ?, NULL)",
+                (plan.token, plan.chat_id, plan.requester_id,
+                 _plan_a_json(plan), plan.created_at),
+            )
+        return plan.token
+
+    def _fila(self, conn: sqlite3.Connection, token: str) -> Optional[sqlite3.Row]:
+        return conn.execute(
+            "SELECT * FROM confirmaciones_pendientes WHERE token = ?", (token,)
+        ).fetchone()
+
+    def peek(self, token: str) -> Optional[PendingPlan]:
+        with self._connect() as conn:
+            row = self._fila(conn, token)
+        if row is None or row["consumed_at"] is not None or not row["plan_json"]:
+            return None
+        plan = _plan_desde_json(row["plan_json"])
+        return None if plan.expired(self._ttl) else plan
+
+    def status(self, token: str) -> str:
+        """Ver el puerto. Con el store en disco «desconocido» pasa a
+        significar de verdad «nunca existió», y no «este proceso no lo vio»:
+        esa ambigüedad era el síntoma, no la causa."""
+        with self._connect() as conn:
+            row = self._fila(conn, token)
+        if row is None:
+            return "desconocido"
+        if row["consumed_at"] is not None:
+            return "consumido"
+        plan_json = row["plan_json"]
+        if not plan_json:
+            return "vencido"
+        return "vencido" if _plan_desde_json(plan_json).expired(self._ttl) else "vigente"
+
+    def pop(self, token: str) -> Optional[PendingPlan]:
+        """Consume el token de forma atómica.
+
+        El `UPDATE ... WHERE consumed_at IS NULL` es el que hace que dos
+        toques simultáneos no ejecuten dos veces: gana el que cambia la
+        fila, el otro ve `rowcount == 0` y se va con las manos vacías. En
+        el store en memoria eso lo garantizaba un lock del proceso, que no
+        sirve si mañana corren dos.
+
+        Un plan VENCIDO no se marca consumido: nunca se ejecutó, y la
+        lápida haría que el próximo `status()` dijera "ya se usó — la
+        acción se hizo con el primer toque" sobre algo que no pasó.
+        """
+        with self._connect() as conn:
+            row = self._fila(conn, token)
+            if row is None or not row["plan_json"]:
+                return None
+            plan = _plan_desde_json(row["plan_json"])
+            if plan.expired(self._ttl):
+                return None
+            cur = conn.execute(
+                "UPDATE confirmaciones_pendientes SET consumed_at = ?, plan_json = NULL "
+                "WHERE token = ? AND consumed_at IS NULL",
+                (time.time(), token),
+            )
+            if cur.rowcount == 0:  # otro lo consumió primero
+                return None
+        return plan
+
+    def purge_expired(self) -> int:
+        """Borra los vencidos sin consumir y, de paso, las lápidas viejas.
+
+        Solo se cuentan los vencidos: es lo que promete el puerto y lo que
+        el llamador usa para loguear. Las lápidas se podan en la misma
+        pasada porque no hay otro momento natural para hacerlo.
+        """
+        corte = time.time() - self._ttl
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM confirmaciones_pendientes "
+                "WHERE consumed_at IS NULL AND created_at < ?",
+                (corte,),
+            )
+            vencidos = cur.rowcount
+            conn.execute(
+                "DELETE FROM confirmaciones_pendientes WHERE consumed_at < ?",
+                (time.time() - self._RETENCION_CONSUMIDOS,),
+            )
+        return vencidos
+
+
+def _edit_a_json(edit: PendingEdit) -> str:
+    # Los `Intent` viajan por su `.value`, igual que en los planes; el resto
+    # ya es JSON-able. La tupla `(intent, params)` se guarda como lista
+    # porque JSON no distingue: se re-arma como tupla al leer.
+    return json.dumps({
+        "steps": [[i.value, p] for i, p in edit.steps],
+        "created_at": edit.created_at,
+        "chat_id": edit.chat_id,
+        "awaiting_index": edit.awaiting_index,
+    }, ensure_ascii=False)
+
+
+def _edit_desde_json(raw: str) -> PendingEdit:
+    d = json.loads(raw)
+    return PendingEdit(
+        steps=[(Intent(i), p) for i, p in d.get("steps", [])],
+        created_at=float(d["created_at"]),
+        chat_id=int(d.get("chat_id") or 0),
+        awaiting_index=d.get("awaiting_index"),
+    )
+
+
+class SQLitePendingEditStore:
+    """Pedidos esperando respuesta, en disco (implementa `PendingEditStore`).
+
+    El caso que lo justifica está en la bitácora: el bot preguntó con qué
+    fase de ZrO2 seguir (mensaje 99), el usuario contestó «tetragonal»
+    trece minutos después (mensaje 100) —con un TTL de treinta— y recibió
+    «No pude interpretar tu pedido». No había vencido: el proceso se
+    reinició en el medio y el pendiente vivía en un `dict`.
+
+    Peor que perderlo era no poder saberlo: un pendiente que se fue con el
+    proceso no deja rastro, así que el servicio no podía distinguirlo de un
+    mensaje que de verdad no se entendió, y respondía lo segundo.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        return _connect(self._db_path)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pedidos_pendientes (
+                    user_id INTEGER PRIMARY KEY,
+                    edit_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+
+    def put(self, user_id: int, edit: PendingEdit) -> None:
+        # Uno por usuario: quien contesta una repregunta contesta la última,
+        # así que el pedido nuevo pisa al anterior (misma semántica que el
+        # `dict` que reemplaza).
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO pedidos_pendientes "
+                "(user_id, edit_json, created_at) VALUES (?, ?, ?)",
+                (user_id, _edit_a_json(edit), edit.created_at),
+            )
+
+    def _leer(self, row: Optional[sqlite3.Row]) -> Optional[PendingEdit]:
+        if row is None:
+            return None
+        try:
+            return _edit_desde_json(row["edit_json"])
+        except (ValueError, KeyError, TypeError):
+            # Fila de una versión vieja del formato o corrupta. Perder el
+            # pendiente es malo; arrastrar la excepción hasta el handler y
+            # dejar al usuario sin respuesta, peor.
+            logger.warning("pedido pendiente ilegible para user=%s", row["user_id"])
+            return None
+
+    def get(self, user_id: int) -> Optional[PendingEdit]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pedidos_pendientes WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return self._leer(row)
+
+    def pop(self, user_id: int) -> Optional[PendingEdit]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pedidos_pendientes WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            conn.execute("DELETE FROM pedidos_pendientes WHERE user_id = ?", (user_id,))
+        return self._leer(row)
+
+    def has(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM pedidos_pendientes WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None
+
+    def pop_expired(self, ttl_seconds: float) -> list[tuple[int, PendingEdit]]:
+        corte = time.time() - ttl_seconds
+        with self._connect() as conn:
+            filas = conn.execute(
+                "SELECT * FROM pedidos_pendientes WHERE created_at < ?", (corte,)
+            ).fetchall()
+            conn.execute("DELETE FROM pedidos_pendientes WHERE created_at < ?", (corte,))
+        vencidos = []
+        for row in filas:
+            edit = self._leer(row)
+            if edit is not None:
+                vencidos.append((int(row["user_id"]), edit))
+        return vencidos
 
 
 class SQLiteJobTracker:

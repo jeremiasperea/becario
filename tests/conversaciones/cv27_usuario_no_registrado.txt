@@ -1,0 +1,12 @@
+# Sin entrada en el roster el bot contesta y no ejecuta nada. Es la primera
+# línea de defensa (ADR-0004) y no depende del LLM: tiene que ser estable.
+# Nota: este escenario lo corre el runner con el user_id del roster, así que
+# la comprobación real vive en tests/test_service.py; acá se fija que el
+# camino registrado NO devuelva el texto de "no registrado".
+id: CV27
+titulo: el usuario del roster no recibe el aviso de no registrado
+origen: chat_messages 1,3
+sintoma: los dos primeros pedidos rebotaron con "No estás registrado" antes de dar de alta la cuenta
+
+> listá mi home
+no_contiene: No estás registrado

@@ -32,11 +32,12 @@ from becario.infrastructure.ollama_router import (
 )
 from becario.infrastructure.ssh_gateway import SSHClusterGatewayFactory
 from becario.infrastructure.storage import (
-    InMemoryConfirmationStore,
     SQLiteCalcRunRepository,
     SQLiteChatLogRepository,
+    SQLiteConfirmationStore,
     SQLiteHistoryRepository,
     SQLiteJobTracker,
+    SQLitePendingEditStore,
     SQLiteRouterDecisionLog,
 )
 from becario.infrastructure.user_registry import JSONUserRegistry
@@ -85,8 +86,12 @@ def build_bot(settings: Settings) -> TelegramBot:
     decision_log = SQLiteRouterDecisionLog(
         settings.db_path, model=settings.ollama_model
     )
-    confirmations = InMemoryConfirmationStore(
-        ttl_seconds=settings.confirmation_ttl_seconds
+    # En disco, no en memoria: era lo único volátil del sistema, y un
+    # reinicio se llevaba el token en silencio. Quien apretaba ✅ después
+    # de que el bot se reiniciara leía "expiró o ya fue usada" con el TTL
+    # entero por delante.
+    confirmations = SQLiteConfirmationStore(
+        settings.db_path, ttl_seconds=settings.confirmation_ttl_seconds
     )
     service = BecarioService(
         router=router,
@@ -104,6 +109,11 @@ def build_bot(settings: Settings) -> TelegramBot:
         decision_log=decision_log,
         structure_provider=structure_provider,
         mp_api_key=settings.mp_api_key,
+        # También en disco: el pendiente que se llevaba un reinicio hacía
+        # que una respuesta correcta —«tetragonal»— volviera como "no pude
+        # interpretar tu pedido", porque sin rastro del pendiente no había
+        # forma de distinguirla de un mensaje que no se entendió.
+        pending_edits=SQLitePendingEditStore(settings.db_path),
     )
     job_monitor = JobMonitorService(
         registry=registry,

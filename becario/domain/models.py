@@ -39,6 +39,13 @@ class Intent(str, Enum):
     CREATE_DIR = "crear_directorio"
     LIST_FILES = "listar_archivos"
     VIEW_FILE = "ver_archivo"
+    # Pregunta sobre el bot mismo, no orden de hacer algo. Existe porque
+    # sin ella TODO mensaje tenía que mapear a una acción del cluster, y
+    # «donde buscaste?» —preguntando por el POTCAR que el bot acababa de
+    # decir que no encontraba— terminaba en `revisar_estado`, mostrando la
+    # cola de trabajos. La respuesta estaba en el mensaje anterior del
+    # propio bot: no hacía falta ni el LLM ni el cluster.
+    EXPLAIN = "explicar"
     UNKNOWN = "error"
 
     @classmethod
@@ -1457,6 +1464,38 @@ class TrackedJob:
 # ---------------------------------------------------------------------------
 # Confirmaciones pendientes
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class PendingEdit:
+    """Un pedido que quedó esperando el próximo mensaje del usuario.
+
+    Dos caminos lo arman y por eso vive acá y no dentro del servicio: el
+    botón ✏️ Modificar, y un handler que pidió un dato que no se puede
+    adivinar (`Reply.awaiting_params`) — «¿con qué fase de ZrO2 voy?».
+
+    Guarda el pedido ORIGINAL (acción + parámetros) de cada paso editable
+    del plan, en orden: el cambio aceptado SIEMPRE re-arma el plan entero
+    desde estos pedidos, nunca parchea un payload ya materializado
+    (tarea 5.1, diseño §3.2/§4.6).
+    """
+
+    steps: list[tuple[Intent, dict]]
+    created_at: float = field(default_factory=time.time)
+    # A qué chat avisarle cuando venza. Sin esto el vencimiento solo se
+    # podría contar cuando el usuario vuelve a escribir, que es tarde: ya
+    # se quedó esperando una respuesta que nunca iba a llegar. 0 = no hay
+    # a quién avisarle, se vence callado.
+    chat_id: int = 0
+    # Paso (1-based) al que le faltaba un dato, cuando el pendiente lo armó
+    # un handler vía `Reply.awaiting_params` en vez del botón ✏️ Modificar.
+    # Sabiéndolo no hace falta targetear la respuesta: ya conocemos el hueco,
+    # así que se usa el extractor simple y se evita el caso ambiguo — "la
+    # (001)" no dice a qué paso pertenece, pero nosotros sí lo sabemos.
+    awaiting_index: Optional[int] = None
+
+    def expired(self, ttl_seconds: float) -> bool:
+        return (time.time() - self.created_at) > ttl_seconds
 
 
 @dataclass

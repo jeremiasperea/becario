@@ -1,0 +1,571 @@
+{
+  "modelo": "qwen2.5-coder:14b",
+  "fecha": "2026-08-08T06:46:47.697439+00:00",
+  "repeticiones": 3,
+  "resumen": {
+    "sistema/A": {
+      "fallos": 0,
+      "anclas": 0,
+      "total": 30,
+      "latencia_mediana": 11.18
+    },
+    "sistema/B": {
+      "fallos": 15,
+      "anclas": 0,
+      "total": 30,
+      "latencia_mediana": 8.79
+    },
+    "sistema/C": {
+      "fallos": 0,
+      "anclas": 30,
+      "total": 30,
+      "latencia_mediana": 10.09
+    },
+    "calculo/A": {
+      "fallos": 18,
+      "anclas": 0,
+      "total": 24,
+      "latencia_mediana": 14.2
+    },
+    "calculo/B": {
+      "fallos": 0,
+      "anclas": 0,
+      "total": 24,
+      "latencia_mediana": 13.26
+    },
+    "calculo/C": {
+      "fallos": 0,
+      "anclas": 0,
+      "total": 24,
+      "latencia_mediana": 4.88
+    }
+  },
+  "detalle": [
+    {
+      "texto": "listá mi home",
+      "familia": "sistema",
+      "origen": "chat_messages 9,11,13,17 — devolvió /home/ana",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 8.11,
+          "muestra": "[('listar_archivos', '-', '')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 7.7,
+          "muestra": "[('listar', '-', '/home/usuario')]",
+          "motivos": [
+            "inventó '/home/usuario'"
+          ]
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.98,
+          "muestra": "[('listar', 'home', '')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "stá mi home",
+      "familia": "sistema",
+      "origen": "chat_messages 15 — mismo pedido con un tipeo",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 8.12,
+          "muestra": "[('listar_archivos', '-', '')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 7.63,
+          "muestra": "[('listar', '-', '/home/usuario')]",
+          "motivos": [
+            "inventó '/home/usuario'"
+          ]
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.87,
+          "muestra": "[('listar', 'home', '')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "mostrame la estructura de archivos en el cluster",
+      "familia": "sistema",
+      "origen": "chat_messages 23,26,38",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 8.1,
+          "muestra": "[('listar_archivos', '-', '')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 6.71,
+          "muestra": "[('listar', '-', '')]",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.1,
+          "muestra": "[('listar', 'corridas', '')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "mostramelo en forma de tree",
+      "familia": "sistema",
+      "origen": "chat_messages 32 — devolvió '/' y rebotó por ruta inválida",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 8.06,
+          "muestra": "[('listar_archivos', '-', '')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 8.25,
+          "muestra": "[('listar', '-', '')]",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 10.41,
+          "muestra": "[('listar', 'corridas', '')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "quiero que crees una carpeta en la carpeta de corridas, llamada Zr",
+      "familia": "sistema",
+      "origen": "chat_messages 21 — devolvió /home/becario_runs/Zr",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 11.21,
+          "muestra": "[('crear_directorio', '-', 'Zr')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 7.99,
+          "muestra": "[('crear_carpeta', '-', '/corridas/Zr')]",
+          "motivos": [
+            "inventó '/corridas/Zr'"
+          ]
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.53,
+          "muestra": "[('crear_carpeta', 'corridas', 'Zr')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "crea una carpeta en la carpeta de corridas, llamada W",
+      "familia": "sistema",
+      "origen": "chat_messages 34",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 10.89,
+          "muestra": "[('crear_directorio', '-', 'W')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 8.24,
+          "muestra": "[('crear_carpeta', '-', '/corridas/W')]",
+          "motivos": [
+            "inventó '/corridas/W'"
+          ]
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.16,
+          "muestra": "[('crear_carpeta', 'corridas', 'W')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "dentro de Zr quiero crees 3 carpetas bcc, fcc y hcp",
+      "familia": "sistema",
+      "origen": "chat_messages 24 — creó /Zr/bcc en la raíz del cluster",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 29.37,
+          "muestra": "[('crear_directorio', '-', 'Zr/bcc'), ('crear_directorio', '-', 'Zr/fcc'), ('crear_directorio', '-', 'Zr/hcp')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 18.61,
+          "muestra": "[('crear_carpeta', '-', '/Zr/bcc'), ('crear_carpeta', '-', '/Zr/fcc'), ('crear_carpeta', '-', '/Zr/hcp')]",
+          "motivos": [
+            "inventó '/Zr/bcc'"
+          ]
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 24.34,
+          "muestra": "[('crear_carpeta', 'corridas', 'Zr/bcc'), ('crear_carpeta', 'corridas', 'Zr/fcc'), ('crear_carpeta', 'corridas', 'Zr/hcp')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "dentro de W quiero que crees 3 carpetas bcc, fcc y hcp",
+      "familia": "sistema",
+      "origen": "chat_messages 36",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 28.47,
+          "muestra": "[('crear_directorio', '-', 'W/bcc'), ('crear_directorio', '-', 'W/fcc'), ('crear_directorio', '-', 'W/hcp')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 17.22,
+          "muestra": "[('crear_carpeta', '-', 'W/bcc'), ('crear_carpeta', '-', 'W/fcc'), ('crear_carpeta', '-', 'W/hcp')]",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 23.35,
+          "muestra": "[('crear_carpeta', 'corridas', 'W/bcc'), ('crear_carpeta', 'corridas', 'W/fcc'), ('crear_carpeta', 'corridas', 'W/hcp')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "Quiero ver el CONTCAR del último cálculo",
+      "familia": "sistema",
+      "origen": "chat_messages 1,3,5 — por nombre, sin ruta",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 15.84,
+          "muestra": "[('consultar_db', '-', ''), ('ver_archivo', '-', 'CONTCAR')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 14.44,
+          "muestra": "[('listar', '-', ''), ('ver_archivo', '-', 'CONTCAR')]",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 19.56,
+          "muestra": "[('listar', 'corridas', ''), ('ver_archivo', 'corridas', '<ruta_del_ultimo_calculo>')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "qué archivos hay en /data/becario_runs",
+      "familia": "sistema",
+      "origen": "control: ruta absoluta explícita, no puede romperse",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 11.91,
+          "muestra": "[('listar_archivos', '-', '/data/becario_runs')]",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 9.46,
+          "muestra": "[('listar', '-', '/data/becario_runs')]",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 3,
+          "latencia_mediana": 9.8,
+          "muestra": "[('listar', 'absoluta', '/data/becario_runs')]",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "relajá el bulk de W",
+      "familia": "calculo",
+      "origen": "chat_messages 37 y fixture del router",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 13.47,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'w'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 13.38,
+          "muestra": "{'formula': 'W'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.15,
+          "muestra": "{'formula': 'W'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "relajá el bulk de Zr hcp",
+      "familia": "calculo",
+      "origen": "chat_messages 93 — el único envío que llegó a sbatch",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 13.59,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'zr'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 9.38,
+          "muestra": "{'formula': 'Zr', 'red_cristalina': 'hcp'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.96,
+          "muestra": "{'formula': 'Zr', 'red_cristalina': 'hcp'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "relajá el ZrO2",
+      "familia": "calculo",
+      "origen": "chat_messages 82,88,98,102,109 — 6 intentos",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 13.53,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'zro2'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 13.89,
+          "muestra": "{'formula': 'ZrO2'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.89,
+          "muestra": "{'formula': 'ZrO2'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "Armá un slab de ZrO2 (001) de 5 capas, 2x1",
+      "familia": "calculo",
+      "origen": "chat_messages 70,72,74,76 — el caso donde el código documenta que TODOS los modelos sueltan formula",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 20.99,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'zro2'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 17.24,
+          "muestra": "{'formula': 'ZrO2'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 5.23,
+          "muestra": "{'formula': 'ZrO2'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "Hacé la curva de convergencia de ENCUT para Zr hcp",
+      "familia": "calculo",
+      "origen": "ejemplo del HELP_TEXT que el bot ofrece",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 19.46,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'zr'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 10.06,
+          "muestra": "{'formula': 'Zr', 'red_cristalina': 'hcp'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.98,
+          "muestra": "{'formula': 'Zr', 'red_cristalina': 'hcp'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "Generá un POSCAR de Si diamond 2x2x2",
+      "familia": "calculo",
+      "origen": "ejemplo del HELP_TEXT que el bot ofrece",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 14.35,
+          "muestra": "{'formula': 'Si'}",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 14.65,
+          "muestra": "{'formula': 'Si', 'red_cristalina': 'diamond'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.72,
+          "muestra": "{'formula': 'Si', 'red_cristalina': 'diamond'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "dame la densidad de estados del W bcc",
+      "familia": "calculo",
+      "origen": "tipo_calculo=dos, documentado en el README",
+      "brazos": {
+        "A": {
+          "fallos": 3,
+          "anclas": 0,
+          "latencia_mediana": 18.3,
+          "muestra": "{}",
+          "motivos": [
+            "formula='(vacía)', se esperaba 'w'"
+          ]
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 6.58,
+          "muestra": "{'formula': 'W', 'red_cristalina': 'bcc'}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 4.72,
+          "muestra": "{'formula': 'W', 'red_cristalina': 'bcc'}",
+          "motivos": []
+        }
+      }
+    },
+    {
+      "texto": "relajá el bulk",
+      "familia": "calculo",
+      "origen": "control: sin material nombrado, NO se puede inventar uno",
+      "brazos": {
+        "A": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 11.47,
+          "muestra": "{}",
+          "motivos": []
+        },
+        "B": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 13.0,
+          "muestra": "{}",
+          "motivos": []
+        },
+        "C": {
+          "fallos": 0,
+          "anclas": 0,
+          "latencia_mediana": 0.6,
+          "muestra": "{}",
+          "motivos": []
+        }
+      }
+    }
+  ]
+}
