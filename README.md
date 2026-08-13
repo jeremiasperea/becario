@@ -492,7 +492,13 @@ avisos no bloquean: la decisión es de quien hace la física.
 
 ### Partir de una estructura ya relajada
 
-- "Armá un slab del ZrO2 relajado"
+- "Relajá el ZrO2 relajado" · "Hacé la DOS del Zr relajado"
+
+Va por el camino de **cálculo**, no por el de archivo suelto: pedir
+"armá un slab del ZrO2 relajado" genera un archivo, y para eso el bot arma
+la estructura ideal con ASE y avisa que por ahí no sabe partir de una
+corrida previa. Devolver la ideal con cara de relajada sería el error que
+justamente no se quiere.
 
 Toma el CONTCAR de tu última relajación de ese material. Antes de armar
 nada verifica que exista una corrida previa, que no siga corriendo, que no
@@ -586,9 +592,12 @@ de "esperando turno".
 - `Transcriber` es un puerto sin implementación incluida: enchufá tu
   servicio Whisper implementando `transcribe(audio_bytes) -> str` y
   pasándolo a `TelegramBot`.
-- `ConfirmationStore` es en memoria: las confirmaciones pendientes se
-  pierden al reiniciar el proceso (comportamiento seguro; si querés
-  persistencia, implementá el puerto sobre SQLite).
+- `Transcriber` no es lo único enchufable: `ConfirmationStore` y
+  `PendingEditStore` tienen implementación en memoria además de la de
+  SQLite, útil para tests o para correr sin estado en disco. Producción
+  usa las de SQLite: una confirmación que se perdía al reiniciar el
+  proceso hacía que apretar ✅ cuarenta segundos después de ver la tarjeta
+  respondiera «expiró o ya fue usada».
 - El `IntentRouter` usa *structured outputs* de Ollama: el JSON Schema se
   deriva de `RouterDecision` (Pydantic) y el modelo queda obligado a
   responder conforme al schema. Es la alternativa correcta al tool calling

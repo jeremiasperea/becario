@@ -5,6 +5,8 @@ Telegram, sin SSH y sin Ollama. Estos tests son también la especificación
 viva del modelo multiusuario: cada persona opera con su propia identidad
 y conexión, sin rol admin, con aislamiento verificado explícitamente.
 """
+import logging
+import sqlite3
 from typing import Optional
 
 import pytest
@@ -2609,6 +2611,62 @@ class TestExpirySweepNotifies:
         )
         assert service.sweep_expired_pendings() == []
         assert service._pending_edits.has(ALICE.telegram_user_id)
+
+
+class TestElBarridoTambienPurgaConfirmaciones:
+    """`purge_expired()` estaba en el puerto y en las dos implementaciones
+    desde que las confirmaciones se persistieron, y no lo llamaba nadie:
+    una fila por cada tarjeta que alguien dejó vencer, para siempre."""
+
+    def test_una_confirmacion_vencida_se_saca_de_la_base(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
+        )
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="corré esto"
+        ).confirmation_token
+        # Envejecerla más allá del TTL sin tocarla, que es el caso real:
+        # nadie aprieta ❌ cuando deja vencer una tarjeta.
+        plan = service._confirmations._items[token]
+        plan.created_at -= 10_000
+
+        service.sweep_expired_pendings()
+
+        assert token not in service._confirmations._items
+
+    def test_una_confirmacion_viva_no_se_toca(self, env):
+        service, router, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
+        )
+        token = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="corré esto"
+        ).confirmation_token
+
+        service.sweep_expired_pendings()
+
+        assert service._confirmations.peek(token) is not None
+
+    def test_si_la_purga_falla_el_aviso_sale_igual(self, env, caplog):
+        """El barrido existe para avisarle al usuario que su pedido venció.
+        Que la base falle limpiando basura no puede costarle ese aviso."""
+        service, *_ = env
+        service._arm_pending_edit(
+            ALICE.telegram_user_id, 4242, [(Intent.PREPARE_CALC, {"formula": "Zr"})],
+        )
+        service._pending_edits.get(ALICE.telegram_user_id).created_at -= (
+            service._edit_ttl + 1
+        )
+        service._confirmations.purge_expired = lambda: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        )
+
+        with caplog.at_level(logging.ERROR):
+            avisos = service.sweep_expired_pendings()
+
+        assert len(avisos) == 1, "la purga se llevó puesto el aviso del usuario"
+        assert any("purgar" in r.message for r in caplog.records)
 
 
 class TestStaleTokenSaysWhichKind:
