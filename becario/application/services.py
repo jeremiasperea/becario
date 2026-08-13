@@ -614,6 +614,7 @@ class BecarioService:
             Intent.LIST_FILES: partial(remote_files.list_files, self),
             Intent.VIEW_FILE: partial(remote_files.view_file, self),
             Intent.EXPLAIN: partial(queries.explain, self),
+            Intent.SUGGEST: partial(queries.suggest, self),
         }
 
     # ------------------------------------------------------------------

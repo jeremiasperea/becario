@@ -232,6 +232,9 @@ _SYSTEM_PROMPT = (
     "- 'explicar': el usuario PREGUNTA por vos —cómo estás configurado, "
     "dónde buscaste algo, qué quedó pendiente— en vez de pedirte que hagas "
     "algo en el cluster. Preguntas sobre TU último mensaje van acá\n"
+    "- 'sugerir': el usuario pregunta QUÉ LE FALTA o qué le conviene hacer "
+    "con un material que ya viene trabajando, sin pedir un cálculo concreto. "
+    "Poné el material en formula\n"
     "- 'error': si el pedido no encaja en ninguna\n"
     # La semántica de rutas vive acá arriba, con las definiciones, y NO en
     # el bloque de ejemplos: metida ahí abajo rompió dos veces el fixture
@@ -324,6 +327,11 @@ _SYSTEM_PROMPT = (
     # solo al contenido — medido con `live_router_check.py`.
     "'donde buscaste?' -> explicar\n"
     "'en qué carpeta dejás las corridas?' -> explicar\n"
+    # Van DESPUÉS de los de 'explicar', al final del bloque, por el mismo
+    # motivo que ellos: el prompt pesa por posición y meter ejemplos arriba
+    # ya rompió dos veces el fixture del barrido de ENCUT.
+    "'qué me falta para el Zr?' -> sugerir (formula=Zr)\n"
+    "'qué me conviene hacer ahora con el ZrO2?' -> sugerir (formula=ZrO2)\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
     "No inventes valores. Nunca inventes una ruta: 'base' ya dice de dónde "
     "cuelga, así que 'destino_remoto' solo lleva lo que el usuario nombró. "

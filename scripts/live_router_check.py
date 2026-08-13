@@ -196,6 +196,21 @@ class ModelScore:
         }
 
 
+def _fallos_de_infraestructura(scores) -> int:
+    """Cuántos fixtures fallaron porque el modelo NO contestó.
+
+    Distinto de fallar porque contestó mal, que es lo que el tablero mide.
+    La marca la pone `_majority_check` cuando atrapa un
+    `RouterUnavailableError`.
+    """
+    return sum(
+        1
+        for s in scores
+        for r in s.results
+        if r.error and r.error.startswith("router no disponible")
+    )
+
+
 def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     """Huella de TODO lo que decide qué mide el tablero: el schema que viaja
     a Ollama, los cuatro prompts del router y el contenido de los fixtures.
@@ -652,6 +667,26 @@ def main() -> int:
         attempts=args.attempts,
         timeout=args.timeout,
     )
+    infra = _fallos_de_infraestructura(scores)
+    if args.json and infra:
+        # Un tablero medido contra un Ollama que no contestaba NO es una
+        # medición: es un archivo que dice 0/8 y que se commitearía como si
+        # el router hubiera empeorado. Pasó de verdad — 403 en `/api/chat`
+        # porque el servidor rechaza el Host `localhost`, y el harness
+        # escribió el 0/8 tan contento.
+        #
+        # Se puede detectar porque el router ya distingue «no contestó» de
+        # «contestó mal» (`RouterUnavailableError`); antes los dos llegaban
+        # acá como el mismo fixture en rojo y no había con qué separarlos.
+        print(
+            f"\n❌ No escribo el tablero: {infra} de {sum(len(s.results) for s in scores)} "
+            "fixtures fallaron porque el modelo no contestó, no porque contestara "
+            "mal.\n   Revisá que Ollama esté arriba y que `--url` sea la que "
+            "atiende (ojo con localhost vs 127.0.0.1).",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.json:
         scoreboard = build_scoreboard(
             scores, attempts=args.attempts, fixtures_dir=fixtures_dir

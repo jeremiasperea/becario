@@ -45,6 +45,12 @@ class Intent(str, Enum):
     # decir que no encontraba— terminaba en `revisar_estado`, mostrando la
     # cola de trabajos. La respuesta estaba en el mensaje anterior del
     # propio bot: no hacía falta ni el LLM ni el cluster.
+    # Pedir el siguiente paso sobre un material ya trabajado. El LLM
+    # decide que ES un pedido de sugerencia; QUÉ sugerir lo decide
+    # `sugerencias.py` con reglas — un modelo de 7B opinando sobre
+    # metodología DFT es la clase de respuesta creíble y equivocada que
+    # este proyecto se ocupa de evitar.
+    SUGGEST = "sugerir"
     EXPLAIN = "explicar"
     UNKNOWN = "error"
 

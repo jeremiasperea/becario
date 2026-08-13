@@ -212,6 +212,42 @@ escritorio, donde no hay nadie ordenando el arranque.
 > El síntoma que confunde es `ollama list` mostrándote los modelos: te los
 > muestra los **tuyos**, y el bot está preguntándole a otro servidor.
 
+## Sugerir el siguiente paso
+
+```
+vos> ¿qué me falta para el Zr?
+
+bot> 🧭 Sobre tu Zr — 2 corrida(s): relajacion, estatico.
+
+     📐 Corriste Zr con ENCUT=520 pero no veo un barrido de
+        convergencia (§6.9). El corte fija el tamaño de la base de
+        ondas planas: energías obtenidas con cortes distintos no son
+        comparables…
+
+     ¿Arranco por alguno? Pedímelo así:
+       • «hacé la curva de convergencia de ENCUT para Zr»
+```
+
+Mira las corridas que ya hiciste de ese material y dice qué paso falta.
+Cuatro reglas: una corrida que terminó mal no sirve de base (y se avisa
+**antes** que nada, porque encadenar sobre ella es peor que callarse), un
+ENCUT sin barrido previo, una relajación sin su estático de cierre, y una
+DOS sobre una geometría que nunca se relajó.
+
+Tres cosas que definen el diseño (`domain/sugerencias.py`):
+
+- **El LLM no decide qué sugerir.** Decide que estás *pidiendo* una
+  sugerencia; el contenido sale de reglas. Un modelo de 7B opinando sobre
+  metodología DFT es la clase de respuesta creíble y equivocada que el
+  resto del proyecto evita — y que además no se puede testear.
+- **Solo sugiere lo que el bot sabe preparar.** `CalcKind` tiene cuatro
+  valores y hay un test que verifica que ningún pedido se salga de ahí.
+  Recomendar un barrido de k-points sería un consejo correcto y una
+  promesa incumplible.
+- **Cita solo lo verificable.** La sección sale del vocabulario del manual
+  (`vasp_tags.json`) y viaja con el tag del que habla la regla. Las reglas
+  que expresan una práctica y no la definición de un tag van **sin §**.
+
 ## ¿Está sano? (`scripts/salud.py`)
 
 ```bash
@@ -635,7 +671,8 @@ de "esperando turno".
   deriva de `RouterDecision` (Pydantic) y el modelo queda obligado a
   responder conforme al schema. Es la alternativa correcta al tool calling
   para modelos Gemma, que no exponen esa capacidad en Ollama.
-- El "modo consultar y sugerir" (el LLM propone un plan sin ejecutar nada,
-  usando historial + estado como contexto) todavía no está implementado —
-  es el siguiente paso natural ahora que hay datos de historial reales
-  para que el LLM pueda razonar sobre ellos.
+- El "modo consultar y sugerir" se implementó como **sugerir el siguiente
+  paso** (ver arriba): reglas sobre las corridas previas, no un LLM
+  razonando libre. De las otras dos lecturas posibles quedan sin hacer
+  responder preguntas comparando VARIAS corridas entre sí ("¿cuál dio menor
+  energía?") y el ensayo sin efectos ("¿qué harías si te pido X?").

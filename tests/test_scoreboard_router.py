@@ -209,3 +209,42 @@ class TestCommittedScoreboard:
             "  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
             "scripts/live_router_check.py --json docs/scoreboard_router.json"
         )
+
+
+class TestNoSeEscribeUnTableroInvalido:
+    """Un tablero medido contra un Ollama que no contestaba no es una
+    medición: es un archivo que dice 0/8 y que se commitea como si el router
+    hubiera empeorado.
+
+    Pasó de verdad al agregar la intención `sugerir`: Ollama devolvió 403 en
+    `/api/chat` —rechaza el Host `localhost`, hay que pegarle a 127.0.0.1— y
+    el harness escribió los 0/8 tan tranquilo. Se puede distinguir porque el
+    router ya separa «no contestó» de «contestó mal»; antes los dos llegaban
+    como el mismo fixture en rojo.
+    """
+
+    def _score(self, *errores):
+        from scripts.live_router_check import FixtureResult, ModelScore
+
+        resultados = tuple(
+            FixtureResult(name=f"f{i}.txt", passes=0, attempts=3,
+                          latencies=(0.1,), error=e)
+            for i, e in enumerate(errores)
+        )
+        return [ModelScore(model="m", results=resultados)]
+
+    def test_los_fallos_de_infraestructura_se_cuentan(self):
+        from scripts.live_router_check import _fallos_de_infraestructura
+
+        scores = self._score(
+            "router no disponible (api)",
+            "router no disponible (timeout)",
+            "esperaba steps=[...], obtuve [...]",   # este SÍ es del router
+            None,
+        )
+        assert _fallos_de_infraestructura(scores) == 2
+
+    def test_una_corrida_sana_no_cuenta_ninguno(self):
+        from scripts.live_router_check import _fallos_de_infraestructura
+
+        assert _fallos_de_infraestructura(self._score(None, "faltan params {...}")) == 0
