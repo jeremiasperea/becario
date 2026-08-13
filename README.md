@@ -212,6 +212,38 @@ escritorio, donde no hay nadie ordenando el arranque.
 > El síntoma que confunde es `ollama list` mostrándote los modelos: te los
 > muestra los **tuyos**, y el bot está preguntándole a otro servidor.
 
+## ¿Está sano? (`scripts/salud.py`)
+
+```bash
+.venv/bin/python scripts/salud.py            # informe legible
+.venv/bin/python scripts/salud.py --json     # para un cron o un panel
+.venv/bin/python scripts/salud.py --dias 30  # ventana de las métricas
+```
+
+Sale con código 0 si está sano y 1 si hay algo que mirar, así que sirve
+directo en un `cron` o un timer de systemd.
+
+```
+B.E.C.A.R.I.O. · salud al 2026-08-13 02:03:32
+
+Dependencias
+  ✅ Ollama    qwen2.5-coder:14b presente
+  ❌ Cluster   Error de conexión SSH: Unable to connect to port 3022
+
+Router · 44 decisiones en 7 días
+  latencia    p50 29.7 s · p90 118.1 s · máx 267.9 s   (timeout 300 s)
+  desenlaces  17 error · 26 routed · 1 confirmed
+
+Trabajos    0 en seguimiento · 0 sin noticias
+```
+
+Existe porque para un servicio desatendido el único síntoma era alguien
+diciendo «no me contesta». Casi todo lo que informa **ya se venía
+registrando y no lo miraba nadie**: la latencia y el desenlace de cada
+ruteo están en `decisiones_router` desde hace meses. Lo que agrega es
+mirarlo a tiempo — avisa cuando el p90 pasa el 75 % del timeout, no cuando
+los pedidos ya empezaron a expirar.
+
 ## Tests
 
 ```bash

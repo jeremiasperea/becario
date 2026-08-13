@@ -283,6 +283,7 @@ class BecarioService:
                 "Router no disponible (%s) para user=%s: %s",
                 exc.reason.value, user_id, exc,
             )
+            self._registrar_fallo_de_router(exc)
             return Reply(text=_router_failure_text(exc), ok=False)
         latency = time.monotonic() - started
         logger.info(
@@ -401,6 +402,20 @@ class BecarioService:
     # ------------------------------------------------------------------
     # Registro de decisiones del router (materia prima del eval set)
     # ------------------------------------------------------------------
+    def _registrar_fallo_de_router(self, exc: RouterUnavailableError) -> None:
+        """Deja constancia de que el modelo no contestó.
+
+        No propaga: el usuario ya tiene su mensaje —el honesto, el que dice
+        que expiró y no que no se lo entendió— y perderlo porque falló la
+        contabilidad sería cambiar lo importante por lo accesorio.
+        """
+        if self._decision_log is None:
+            return
+        try:
+            self._decision_log.add_failure(exc.reason.value)
+        except Exception:
+            logger.exception("no se pudo registrar el fallo del router")
+
     def _log_decision(
         self, chat_id: int, user_id: int, text: str, plan: Plan, latency: float,
     ) -> Optional[int]:
