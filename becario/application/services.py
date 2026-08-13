@@ -26,6 +26,7 @@ from typing import Callable, Optional
 
 from pydantic import ValidationError
 
+from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
 from ..domain.models import (
     _MATERIAL_INTENTS,
     _MAX_AUTOMATERIALIZE_STEPS,
@@ -36,6 +37,8 @@ from ..domain.models import (
     PendingPlan,
     Plan,
     PlanStep,
+    RouterFailureReason,
+    RouterUnavailableError,
 )
 from ..domain.ports import (
     CalcInputGenerator,
@@ -83,6 +86,44 @@ NOT_REGISTERED_TEXT = (
     "🚫 No estás registrado en B.E.C.A.R.I.O. Pedile a quien administra "
     "el grupo que te agregue con tu usuario del cluster."
 )
+
+# El modelo no llegó a pronunciarse. Son mensajes SEPARADOS de `HELP_TEXT`
+# porque dicen algo distinto: ahí el pedido no se entendió y conviene
+# reescribirlo; acá el pedido puede haber estado perfecto y no llegó ni a
+# leerse. Y son tres y no uno porque llevan a acciones distintas: ante un
+# timeout tiene sentido reintentar, ante un servidor caído hay que avisarle
+# a alguien.
+ROUTER_TIMEOUT_TEXT = (
+    "⏱️ Tiempo de espera agotado: tardé demasiado interpretando tu pedido y "
+    "corté la espera{limite}.\n\nNo es que no te haya entendido — no llegué "
+    "a terminar de pensarlo. Probá de nuevo; si el pedido era largo, "
+    "mandámelo más corto o partido en dos."
+)
+ROUTER_UNREACHABLE_TEXT = (
+    "🔌 No puedo hablar con el modelo de lenguaje (no responde), así que "
+    "ahora mismo no puedo interpretar pedidos.\n\nNo es tu mensaje: avisale "
+    "a quien administra el bot. Tus trabajos en el cluster siguen corriendo "
+    "igual."
+)
+ROUTER_ERROR_TEXT = (
+    "⚠️ El modelo de lenguaje falló al interpretar tu pedido.\n\nNo es tu "
+    "mensaje. Probá de nuevo en un momento; si sigue pasando, avisale a "
+    "quien administra el bot."
+)
+
+
+def _router_failure_text(exc: RouterUnavailableError) -> str:
+    """Traduce el fallo del router al mensaje que corresponde."""
+    if exc.reason is RouterFailureReason.TIMEOUT:
+        limite = (
+            f" (más de {exc.timeout_seconds:g} segundos)"
+            if exc.timeout_seconds
+            else ""
+        )
+        return ROUTER_TIMEOUT_TEXT.format(limite=limite)
+    if exc.reason is RouterFailureReason.UNREACHABLE:
+        return ROUTER_UNREACHABLE_TEXT
+    return ROUTER_ERROR_TEXT
 
 FOREIGN_CONFIRMATION_TEXT = "⚠️ Esta confirmación no te pertenece."
 # Se conserva el texto histórico para el caso genérico; los casos que sí se
@@ -230,7 +271,19 @@ class BecarioService:
             return self._apply_edit(ctx, edit, text)
 
         started = time.monotonic()
-        plan = self._route_message(text)
+        try:
+            plan = self._route_message(text)
+        except RouterUnavailableError as exc:
+            # El modelo no llegó a pronunciarse: NO se cae al camino de
+            # `UNKNOWN`, que le echaría la culpa al mensaje del usuario. Y
+            # no se registra la decisión: no hubo decisión que registrar, y
+            # meterla como 'error' ensuciaría el dataset del router con
+            # fallos que no son suyos.
+            logger.error(
+                "Router no disponible (%s) para user=%s: %s",
+                exc.reason.value, user_id, exc,
+            )
+            return Reply(text=_router_failure_text(exc), ok=False)
         latency = time.monotonic() - started
         logger.info(
             "routed plan steps=%s ssh_user=%s",
@@ -873,7 +926,10 @@ class BecarioService:
             )
 
         if len(edit.steps) == 1:
-            new_params = self._router.extract_params(text)
+            try:
+                new_params = self._router.extract_params(text)
+            except RouterUnavailableError as exc:
+                return self._router_failure_con_plan_vivo(ctx, edit, exc)
             new_params, inventados = descartar_numeros_inventados(new_params, text)
             if inventados:
                 logger.warning(
@@ -918,7 +974,10 @@ class BecarioService:
             return self._fill_awaiting_step(ctx, edit, text)
 
         plan_context = self._render_plan_context(edit.steps)
-        target_index, delta = self._router.extract_edit(plan_context, text)
+        try:
+            target_index, delta = self._router.extract_edit(plan_context, text)
+        except RouterUnavailableError as exc:
+            return self._router_failure_con_plan_vivo(ctx, edit, exc)
         n = len(edit.steps)
         if target_index is None or not (1 <= target_index <= n) or not delta:
             # Ambiguo: NUNCA se fusiona ni se ejecuta. Plan al estante, sin
@@ -941,6 +1000,37 @@ class BecarioService:
         plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
         return self._dispatch_plan(ctx, plan)
 
+    def _router_failure_con_plan_vivo(
+        self,
+        ctx: _Ctx,
+        edit: _PendingEdit,
+        exc: RouterUnavailableError,
+        *,
+        awaiting_index: Optional[int] = None,
+    ) -> Reply:
+        """Fallo de infraestructura mientras se editaba/completaba un plan.
+
+        Lo importante acá no es el mensaje: es que el plan vuelve al estante
+        con el TTL renovado. Un fallo del servidor no puede costarle al
+        usuario un pedido que ya estaba armado — el docstring de
+        `_apply_edit` promete que solo un «cancelar» explícito lo descarta, y
+        esa promesa vale también cuando quien falla somos nosotros.
+        """
+        logger.error(
+            "Router no disponible (%s) editando el plan de user=%s: %s",
+            exc.reason.value, ctx.user_id, exc,
+        )
+        self._arm_pending_edit(
+            ctx.user_id, ctx.chat_id, edit.steps, awaiting_index=awaiting_index
+        )
+        return Reply(
+            text=_router_failure_text(exc)
+            + "\n\n📌 Tu plan sigue esperando: cuando vuelva a andar, repetime "
+            "el cambio y sigo desde donde estábamos.",
+            ok=False,
+            awaiting_params=True,
+        )
+
     def _fill_awaiting_step(
         self, ctx: _Ctx, edit: _PendingEdit, text: str
     ) -> Reply:
@@ -950,7 +1040,12 @@ class BecarioService:
         se habían omitido por depender del incompleto vuelven a correr, que es
         el punto de haber guardado el plan completo y no solo el hueco."""
         assert edit.awaiting_index is not None
-        new_params = self._router.extract_params(text)
+        try:
+            new_params = self._router.extract_params(text)
+        except RouterUnavailableError as exc:
+            return self._router_failure_con_plan_vivo(
+                ctx, edit, exc, awaiting_index=edit.awaiting_index
+            )
         if not new_params:
             self._arm_pending_edit(
                 ctx.user_id, ctx.chat_id, edit.steps, awaiting_index=edit.awaiting_index
@@ -1053,8 +1148,33 @@ class BecarioService:
         executor = self._step_executors().get(action.intent)
         if executor is None:  # pragma: no cover - defensivo
             return Reply(text="⚠️ Acción pendiente desconocida.")
-        _ok, text = executor(ctx, action)
+        try:
+            _ok, text = executor(ctx, action)
+        except Exception:
+            return self._fallo_tras_confirmar(action)
         return Reply(text=text)
+
+    def _fallo_tras_confirmar(self, action: PendingAction) -> Reply:
+        """Qué hacer cuando la ejecución de una acción YA confirmada revienta.
+
+        El token se consumió más arriba y **no se devuelve**, aunque tiente:
+        `pop` es atómico justamente para que dos toques de ✅ no manden dos
+        `sbatch` (`storage.py`, `UPDATE ... WHERE consumed_at IS NULL`), y
+        reponerlo abriría esa puerta desde el otro lado. Peor: la excepción
+        pudo saltar DESPUÉS de que el `sbatch` saliera, así que reponer el
+        token es ofrecerle al usuario un botón que duplica un trabajo que ya
+        está en la cola.
+
+        Lo único honesto es decir que no sabemos, y mandar a verificar en vez
+        de a reintentar. El id del incidente conecta este mensaje con el
+        traceback del log.
+        """
+        incidente = nuevo_incidente()
+        logger.exception(
+            "Incidente %s ejecutando %s tras confirmar (token ya consumido)",
+            incidente, action.intent.value,
+        )
+        return Reply(text=FALLO_TRAS_CONFIRMAR.format(incidente=incidente), ok=False)
 
     def _execute_batch(
         self, plan: PendingPlan, requester_id: int, identity, cluster,
@@ -1072,7 +1192,14 @@ class BecarioService:
             if not ok_all:
                 lines.append(f"{i}. ⏸ {action.description} — omitido")
                 continue
-            reply = self._execute_batch_step(ctx, action)
+            try:
+                reply = self._execute_batch_step(ctx, action)
+            except Exception:
+                # Un paso que revienta corta el batch igual que uno que
+                # falla (misma semántica sin-rollback de ADR-0006): lo ya
+                # ejecutado queda hecho y los que siguen se omiten. La
+                # diferencia es que de ESTE paso no sabemos el desenlace.
+                reply = self._fallo_tras_confirmar(action)
             # El texto del handler ya trae su propio ✅/🚀/⚠️; solo lo
             # numeramos (evita duplicar el mark).
             lines.append(f"{i}. {reply.text}")
@@ -1098,4 +1225,36 @@ class BecarioService:
             return Reply(text=FOREIGN_CONFIRMATION_TEXT)
         self._confirmations.pop(token)
         self._set_decision_outcome(plan.decision_id, "cancelled")
+        self._descartar_pendientes(requester_id, plan)
         return Reply(text="❌ Operación cancelada.")
+
+    def _descartar_pendientes(self, requester_id: int, plan: PendingPlan) -> None:
+        """Borra del cluster los inputs de una corrida que se canceló.
+
+        Nunca hace fallar la cancelación: cancelar es lo que el usuario
+        pidió y ya está hecho: el token se consumió. Si la limpieza no sale,
+        queda el barrido por edad (`sweep_pending`), que existe justamente
+        porque este camino puede fallar o ni siquiera ejecutarse — nadie
+        aprieta ❌ cuando deja vencer una confirmación.
+        """
+        pendientes = [
+            paso.payload["pending_dir"]
+            for paso in plan.steps
+            if paso.payload.get("pending_dir")
+        ]
+        if not pendientes:
+            return
+        try:
+            identity = self._registry.get_identity(requester_id)
+            if identity is None:  # pragma: no cover - se dio de baja en el medio
+                return
+            cluster = self._cluster_factory.for_identity(identity)
+            for ruta in pendientes:
+                resultado = cluster.discard_pending(ruta)
+                if not resultado.ok:
+                    logger.warning(
+                        "No pude borrar la corrida cancelada %s: %s",
+                        ruta, resultado.message,
+                    )
+        except Exception:
+            logger.exception("Falló la limpieza de una corrida cancelada")

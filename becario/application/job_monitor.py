@@ -31,6 +31,37 @@ _ENCUT_DIR_RE = re.compile(r"\Aencut_(\d+)\Z")
 # Criterio de convergencia estándar para el barrido de ENCUT.
 _CONVERGENCE_MEV_PER_ATOM = 1.0
 
+# Consultas SEGUIDAS en las que `sacct` contestó y NO conoció el trabajo,
+# antes de darlo por perdido. Con el intervalo por defecto son cinco
+# minutos.
+#
+# Estuvo en 60 (una hora) mientras `job_state()` devolvía el mismo `None`
+# para «sacct no lo conoce» y para «el cluster no contesta»: con esa
+# ambigüedad había que errar del lado de esperar, porque soltar un trabajo
+# sano por un rato de red mala es peor que perseguir uno muerto. Ahora que
+# `JobStateReading` separa los dos casos, esto cuenta solo respuestas
+# EXPLÍCITAS del cluster diciendo que no lo conoce, y cinco de esas ya son
+# concluyentes.
+_MAX_CONSULTAS_SIN_RESPUESTA = 5
+
+
+@dataclass(frozen=True)
+class JobAck:
+    """Lo que hay que asentar una vez que el aviso SALIÓ de verdad.
+
+    Viaja con la notificación en vez de aplicarse al armarla: mientras el
+    monitor marcaba el trabajo como notificado antes de que la presentación
+    mandara el mensaje, un `send_message` fallido (Telegram caído, el
+    usuario bloqueó al bot) se llevaba el aviso para siempre — el trabajo ya
+    no volvía a aparecer en `active_jobs()` y nadie se enteraba de que había
+    terminado. Justo el aviso que cierra el loop de todo el sistema.
+    """
+
+    job_id: str
+    owner_id: int
+    job_name: str
+    estado: str
+
 
 @dataclass(frozen=True)
 class Notification:
@@ -38,6 +69,10 @@ class Notification:
     text: str
     # Pide fuente de ancho fijo (tablas), igual que `Reply.monospace`.
     monospace: bool = False
+    # Solo la notificación PRINCIPAL de un trabajo lo trae. La cosecha del
+    # barrido de ENCUT es un segundo mensaje del MISMO trabajo: volver a
+    # asentarlo duplicaría la fila del historial.
+    acuse: Optional[JobAck] = None
 
 
 class JobMonitorService:
@@ -72,10 +107,29 @@ class JobMonitorService:
                 continue
 
             cluster = self._cluster_factory.for_identity(identity)
-            raw_state = cluster.job_state(JobId(value=job.job_id))
-            if raw_state is None:
-                logger.warning("No pude consultar el estado de %s; reintento la próxima vuelta.", job.job_id)
+            lectura = cluster.job_state(JobId(value=job.job_id))
+            if not lectura.reachable:
+                # No hubo conversación con el cluster. NO cuenta para la
+                # racha: el trabajo no tiene la culpa de que se haya caído
+                # la red, y contarlo acercaba a los trabajos SANOS a que se
+                # los diera por perdidos.
+                logger.warning(
+                    "No pude hablar con el cluster para consultar %s; reintento la próxima vuelta.",
+                    job.job_id,
+                )
                 continue
+            raw_state = lectura.state
+            if raw_state is None:
+                # `sacct` contestó y no lo conoce. ESO sí cuenta.
+                aviso = self._sin_noticias(job)
+                if aviso is not None:
+                    notifications.append(aviso)
+                continue
+            if job.poll_attempts:
+                # Volvió a contestar: la racha se corta. Se cuentan
+                # consultas SEGUIDAS, no acumuladas — un SSH que se cayó
+                # una vez no puede acercar al trabajo a darse por perdido.
+                self._tracker.clear_unreachable(job.job_id, job.owner_id)
 
             new_status = JobStatus.from_slurm(raw_state)
             if new_status != job.status:
@@ -96,12 +150,17 @@ class JobMonitorService:
                 text += f"\n📂 Corrida en: {run_dir}"
                 if new_status in (JobStatus.FAILED, JobStatus.TIMEOUT):
                     text += self._failure_diagnostics(cluster, run_dir, job.job_id)
-            self._history.add(
-                owner_id=job.owner_id, job_id=job.job_id,
-                nombre_trabajo=job.job_name, estado=new_status.label_es,
-            )
-            self._tracker.mark_notified(job.job_id, job.owner_id)
-            notifications.append(Notification(chat_id=job.chat_id, text=text))
+            # Ni `history.add` ni `mark_notified` acá: los dos van en el
+            # acuse, cuando el mensaje haya salido. Asentarlos ahora es
+            # afirmar que el usuario se enteró antes de habérselo dicho.
+            notifications.append(Notification(
+                chat_id=job.chat_id,
+                text=text,
+                acuse=JobAck(
+                    job_id=job.job_id, owner_id=job.owner_id,
+                    job_name=job.job_name, estado=new_status.label_es,
+                ),
+            ))
 
             # Workflows: al terminar bien un barrido de ENCUT, cosechar las
             # energías del cluster y mandar la curva como segundo mensaje.
@@ -123,6 +182,70 @@ class JobMonitorService:
                     )
 
         return notifications
+
+    # ------------------------------------------------------------------
+    # Acuse de entrega
+    # ------------------------------------------------------------------
+    def confirm_delivery(self, ack: JobAck) -> None:
+        """Asienta el trabajo DESPUÉS de que su aviso salió.
+
+        Lo llama la presentación, que es la única que sabe si el mensaje
+        llegó a Telegram. Hasta que esto corra, el trabajo sigue en
+        `active_jobs()` y el próximo tick lo reintenta.
+
+        La entrega queda así en «al menos una vez»: si el mensaje sale pero
+        este asiento falla (base bloqueada), el próximo tick vuelve a
+        avisar. Es el lado correcto para equivocarse — que a alguien le
+        lleguen dos veces «tu trabajo terminó» es una molestia; que no le
+        llegue ninguna es el bug que este método existe para cerrar.
+        """
+        self._history.add(
+            owner_id=ack.owner_id, job_id=ack.job_id,
+            nombre_trabajo=ack.job_name, estado=ack.estado,
+        )
+        self._tracker.mark_notified(ack.job_id, ack.owner_id)
+
+    # ------------------------------------------------------------------
+    # Trabajos de los que ya no hay noticias
+    # ------------------------------------------------------------------
+    def _sin_noticias(self, job) -> Optional[Notification]:
+        """Qué hacer cuando no se puede leer el estado de un trabajo.
+
+        Hasta acá esto era un `warning` y un «reintento la próxima vuelta»
+        sin final: un trabajo que Slurm ya purgó de `sacct` (`MinJobAge`)
+        se consultaba cada 60 segundos para siempre, gastando una ida y
+        vuelta SSH por vuelta y sin que nadie se enterara.
+
+        Se cuenta la racha y no la antigüedad a propósito. La antigüedad
+        parece el criterio obvio y es el equivocado: un trabajo puede estar
+        legítimamente encolado durante días, así que «viejo» no distingue
+        «perdido» de «esperando turno». Que no conteste, sí.
+        """
+        intentos = self._tracker.record_unreachable(job.job_id, job.owner_id)
+        if intentos < _MAX_CONSULTAS_SIN_RESPUESTA:
+            logger.warning(
+                "No pude consultar el estado de %s (%s seguidas); reintento la próxima vuelta.",
+                job.job_id, intentos,
+            )
+            return None
+        logger.error(
+            "Dejo de rastrear %s: %s consultas seguidas sin poder leer su estado.",
+            job.job_id, intentos,
+        )
+        return Notification(
+            chat_id=job.chat_id,
+            text=(
+                f"🔎 Perdí el rastro del trabajo {job.job_id} ({job.job_name}): "
+                f"llevo {intentos} consultas seguidas sin poder leer su estado, "
+                "así que dejo de seguirlo.\n\nLo más probable es que Slurm ya lo "
+                "haya sacado de `sacct`. Si creés que sigue corriendo, "
+                "consultalo con «estado de mis trabajos»."
+            ),
+            acuse=JobAck(
+                job_id=job.job_id, owner_id=job.owner_id,
+                job_name=job.job_name, estado="sin rastro",
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Diagnóstico de fallos: leer los logs remotos de la corrida

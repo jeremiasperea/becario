@@ -128,6 +128,9 @@ class TestLleganALaConfirmacion:
             def concat_files(self, sources, dest):
                 return SimpleNamespace(ok=True, message="ok")
 
+            def sweep_pending(self, pending_base, older_than_minutes):
+                return SimpleNamespace(ok=True, message="ok")
+
         svc = SimpleNamespace(
             _calc_inputs=VaspInputGenerator(workdir=str(tmp_path)),
             _potcar_dir="/opt/potcar", _remote_base="runs", _calc_runs=None,

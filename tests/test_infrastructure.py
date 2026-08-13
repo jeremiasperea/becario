@@ -8,6 +8,7 @@ import pytest
 
 from becario.domain.models import (
     ClusterIdentity,
+    CommandFailureReason,
     CommandResult,
     HistoryFilter,
     Intent,
@@ -324,7 +325,10 @@ class RecordingGateway(SSHClusterGateway):
         super().__init__(host="fake", user="fake", key_path="/dev/null")
         self.commands: list[str] = []
 
-    def _run(self, command: str) -> CommandResult:
+    def _run(self, command: str, *, reintentable: bool = False) -> CommandResult:
+        # `reintentable` se acepta y se ignora: estos tests miden el
+        # comando CONSTRUIDO, no la política de reintento (que se prueba
+        # aparte, en tests/test_tolerancia_fallos.py).
         self.commands.append(command)
         return CommandResult(ok=True, stdout="ok")
 
@@ -349,7 +353,7 @@ class TestSSHCommandConstruction:
         gw = RecordingGateway()
         monkeypatch.setattr(
             gw, "_run",
-            lambda cmd: CommandResult(ok=True, stdout="Submitted batch job 4242\n"),
+            lambda cmd, **kw: CommandResult(ok=True, stdout="Submitted batch job 4242\n"),
         )
         result = gw.submit_job(SlurmJobRequest(script_path="/a/b.sh"))
         assert result.job_id == "4242"
@@ -357,7 +361,7 @@ class TestSSHCommandConstruction:
     def test_submit_ok_but_unparsable_output_yields_no_job_id(self, monkeypatch):
         gw = RecordingGateway()
         monkeypatch.setattr(
-            gw, "_run", lambda cmd: CommandResult(ok=True, stdout="algo inesperado"),
+            gw, "_run", lambda cmd, **kw: CommandResult(ok=True, stdout="algo inesperado"),
         )
         result = gw.submit_job(SlurmJobRequest(script_path="/a/b.sh"))
         assert result.ok
@@ -366,7 +370,7 @@ class TestSSHCommandConstruction:
     def test_submit_failure_has_no_job_id(self, monkeypatch):
         gw = RecordingGateway()
         monkeypatch.setattr(
-            gw, "_run", lambda cmd: CommandResult(ok=False, stderr="sbatch: error"),
+            gw, "_run", lambda cmd, **kw: CommandResult(ok=False, stderr="sbatch: error"),
         )
         result = gw.submit_job(SlurmJobRequest(script_path="/a/b.sh"))
         assert not result.ok
@@ -375,10 +379,11 @@ class TestSSHCommandConstruction:
     def test_job_state_command_and_parsing(self, monkeypatch):
         gw = RecordingGateway()
         monkeypatch.setattr(
-            gw, "_run", lambda cmd: CommandResult(ok=True, stdout="COMPLETED\n"),
+            gw, "_run", lambda cmd, **kw: CommandResult(ok=True, stdout="COMPLETED\n"),
         )
-        state = gw.job_state(JobId(value="4242"))
-        assert state == "COMPLETED"
+        lectura = gw.job_state(JobId(value="4242"))
+        assert lectura.state == "COMPLETED"
+        assert lectura.reachable is True
 
     def test_job_state_uses_parsable_format(self):
         gw = RecordingGateway()
@@ -388,17 +393,42 @@ class TestSSHCommandConstruction:
         assert "--noheader" in cmd
         assert "sacct -j 99" in cmd
 
-    def test_job_state_returns_none_on_failure(self, monkeypatch):
+    def test_job_state_sin_transporte_no_es_alcanzable(self, monkeypatch):
+        # No hubo conversación: el cluster no dijo nada sobre el trabajo.
         gw = RecordingGateway()
         monkeypatch.setattr(
-            gw, "_run", lambda cmd: CommandResult(ok=False, stderr="error"),
+            gw, "_run",
+            lambda cmd, **kw: CommandResult(
+                ok=False, stderr="error", reason=CommandFailureReason.TRANSPORT
+            ),
         )
-        assert gw.job_state(JobId(value="1")) is None
+        lectura = gw.job_state(JobId(value="1"))
+        assert lectura.state is None
+        assert lectura.reachable is False
 
-    def test_job_state_returns_none_on_empty_output(self, monkeypatch):
+    def test_job_state_con_salida_vacia_si_es_alcanzable(self, monkeypatch):
+        # `sacct` contestó y no conoce el trabajo: eso SÍ es una respuesta,
+        # y es la que hace que el monitor lo dé por perdido.
         gw = RecordingGateway()
-        monkeypatch.setattr(gw, "_run", lambda cmd: CommandResult(ok=True, stdout=""))
-        assert gw.job_state(JobId(value="1")) is None
+        monkeypatch.setattr(gw, "_run", lambda cmd, **kw: CommandResult(ok=True, stdout=""))
+        lectura = gw.job_state(JobId(value="1"))
+        assert lectura.state is None
+        assert lectura.reachable is True
+
+    def test_job_state_comando_fallado_sigue_siendo_respuesta(self, monkeypatch):
+        # `sacct` no existe, o permisos: el cluster habló, aunque para mal.
+        # No es lo mismo que no poder preguntarle.
+        gw = RecordingGateway()
+        monkeypatch.setattr(
+            gw, "_run",
+            lambda cmd, **kw: CommandResult(
+                ok=False, stderr="sacct: not found",
+                reason=CommandFailureReason.COMMAND,
+            ),
+        )
+        lectura = gw.job_state(JobId(value="1"))
+        assert lectura.state is None
+        assert lectura.reachable is True
 
     def test_cancel_is_quoted(self):
         gw = RecordingGateway()
@@ -423,7 +453,7 @@ class TestSSHCommandConstruction:
     def test_make_directory_synthesizes_message_on_silent_success(self, monkeypatch):
         # mkdir -p exitoso no imprime nada: el gateway fabrica el mensaje.
         gw = RecordingGateway()
-        monkeypatch.setattr(gw, "_run", lambda cmd: CommandResult(ok=True, stdout=""))
+        monkeypatch.setattr(gw, "_run", lambda cmd, **kw: CommandResult(ok=True, stdout=""))
         result = gw.make_directory("/home/user/pruebas")
         assert result.ok
         assert result.stdout == "Directorio listo: /home/user/pruebas"
@@ -431,7 +461,7 @@ class TestSSHCommandConstruction:
     def test_make_directory_failure_passes_through(self, monkeypatch):
         gw = RecordingGateway()
         failure = CommandResult(ok=False, stderr="mkdir: permiso denegado")
-        monkeypatch.setattr(gw, "_run", lambda cmd: failure)
+        monkeypatch.setattr(gw, "_run", lambda cmd, **kw: failure)
         result = gw.make_directory("/root/prohibido")
         # El fallo llega intacto: la rama del mensaje fabricado no se activa.
         assert result is failure
@@ -445,7 +475,7 @@ class TestSSHCommandConstruction:
         # Un fallo real (no "command not found") no dispara el fallback.
         gw = RecordingGateway()
         failure = CommandResult(ok=False, stderr="tree: permiso denegado")
-        monkeypatch.setattr(gw, "_run", lambda cmd: failure)
+        monkeypatch.setattr(gw, "_run", lambda cmd, **kw: failure)
         assert gw.list_directory("/root/prohibido") is failure
 
     def test_list_directory_falls_back_to_find_without_tree(self):
@@ -463,7 +493,7 @@ class TestSSHCommandConstruction:
                 ),
             ),
         }
-        gw._run = lambda cmd: outputs["tree" if cmd.startswith("tree") else "find"]
+        gw._run = lambda cmd, **kw: outputs["tree" if cmd.startswith("tree") else "find"]
         result = gw.list_directory("/data/runs")
         assert result.ok
         # El fallback dibuja ramas como `tree`, no indentación plana.
@@ -477,7 +507,7 @@ class TestSSHCommandConstruction:
     def test_list_directory_fallback_find_failure_passes_through(self):
         gw = RecordingGateway()
         find_failure = CommandResult(ok=False, stderr="find: no existe")
-        gw._run = lambda cmd: (
+        gw._run = lambda cmd, **kw: (
             CommandResult(ok=False, stderr="tree: command not found")
             if cmd.startswith("tree")
             else find_failure

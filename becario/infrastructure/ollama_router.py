@@ -14,7 +14,14 @@ from typing import Optional
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from ..domain.models import Intent, Plan, PlanStep
+from ..domain.models import (
+    Intent,
+    Plan,
+    PlanStep,
+    RouterFailureReason,
+    RouterUnavailableError,
+)
+from ..reintentos import reintentar
 
 logger = logging.getLogger(__name__)
 
@@ -478,7 +485,7 @@ class OllamaRouter:
         self,
         base_url: str = "http://localhost:11434",
         model: str = "gemma4:12b",
-        timeout: float = 120.0,
+        timeout: float = 180.0,  # ver el porqué del número en `config.Settings`
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
@@ -520,7 +527,43 @@ class OllamaRouter:
         if not self._model_matches(self._model, names):
             raise OllamaModelMissingError(self._model, available=names)
 
-    def _chat(self, system_prompt: str, user_text: str, schema: dict) -> Optional[str]:
+    @staticmethod
+    def _vale_reintentar(exc: BaseException) -> bool:
+        """Qué fallo del modelo tiene sentido repetir.
+
+        Un TIMEOUT **no**: ya se esperaron los 180 segundos configurados,
+        y volver a intentar le suma otros 180 al usuario para llegar casi
+        seguro al mismo lugar. Reintentar algo que falló por lento es
+        cambiarle al usuario un mensaje de error por tres minutos más de
+        silencio.
+
+        Un servidor inalcanzable **sí**: falla en milisegundos y se arregla
+        solo bastante seguido (Ollama reiniciándose, por ejemplo). Un error
+        de la API, también.
+        """
+        return (
+            isinstance(exc, RouterUnavailableError)
+            and exc.reason is not RouterFailureReason.TIMEOUT
+        )
+
+    def _chat(self, system_prompt: str, user_text: str, schema: dict) -> str:
+        """Una llamada al modelo, con reintento si el fallo lo amerita.
+
+        Levanta `RouterUnavailableError` si el problema fue de
+        infraestructura. Antes devolvía `None` y cada llamador lo traducía a
+        "no entendí": eso borraba la diferencia entre «el modelo leyó tu
+        mensaje y no supo qué hacer» y «el modelo nunca llegó a leerlo», que
+        para el usuario es la diferencia entre reescribir el pedido y
+        esperar un rato.
+        """
+        return reintentar(
+            lambda: self._chat_once(system_prompt, user_text, schema),
+            intentos=3,
+            excepcion_transitoria=self._vale_reintentar,
+            etiqueta=f"llamada a Ollama ({self._model})",
+        )
+
+    def _chat_once(self, system_prompt: str, user_text: str, schema: dict) -> str:
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",
@@ -538,14 +581,23 @@ class OllamaRouter:
             )
             response.raise_for_status()
             return response.json().get("message", {}).get("content", "")
+        except httpx.TimeoutException as exc:
+            logger.error("Ollama expiró a los %.0f s: %s", self._timeout, exc)
+            raise RouterUnavailableError(
+                RouterFailureReason.TIMEOUT, str(exc), timeout_seconds=self._timeout
+            ) from exc
+        except httpx.ConnectError as exc:
+            logger.error("Ollama inalcanzable en %s: %s", self._base_url, exc)
+            raise RouterUnavailableError(
+                RouterFailureReason.UNREACHABLE, str(exc)
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
-            logger.error("Ollama no disponible: %s", exc)
-            return None
+            # El servidor contestó, pero mal: HTTP 500, JSON ilegible…
+            logger.error("Ollama falló: %s", exc)
+            raise RouterUnavailableError(RouterFailureReason.API, str(exc)) from exc
 
     def route(self, user_text: str) -> Plan:
         raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
-        if raw is None:
-            return Plan(steps=[PlanStep(action=Intent.UNKNOWN)])
         return self._backfill_structure(user_text, self.parse_llm_output(raw))
 
     def extract_structure(self, user_text: str) -> dict:
@@ -565,9 +617,21 @@ class OllamaRouter:
         `red_cristalina=""` que llegue a `StructureRequest` no queda
         ignorado sino que REBOTA (`_v_crystal`), cambiando una repregunta
         clara por un error de validación. `{}` si Ollama no respondió o la
-        salida quedó fuera de schema."""
-        raw = self._chat(_STRUCT_PROMPT, user_text, self._params_schema)
-        if raw is None:
+        salida quedó fuera de schema.
+
+        Es la ÚNICA llamada al modelo que se traga un fallo de
+        infraestructura, y a propósito: es una segunda pasada de mejora
+        sobre un plan que `route()` YA devolvió. Si el servidor se cayó
+        entre las dos llamadas, ese plan sigue siendo utilizable — hacer
+        fallar el pedido entero por la pasada opcional cambiaría una
+        respuesta parcial por ninguna."""
+        try:
+            raw = self._chat(_STRUCT_PROMPT, user_text, self._params_schema)
+        except RouterUnavailableError as exc:
+            logger.warning(
+                "Sin backfill de estructura (%s): sigo con el plan de route()",
+                exc.reason.value,
+            )
             return {}
         try:
             params = RouterParams.model_validate_json(raw)
@@ -624,8 +688,6 @@ class OllamaRouter:
         raw = self._chat(
             _DECOMPOSE_PROMPT, user_text, _Decomposition.model_json_schema()
         )
-        if raw is None:
-            return []
         try:
             parsed = _Decomposition.model_validate_json(raw)
         except ValidationError:
@@ -637,8 +699,6 @@ class OllamaRouter:
         """Solo parámetros (sin acción): para mensajes que modifican un
         plan ya armado."""
         raw = self._chat(_EDIT_PROMPT, user_text, self._params_schema)
-        if raw is None:
-            return {}
         try:
             params = RouterParams.model_validate_json(raw or "")
         except ValidationError:

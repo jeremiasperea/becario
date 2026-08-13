@@ -709,6 +709,7 @@ class SQLiteJobTracker:
                     workflow TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'PENDING',
                     notified INTEGER NOT NULL DEFAULT 0,
+                    poll_attempts INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now')),
                     PRIMARY KEY (job_id, owner_id)
                 )
@@ -722,6 +723,12 @@ class SQLiteJobTracker:
                         f"ALTER TABLE trabajos_monitoreados "
                         f"ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
                     )
+            if "poll_attempts" not in columns:
+                # Va aparte de las de arriba: es INTEGER, no TEXT.
+                conn.execute(
+                    "ALTER TABLE trabajos_monitoreados "
+                    "ADD COLUMN poll_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
     def track(self, job: TrackedJob) -> None:
         with self._connect() as conn:
@@ -750,6 +757,7 @@ class SQLiteJobTracker:
                 ssh_user=r["ssh_user"], job_name=r["job_name"],
                 script_path=r["script_path"], workflow=r["workflow"],
                 status=JobStatus(r["status"]), notified=bool(r["notified"]),
+                poll_attempts=r["poll_attempts"],
             )
             for r in rows
         ]
@@ -765,5 +773,33 @@ class SQLiteJobTracker:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE trabajos_monitoreados SET notified = 1 WHERE job_id = ? AND owner_id = ?",
+                (job_id, owner_id),
+            )
+
+    def record_unreachable(self, job_id: str, owner_id: int) -> int:
+        """Incrementa y devuelve la racha, en una sola ida a la base.
+
+        `RETURNING` necesita SQLite 3.35 (2021). El fallback lee después
+        del UPDATE: no es atómico, pero el único escritor de esta columna
+        es el monitor, que corre de a un tick por vez.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE trabajos_monitoreados SET poll_attempts = poll_attempts + 1 "
+                "WHERE job_id = ? AND owner_id = ?",
+                (job_id, owner_id),
+            )
+            row = conn.execute(
+                "SELECT poll_attempts FROM trabajos_monitoreados "
+                "WHERE job_id = ? AND owner_id = ?",
+                (job_id, owner_id),
+            ).fetchone()
+        return row["poll_attempts"] if row is not None else 0
+
+    def clear_unreachable(self, job_id: str, owner_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE trabajos_monitoreados SET poll_attempts = 0 "
+                "WHERE job_id = ? AND owner_id = ? AND poll_attempts != 0",
                 (job_id, owner_id),
             )

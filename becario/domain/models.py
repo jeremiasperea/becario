@@ -1049,6 +1049,46 @@ class StructureResolutionError(RuntimeError):
         super().__init__(message or reason.value)
 
 
+class RouterFailureReason(str, Enum):
+    """Por qué no se pudo interpretar el pedido, cuando la culpa NO es del
+    pedido. Cada valor lleva a un mensaje distinto porque llevan a acciones
+    distintas: ante un timeout tiene sentido reintentar, ante un servidor
+    caído no."""
+
+    TIMEOUT = "timeout"          # el modelo no contestó a tiempo
+    UNREACHABLE = "unreachable"  # no se pudo llegar al servidor del modelo
+    API = "api"                  # el servidor contestó, pero con un error
+
+
+class RouterUnavailableError(RuntimeError):
+    """El router no pudo pronunciarse por un fallo de INFRAESTRUCTURA.
+
+    Mismo patrón que `StructureResolutionError`: lo lanza el adaptador y lo
+    traduce la capa de aplicación, sin que el dominio vea excepciones de
+    httpx.
+
+    Existe para separar dos cosas que se venían confundiendo, y la confusión
+    tenía costo. Un `Plan` con `Intent.UNKNOWN` significa «el modelo leyó tu
+    mensaje y no supo qué hacer con él», y el bot contesta con la ayuda —
+    razonable. Cuando Ollama expiraba o no estaba, el adaptador devolvía ESE
+    MISMO plan, así que un fallo del servidor terminaba diciéndole al usuario
+    «no pude interpretar tu pedido»: lo mandaba a reescribir un mensaje que
+    estaba perfecto. En la bitácora ese texto aparece tres veces.
+    """
+
+    def __init__(
+        self,
+        reason: RouterFailureReason,
+        message: str = "",
+        timeout_seconds: Optional[float] = None,
+    ) -> None:
+        self.reason = reason
+        # Solo para TIMEOUT: cuánto se esperó, para poder decirlo. El
+        # adaptador lo sabe (es su config); el dominio solo lo transporta.
+        self.timeout_seconds = timeout_seconds
+        super().__init__(message or reason.value)
+
+
 class StructureQuery(BaseModel):
     """Pedido neutral de estructura que la capa de aplicación arma a partir
     del request del usuario y le pasa al `StructureProvider`.
@@ -1372,10 +1412,65 @@ class CommandResult:
     stdout: str = ""
     stderr: str = ""
     job_id: Optional[str] = None
+    # Por qué falló, cuando falló. `None` con `ok=True`.
+    reason: Optional["CommandFailureReason"] = None
 
     @property
     def message(self) -> str:
         return self.stdout.strip() or self.stderr.strip() or "(sin salida)"
+
+    @property
+    def transitorio(self) -> bool:
+        """¿Tiene sentido volver a intentarlo?
+
+        Es la pregunta que `ok=False` no podía contestar, y por eso existe
+        `reason`. Un `permission denied` reintentado mil veces sigue siendo
+        `permission denied`: reintentarlo es ruido, latencia y ruido en el
+        log. Una conexión cortada, en cambio, se arregla sola bastante
+        seguido.
+        """
+        return self.reason in (
+            CommandFailureReason.TRANSPORT,
+            CommandFailureReason.TIMEOUT,
+        )
+
+
+class CommandFailureReason(str, Enum):
+    """Las tres formas de que algo salga mal en el cluster.
+
+    Hasta acá `CommandResult(ok=False)` las mezclaba a las tres, y esa
+    mezcla bloqueaba dos cosas a la vez: no se podía reintentar sin
+    reintentar también lo que nunca va a andar, y el monitor no podía
+    distinguir «`sacct` no conoce este trabajo» de «no pude hablar con el
+    cluster» — que es la diferencia entre soltar un trabajo perdido y
+    soltar uno sano porque se cayó la red.
+    """
+
+    COMMAND = "command"      # corrió y devolvió distinto de cero
+    TRANSPORT = "transport"  # no hubo conversación: no se pudo ni preguntar
+    TIMEOUT = "timeout"      # hubo conversación pero no terminó a tiempo
+
+
+# Subdirectorio donde esperan los inputs de una corrida que todavía no se
+# confirmó. Existe para que un directorio abandonado sea RECONOCIBLE: uno
+# suelto en la base de corridas es indistinguible de una corrida real, y
+# nadie se anima a borrar lo que no puede identificar. Bajo `.pending/` sí.
+DIR_PENDIENTES = ".pending"
+
+
+@dataclass(frozen=True)
+class JobStateReading:
+    """Lo que se pudo averiguar del estado de un trabajo.
+
+    `state=None` con `reachable=True` significa algo MUY distinto de
+    `state=None` con `reachable=False`: en el primer caso `sacct` contestó
+    y no conoce el trabajo (se lo purgó, o nunca existió); en el segundo no
+    se pudo preguntar. El monitor cuenta rachas solo del primero — un
+    cluster caído no es culpa del trabajo.
+    """
+
+    state: Optional[str] = None
+    reachable: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -1459,6 +1554,12 @@ class TrackedJob:
     status: JobStatus = JobStatus.PENDING
     notified: bool = False
     created_at: float = field(default_factory=time.time)
+    # Consultas SEGUIDAS en las que no se pudo leer el estado. Se reinicia
+    # con cualquier lectura buena, así que cuenta rachas, no acumulado: un
+    # SSH que se cayó una vez no acerca al trabajo a darse por perdido.
+    # Sin esto, un trabajo que Slurm ya purgó (`MinJobAge`) se consultaba
+    # cada 60 segundos hasta el fin de los tiempos.
+    poll_attempts: int = 0
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from becario.application.relaxed_source import (
     RelaxedSourceError,
     resolve_relaxed_structure,
 )
+from becario.domain.models import JobStateReading
 
 OWNER = 111
 RUN_DIR = "/home/alice/becario_runs/Zr_relajacion_20260101_101010"
@@ -60,8 +61,14 @@ class FakeCluster:
         }
         self.state = state
 
-    def job_state(self, job_id):
-        return self.state
+    def job_state(self, job_id) -> JobStateReading:
+        # Devuelve el MISMO tipo que el gateway real. Cuando este doble
+        # contestaba un `str` pelado, el cambio de `job_state` a
+        # `JobStateReading` pasó los 1050 tests en verde con el llamador
+        # roto: `JobStatus.from_slurm(JobStateReading(...))` revienta con
+        # AttributeError. Un doble con forma propia deja de avisar
+        # exactamente cuando el tipo verdadero cambia.
+        return JobStateReading(state=self.state, reachable=not self.unreachable)
 
     def file_exists(self, path):
         # `None` = no se pudo averiguar (cluster caído), distinto de False.
@@ -109,6 +116,14 @@ class TestFailsClosed:
     def test_job_still_running(self):
         with pytest.raises(RelaxedSourceError, match="todavía está corriendo"):
             _resolve(cluster=FakeCluster(state="RUNNING"))
+
+    def test_no_poder_preguntar_no_es_lo_mismo_que_estar_corriendo(self):
+        """Si no hubo conversación con el cluster, no se puede afirmar nada
+        sobre el estado del trabajo. Se sigue de largo y deciden los
+        chequeos de archivo, que van contra el mismo cluster y van a fallar
+        con un mensaje sobre lo que el usuario pidió."""
+        with pytest.raises(RelaxedSourceError, match="no llegué al cluster"):
+            _resolve(cluster=FakeCluster(state=None, unreachable=True))
 
     def test_job_still_queued(self):
         with pytest.raises(RelaxedSourceError, match="en cola"):

@@ -519,6 +519,13 @@ máximo del barrido):
 ✅ ENCUT recomendado: 300 eV (ΔE < 1 meV/át respecto de 450 eV)
 ```
 
+Los inputs se suben a un `.pending/` dentro de la base de corridas y se
+mueven a su lugar definitivo recién al confirmar (un `mv` remoto, atómico
+dentro del mismo filesystem). Así una corrida aparece entera o no aparece,
+y lo que quedó sin confirmar es reconocible como tal: cancelar lo borra en
+el acto, y lo que se dejó vencer lo levanta un barrido por edad al preparar
+el cálculo siguiente.
+
 La confirmación ofrece tres botones: **✅ Confirmar**, **❌ Cancelar** y
 **✏️ Modificar** — este último espera un mensaje con el cambio ("usá 2
 nodos", "subí el ENCUT máximo a 600"); el resto del plan se mantiene y se
@@ -552,6 +559,27 @@ detecta un estado terminal (COMPLETED/FAILED/CANCELLED/TIMEOUT):
 
 Cada trabajo terminado queda además registrado en el historial, así que
 "consultá el historial" empieza a tener datos reales con el uso.
+
+El aviso se asienta **después** de que salió, no antes: mientras el mensaje
+no llegue a Telegram el trabajo sigue en seguimiento y el próximo tick lo
+reintenta. La entrega es "al menos una vez" — si el asiento falla después de
+un envío bueno puede repetirse el aviso, que es el lado correcto para
+equivocarse: que llegue dos veces molesta, que no llegue ninguna rompe el
+único mecanismo que cierra el loop.
+
+Y si un trabajo deja de contestar (Slurm lo purga de `sacct` pasado
+`MinJobAge`, por ejemplo), el monitor no lo persigue para siempre: cuenta las
+consultas **seguidas** sin respuesta y tras una hora avisa una vez y lo
+suelta.
+
+```
+🔎 Perdí el rastro del trabajo 4242 (Zr_relajacion): llevo 60 consultas
+seguidas sin poder leer su estado, así que dejo de seguirlo.
+```
+
+Se cuenta la racha y no la antigüedad a propósito: un trabajo puede estar
+legítimamente encolado durante días, así que "viejo" no distingue "perdido"
+de "esperando turno".
 
 ## Pendientes conocidos
 

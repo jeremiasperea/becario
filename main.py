@@ -145,6 +145,10 @@ def build_bot(settings: Settings) -> TelegramBot:
         monitor_interval_seconds=settings.monitor_interval_seconds,
         transcriber=transcriber,
         chat_log=chat_log,
+        # Cierre ordenado: `close_all()` existía desde el principio y no lo
+        # llamaba nadie, así que cada `systemctl restart` dejaba los
+        # transportes SSH abiertos hasta que el sistema los reciclara.
+        al_cerrar=cluster_factory.close_all,
     )
 
 

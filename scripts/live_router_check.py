@@ -66,6 +66,7 @@ from typing import Callable, Optional, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from becario.domain.models import RouterUnavailableError  # noqa: E402
 from becario.infrastructure.ollama_router import (  # noqa: E402
     OllamaRouter,
     compact_json_schema,
@@ -483,7 +484,17 @@ def _majority_check(
     latencies: list[float] = []
     for _ in range(attempts):
         started = time.monotonic()
-        err = checker(router, fx)
+        try:
+            err = checker(router, fx)
+        except RouterUnavailableError as exc:
+            # Un fallo de infraestructura es UN intento fallido, no el fin
+            # de la corrida: el tablero completo son ~2 horas y perderlas
+            # por un timeout suelto no tiene sentido. Antes esto no hacía
+            # falta porque el adaptador devolvía un plan `UNKNOWN`, que el
+            # checker contaba como fixture errado — con la desventaja de
+            # que un timeout quedaba indistinguible de una respuesta mala.
+            # Ahora se cuenta igual, pero se dice cuál de las dos fue.
+            err = f"router no disponible ({exc.reason.value})"
         latencies.append(time.monotonic() - started)
         if err is None:
             passes += 1

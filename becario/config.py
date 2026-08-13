@@ -92,7 +92,14 @@ class Settings:
     # El default apunta a la máquina de producción del bot; en desarrollo
     # se pisa con BECARIO_OLLAMA_MODEL en .env (p. ej. gemma3:4b en CPU).
     ollama_model: str = "gemma4:12b"
-    ollama_timeout_seconds: float = 120.0
+    # 180 y no 120 por medición, no por prudencia: sobre las 44 decisiones de
+    # `decisiones_router` en la bitácora, la mediana es 30 s pero el p90 es
+    # 118.1 s — o sea que el sistema venía operando a dos segundos de su
+    # propio timeout, y bastaba una máquina algo más cargada para que un
+    # pedido perfectamente entendible volviera como «no pude interpretarlo».
+    # Ojo: esto compra margen, no arregla la confusión de fondo entre "expiró"
+    # y "no entendí" (ver T5 en docs/plan_tolerancia_fallos.md).
+    ollama_timeout_seconds: float = 180.0
     db_path: str = "becario.db"
     structures_dir: str = "./structures"
     confirmation_ttl_seconds: float = 600.0
@@ -132,7 +139,7 @@ class Settings:
             users_file=os.environ.get("BECARIO_USERS_FILE", "users.json"),
             ollama_url=os.environ.get("BECARIO_OLLAMA_URL", "http://localhost:11434"),
             ollama_model=os.environ.get("BECARIO_OLLAMA_MODEL", "gemma4:12b"),
-            ollama_timeout_seconds=_float_env("BECARIO_OLLAMA_TIMEOUT", "120"),
+            ollama_timeout_seconds=_float_env("BECARIO_OLLAMA_TIMEOUT", "180"),
             db_path=os.environ.get("BECARIO_DB_PATH", "becario.db"),
             structures_dir=os.environ.get("BECARIO_STRUCTURES_DIR", "./structures"),
             confirmation_ttl_seconds=_float_env("BECARIO_CONFIRM_TTL", "600"),

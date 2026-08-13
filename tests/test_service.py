@@ -25,6 +25,7 @@ from becario.domain.models import (
     HistoryFilter,
     Intent,
     JobId,
+    JobStateReading,
     JobStatus,
     PendingPlan,
     Plan,
@@ -125,6 +126,12 @@ class FakeCluster:
         self.read_calls: list[str] = []
         # `max_bytes` de cada read_file, en paralelo a read_calls:
         self.read_max_bytes: list = []
+        # Corridas sin confirmar: qué se movió, qué se borró y qué se barrió.
+        self.moved: list[tuple[str, str]] = []
+        self.discarded: list[str] = []
+        self.swept: list[tuple[str, int]] = []
+        # Si se define, move_run devuelve esto (para simular un mv fallido):
+        self.move_run_result: CommandResult | None = None
 
     def submit_job(self, req: SlurmJobRequest) -> CommandResult:
         self.submitted.append(req)
@@ -191,8 +198,22 @@ class FakeCluster:
         self.concatenated.append((tuple(sources), dest))
         return CommandResult(ok=True)
 
-    def job_state(self, job_id: JobId) -> str:
-        return "RUNNING"
+    def move_run(self, src: str, dest: str) -> CommandResult:
+        self.moved.append((src, dest))
+        if self.move_run_result is not None:
+            return self.move_run_result
+        return CommandResult(ok=True, stdout="")
+
+    def discard_pending(self, path: str) -> CommandResult:
+        self.discarded.append(path)
+        return CommandResult(ok=True, stdout="")
+
+    def sweep_pending(self, pending_base: str, older_than_minutes: int) -> CommandResult:
+        self.swept.append((pending_base, older_than_minutes))
+        return CommandResult(ok=True, stdout="")
+
+    def job_state(self, job_id: JobId) -> JobStateReading:
+        return JobStateReading(state="RUNNING", reachable=True)
 
 
 class FakeClusterGatewayFactory:
@@ -921,16 +942,26 @@ class TestPrepareCalc:
         reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="relajá W")
         assert reply.needs_confirmation
         cluster = factory.gateways["alice"]
-        # Se subió el directorio a la base remota resuelta contra el home:
+        # Se subió a `.pending/`, NO al destino final: mientras el usuario
+        # no confirme, un directorio de corrida a medias no puede quedar
+        # mezclado con las corridas de verdad.
         assert cluster.uploaded_dirs == [
-            ("/tmp/runs/fake_run", "/home/alice/becario_runs/W_relajacion_x")
+            ("/tmp/runs/fake_run", "/home/alice/becario_runs/.pending/W_relajacion_x")
         ]
         # El POTCAR se armó con la variante disponible (W, sin sufijo):
         assert cluster.concatenated == [
-            (("/potcars/W/POTCAR",), "/home/alice/becario_runs/W_relajacion_x/POTCAR")
+            (
+                ("/potcars/W/POTCAR",),
+                "/home/alice/becario_runs/.pending/W_relajacion_x/POTCAR",
+            )
         ]
-        # Pero nada se envió todavía:
+        # Pero al usuario se le muestra dónde va a QUEDAR, no dónde espera:
+        # `.pending/` es plomería, no información útil para decidir.
+        assert "/home/alice/becario_runs/W_relajacion_x" in reply.text
+        assert ".pending" not in reply.text
+        # Y nada se envió ni se movió todavía:
         assert cluster.submitted == []
+        assert cluster.moved == []
 
     def test_potcar_variant_lookup_prefers_sv(self, env):
         service, router, factory, *_ = env

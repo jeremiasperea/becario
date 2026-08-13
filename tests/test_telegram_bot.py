@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from becario.application.job_monitor import JobAck, Notification
 from becario.application.services import Reply
 from becario.presentation.telegram_bot import TelegramBot
 
@@ -334,26 +335,51 @@ class TestCallbackPasaTiposDeclarados:
 
 
 class TestMonitorTickChatLogging:
-    def _make_monitored_bot(self, note) -> TelegramBot:
+    """Se usa el `Notification` REAL y no un `SimpleNamespace`: un doble con
+    forma propia deja de avisar cuando el tipo verdadero crece (fue el caso
+    de `acuse`, agregado para que un envío fallido no se lleve el aviso)."""
+
+    def _make_monitored_bot(self, note) -> tuple[TelegramBot, list]:
         bot, _ = _make_bot(Reply(text="ok"), FakeChatLog())
+        acusados: list = []
         # Se inyecta el monitor a mano para no requerir el extra job-queue.
-        bot._job_monitor = SimpleNamespace(poll_and_notify=lambda: [note])
-        return bot
+        bot._job_monitor = SimpleNamespace(
+            poll_and_notify=lambda: [note],
+            confirm_delivery=acusados.append,
+        )
+        return bot, acusados
+
+    @staticmethod
+    def _note(**kwargs) -> Notification:
+        base = dict(
+            chat_id=999,
+            text="✅ Terminó el trabajo 42.",
+            acuse=JobAck(job_id="42", owner_id=7, job_name="zr", estado="completado"),
+        )
+        return Notification(**{**base, **kwargs})
 
     def test_delivered_notification_is_logged(self):
-        note = SimpleNamespace(chat_id=999, text="✅ Terminó el trabajo 42.", monospace=False)
-        bot = self._make_monitored_bot(note)
+        bot, acusados = self._make_monitored_bot(self._note())
         context = SimpleNamespace(bot=FakeBotAPI())
 
         asyncio.run(bot._on_monitor_tick(context))
 
         assert bot._chat_log.entries == [(999, "bot", "✅ Terminó el trabajo 42.")]
 
+    def test_delivered_notification_is_acked(self):
+        # El asiento va DESPUÉS del envío: es lo que convierte "avisé" en
+        # "el aviso salió".
+        bot, acusados = self._make_monitored_bot(self._note())
+        context = SimpleNamespace(bot=FakeBotAPI())
+
+        asyncio.run(bot._on_monitor_tick(context))
+
+        assert [a.job_id for a in acusados] == ["42"]
+
     def test_failed_send_is_not_logged(self, caplog):
         # Contrato de orden: la bitácora solo registra lo efectivamente
         # entregado. Si el envío falla, no debe quedar rastro del mensaje.
-        note = SimpleNamespace(chat_id=999, text="✅ Terminó el trabajo 42.", monospace=False)
-        bot = self._make_monitored_bot(note)
+        bot, acusados = self._make_monitored_bot(self._note())
         context = SimpleNamespace(bot=FakeBotAPI(fail=True))
 
         with caplog.at_level(logging.ERROR):
@@ -361,6 +387,29 @@ class TestMonitorTickChatLogging:
 
         assert bot._chat_log.entries == []
         assert any("No pude notificar" in rec.message for rec in caplog.records)
+
+    def test_failed_send_is_not_acked(self, caplog):
+        """El corazón de T4: sin acuse, el trabajo sigue activo y el
+        próximo tick lo reintenta. Antes el monitor ya lo había dado por
+        avisado, así que el aviso se perdía para siempre."""
+        bot, acusados = self._make_monitored_bot(self._note())
+        context = SimpleNamespace(bot=FakeBotAPI(fail=True))
+
+        with caplog.at_level(logging.ERROR):
+            asyncio.run(bot._on_monitor_tick(context))
+
+        assert acusados == []
+
+    def test_harvest_notification_is_not_acked(self):
+        # La cosecha del barrido es un SEGUNDO mensaje del mismo trabajo:
+        # acusarla otra vez duplicaría la fila del historial.
+        bot, acusados = self._make_monitored_bot(self._note(acuse=None))
+        context = SimpleNamespace(bot=FakeBotAPI())
+
+        asyncio.run(bot._on_monitor_tick(context))
+
+        assert acusados == []
+        assert bot._chat_log.entries  # pero el mensaje sí salió
 
 
 class TestTypingIndicator:

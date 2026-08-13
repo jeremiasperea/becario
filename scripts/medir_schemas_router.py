@@ -68,6 +68,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from becario.config import Settings  # noqa: E402
+from becario.domain.models import RouterUnavailableError  # noqa: E402
 from becario.infrastructure.ollama_router import (  # noqa: E402
     _STRUCT_PROMPT,
     _SYSTEM_PROMPT,
@@ -330,10 +331,14 @@ def brazo_a(router: OllamaRouter, caso: Caso):
     llevara el crédito de C.
     """
     t0 = time.monotonic()
-    raw = router._chat(_SYSTEM_PROMPT, caso.texto, router._schema)
+    # Un fallo de infraestructura cuenta como brazo sin resultado, igual
+    # que antes contaba el `None`: la medición son varias decenas de
+    # minutos y no se tira por un timeout suelto.
+    try:
+        raw = router._chat(_SYSTEM_PROMPT, caso.texto, router._schema)
+    except RouterUnavailableError:
+        return [], {}, time.monotonic() - t0
     dt = time.monotonic() - t0
-    if raw is None:
-        return [], {}, dt
     plan = router.parse_llm_output(raw)
     ops = [
         {"accion": s.action.value,
@@ -352,7 +357,10 @@ def brazo_a(router: OllamaRouter, caso: Caso):
 
 def brazo_chico(router: OllamaRouter, caso: Caso, prompt: str, schema: dict):
     t0 = time.monotonic()
-    raw = router._chat(prompt, caso.texto, schema)
+    try:
+        raw = router._chat(prompt, caso.texto, schema)
+    except RouterUnavailableError:
+        return [], {}, time.monotonic() - t0
     dt = time.monotonic() - t0
     if not raw:
         return [], {}, dt
@@ -437,7 +445,11 @@ def main() -> int:
     # La primera generación paga la carga del modelo a RAM y ensuciaría la
     # latencia del primer caso (mismo criterio que live_router_check.py).
     print("warm-up…", flush=True)
-    router._chat(_STRUCT_PROMPT, "relajá el bulk de W", router._params_schema)
+    try:
+        router._chat(_STRUCT_PROMPT, "relajá el bulk de W", router._params_schema)
+    except RouterUnavailableError as exc:
+        # El warm-up no mide nada; si falla, los brazos lo van a decir.
+        print(f"  (warm-up falló: {exc.reason.value})")
     print()
 
     acum = {(f, b): Acumulado()

@@ -10,11 +10,13 @@ sobre "quién puede usar el bot" (una allowlist acá y el roster allá).
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -29,8 +31,65 @@ from telegram.ext import (
 from ..application.job_monitor import JobMonitorService
 from ..application.services import FOREIGN_CONFIRMATION_TEXT, BecarioService, Reply
 from ..domain.ports import ChatLogRepository, Transcriber
+from ..incidentes import FALLO_INESPERADO, nuevo_incidente
 
 logger = logging.getLogger(__name__)
+
+# Telegram rechaza los mensajes de más de 4096 caracteres. El margen cubre el
+# envoltorio `<pre>…</pre>` y cualquier redondeo del conteo.
+_LIMITE_TELEGRAM = 4096
+_PRESUPUESTO = _LIMITE_TELEGRAM - 96
+
+
+def _corte_maximo(linea: str, medir, presupuesto: int) -> int:
+    """Prefijo más largo de `linea` que entra en el presupuesto, por búsqueda
+    binaria. Hace falta porque `medir` no es la identidad: con `html.escape`
+    un `&` ocupa cinco caracteres, así que la longitud cruda no sirve para
+    saber dónde cortar."""
+    bajo, alto, mejor = 1, min(len(linea), presupuesto), 1
+    while bajo <= alto:
+        medio = (bajo + alto) // 2
+        if medir(linea[:medio]) <= presupuesto:
+            mejor, bajo = medio, medio + 1
+        else:
+            alto = medio - 1
+    return mejor
+
+
+def _trocear(text: str, medir=len, presupuesto: int = _PRESUPUESTO) -> list[str]:
+    """Parte `text` en trozos que entren en un mensaje de Telegram.
+
+    Corta por líneas siempre que puede: partir al medio una tabla de
+    convergencia o la cola de un log la vuelve ilegible. Solo cuando una
+    línea sola no entra se la parte a lo bruto.
+
+    Vive acá, en el borde, y no en cada handler a propósito. El límite es de
+    Telegram, así que un guard por handler protege los casos que alguien se
+    acordó de proteger — y el reporte de un plan de siete pasos, el
+    diagnóstico de un fallo con dos colas de log y la tabla del barrido de
+    ENCUT viajaban sin nada.
+    """
+    if medir(text) <= presupuesto:
+        return [text]
+    trozos: list[str] = []
+    actual = ""
+    for linea in text.split("\n"):
+        while medir(linea) > presupuesto:
+            if actual:
+                trozos.append(actual)
+                actual = ""
+            corte = _corte_maximo(linea, medir, presupuesto)
+            trozos.append(linea[:corte])
+            linea = linea[corte:]
+        candidato = f"{actual}\n{linea}" if actual else linea
+        if actual and medir(candidato) > presupuesto:
+            trozos.append(actual)
+            actual = linea
+        else:
+            actual = candidato
+    if actual:
+        trozos.append(actual)
+    return trozos
 
 
 def _keyboard(token: str, allow_modify: bool = False) -> InlineKeyboardMarkup:
@@ -52,17 +111,35 @@ class TelegramBot:
         monitor_interval_seconds: float = 60.0,
         transcriber: Optional[Transcriber] = None,
         chat_log: Optional[ChatLogRepository] = None,
+        max_workers: int = 8,
+        al_cerrar: Optional[Callable[[], None]] = None,
     ) -> None:
         self._service = service
         self._job_monitor = job_monitor
         self._transcriber = transcriber
         self._chat_log = chat_log
+        # Qué hacer al terminar (cerrar las conexiones SSH, típicamente).
+        # Se inyecta un callable y no el factory para que la presentación
+        # siga sin conocer la infraestructura.
+        self._al_cerrar = al_cerrar
+        # Pool PROPIO para el trabajo bloqueante (LLM, SSH, transcripción),
+        # en vez del executor default de asyncio.
+        #
+        # No es afinar: es aislar. El default lo comparte todo el proceso,
+        # así que un hilo trabado ahí se lleva capacidad de cualquier otra
+        # cosa que use `to_thread` — la bitácora, por ejemplo. Con un pool
+        # nombrado, la saturación se ve en los nombres de los hilos de un
+        # `py-spy`/`faulthandler` en vez de tener que adivinarla.
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="becario-blocking"
+        )
         self._app = Application.builder().token(token).build()
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text)
         )
         self._app.add_handler(MessageHandler(filters.VOICE, self._on_voice))
         self._app.add_handler(CallbackQueryHandler(self._on_callback))
+        self._app.add_error_handler(self._on_error)
         if job_monitor is not None:
             # job_queue requiere el extra python-telegram-bot[job-queue].
             self._app.job_queue.run_repeating(
@@ -72,10 +149,60 @@ class TelegramBot:
             )
 
     # ------------------------------------------------------------------
+    async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Red de contención: ninguna excepción termina en silencio.
+
+        Sin esto, cualquier fallo no previsto —una base bloqueada, un
+        `BadRequest` al enviar, un reventón de una biblioteca de terceros—
+        subía a python-telegram-bot, se logueaba y ahí moría. El usuario se
+        quedaba mirando un chat quieto, sin siquiera el «escribiendo…».
+
+        No es una hipótesis: en la bitácora hay dos pedidos (mensajes 23 y
+        88) donde `decisiones_router` registra que el servicio ruteó y
+        respondió, y al chat no llegó nada. El del mensaje 88 esperó casi
+        once minutos antes de repetirlo.
+        """
+        incidente = nuevo_incidente()
+        logger.error(
+            "Incidente %s: excepción no atrapada procesando un update",
+            incidente, exc_info=context.error,
+        )
+        chat = getattr(update, "effective_chat", None)
+        if chat is None:
+            # Errores sin chat asociado (p. ej. del propio job_queue): queda
+            # el log, que es todo lo que se puede hacer.
+            return
+        aviso = FALLO_INESPERADO.format(incidente=incidente)
+        try:
+            await self._enviar(chat.send_message, aviso, chat_id=chat.id)
+        except Exception:
+            # Si tampoco se puede avisar, el log es el último recurso. Este
+            # except NO puede faltar: una excepción acá vuelve al mismo
+            # handler y arma un bucle.
+            logger.error("Incidente %s: tampoco pude avisarle al usuario.", incidente)
+
+    # ------------------------------------------------------------------
     def run(self) -> None:
         """Long polling: PTB maneja offset, reintentos y backoff solo."""
         logger.info("B.E.C.A.R.I.O. iniciando en modo polling…")
-        self._app.run_polling(allowed_updates=["message", "callback_query"])
+        try:
+            # PTB ya atiende SIGINT/SIGTERM y devuelve el control acá, así
+            # que el `finally` corre también en un `systemctl stop`. No hace
+            # falta instalar handlers propios (y pelearlos con los suyos).
+            self._app.run_polling(allowed_updates=["message", "callback_query"])
+        finally:
+            # `wait=False`: al salir puede haber un hilo esperando al cluster,
+            # y no tiene sentido demorar el apagado por él. Los hilos son
+            # daemon, así que no impiden que el proceso termine.
+            self._executor.shutdown(wait=False)
+            if self._al_cerrar is not None:
+                try:
+                    self._al_cerrar()
+                except Exception:
+                    # Un apagado que revienta no puede tapar el motivo real
+                    # de la salida.
+                    logger.exception("Falló el cierre ordenado")
+            logger.info("B.E.C.A.R.I.O. terminó.")
 
     # ------------------------------------------------------------------
     async def _log_chat(self, chat_id: Optional[int], role: str, text: str) -> None:
@@ -98,6 +225,18 @@ class TelegramBot:
                 "No pude registrar el mensaje en la bitácora (chat_id=%s): %s",
                 chat_id, exc,
             )
+
+    # ------------------------------------------------------------------
+    async def _en_hilo(self, fn, *args, **kwargs):
+        """Corre `fn` en el pool propio del bot.
+
+        Equivalente a `asyncio.to_thread` salvo por el executor, que es lo
+        único que interesa: el default es del proceso entero.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor, functools.partial(fn, *args, **kwargs)
+        )
 
     # ------------------------------------------------------------------
     async def _run_blocking(self, chat, fn, *args, **kwargs):
@@ -124,31 +263,60 @@ class TelegramBot:
 
         keeper = asyncio.create_task(_keep_typing()) if chat is not None else None
         try:
-            return await asyncio.to_thread(fn, *args, **kwargs)
+            return await self._en_hilo(fn, *args, **kwargs)
         finally:
             if keeper is not None:
                 keeper.cancel()
 
     # ------------------------------------------------------------------
+    async def _enviar(
+        self,
+        enviar,
+        text: str,
+        *,
+        chat_id: Optional[int],
+        markup=None,
+        monospace: bool = False,
+    ) -> None:
+        """Único punto de salida de texto hacia Telegram.
+
+        Trocea si hace falta y registra en la bitácora el texto ENTERO una
+        sola vez: la bitácora guarda contenido, no en cuántos mensajes lo
+        partió el canal (ni el envoltorio `<pre>`).
+        """
+        if monospace:
+            # <pre> respeta el ancho fijo (tablas); el texto va escapado para
+            # que ningún carácter del contenido se interprete como HTML.
+            def medir(t: str) -> int:
+                return len(html.escape(t)) + len("<pre></pre>")
+        else:
+            medir = len
+
+        trozos = _trocear(text, medir)
+        for i, trozo in enumerate(trozos):
+            cuerpo = f"<pre>{html.escape(trozo)}</pre>" if monospace else trozo
+            kwargs = {"parse_mode": "HTML"} if monospace else {}
+            # Los botones van en el ÚLTIMO trozo: colgados del primero
+            # quedarían arriba del texto que hay que leer para decidir.
+            if markup is not None and i == len(trozos) - 1:
+                kwargs["reply_markup"] = markup
+            await enviar(cuerpo, **kwargs)
+        await self._log_chat(chat_id, "bot", text)
+
     async def _send_reply(self, update: Update, reply: Reply) -> None:
         markup = (
             _keyboard(reply.confirmation_token, reply.allow_modify)
             if reply.needs_confirmation and reply.confirmation_token
             else None
         )
-        if reply.monospace:
-            # <pre> respeta el ancho fijo (tablas); el texto va escapado para
-            # que ningún carácter del contenido se interprete como HTML.
-            await update.effective_chat.send_message(
-                f"<pre>{html.escape(reply.text)}</pre>",
-                reply_markup=markup,
-                parse_mode="HTML",
-            )
-        else:
-            await update.effective_chat.send_message(reply.text, reply_markup=markup)
-        # Se registra el texto crudo (sin el envoltorio <pre>): la bitácora
-        # guarda contenido, no detalles de formato del canal.
-        await self._log_chat(update.effective_chat.id, "bot", reply.text)
+        chat = update.effective_chat
+        await self._enviar(
+            chat.send_message,
+            reply.text,
+            chat_id=chat.id,
+            markup=markup,
+            monospace=reply.monospace,
+        )
         # Confirmaciones individuales de un plan (una por cálculo), cada
         # una con sus propios botones.
         for followup in reply.followups:
@@ -172,10 +340,13 @@ class TelegramBot:
     async def _on_voice(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_user is None:
             return
+        chat = update.effective_chat
         if self._transcriber is None:
-            aviso = "🎙️ La transcripción de audio no está configurada."
-            await update.effective_chat.send_message(aviso)
-            await self._log_chat(update.effective_chat.id, "bot", aviso)
+            await self._enviar(
+                chat.send_message,
+                "🎙️ La transcripción de audio no está configurada.",
+                chat_id=chat.id,
+            )
             return
         voice_file = await update.message.voice.get_file()
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,18 +356,20 @@ class TelegramBot:
                 update.effective_chat, self._transcriber.transcribe, path.read_bytes()
             )
         if not text.strip():
-            aviso = "🎙️ No pude entender el audio, probá de nuevo."
-            await update.effective_chat.send_message(aviso)
-            await self._log_chat(update.effective_chat.id, "bot", aviso)
+            await self._enviar(
+                chat.send_message,
+                "🎙️ No pude entender el audio, probá de nuevo.",
+                chat_id=chat.id,
+            )
             return
         # La bitácora guarda la transcripción como mensaje del usuario:
         # es el texto que efectivamente entra al servicio.
-        await self._log_chat(update.effective_chat.id, "user", text.strip())
+        await self._log_chat(chat.id, "user", text.strip())
         # Mostrar qué se entendió ANTES de actuar: si la transcripción vino
         # mal, el usuario lo ve enseguida y puede repetir.
-        entendido = f"🎙️ Entendí: «{text.strip()}»"
-        await update.effective_chat.send_message(entendido)
-        await self._log_chat(update.effective_chat.id, "bot", entendido)
+        await self._enviar(
+            chat.send_message, f"🎙️ Entendí: «{text.strip()}»", chat_id=chat.id
+        )
         reply = await self._run_blocking(
             update.effective_chat,
             self._service.handle_text,
@@ -259,35 +432,71 @@ class TelegramBot:
         except Exception:  # p. ej. mensaje demasiado viejo para editar
             logger.warning("No pude quitar los botones del mensaje original.")
         if query.message is not None:
-            await query.message.chat.send_message(reply.text)
-            await self._log_chat(query.message.chat.id, "bot", reply.text)
+            await self._enviar(
+                query.message.chat.send_message,
+                reply.text,
+                chat_id=query.message.chat.id,
+                monospace=reply.monospace,
+            )
 
     # ------------------------------------------------------------------
     # Cierre del loop: aviso proactivo cuando un trabajo termina
     # ------------------------------------------------------------------
     async def _on_monitor_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Las dos consultas van A UN HILO, no al event loop.
+        #
+        # `poll_and_notify()` hace varias idas y vueltas SSH por cada trabajo
+        # activo, y hasta acá corría sincrónico acá adentro: mientras duraba,
+        # el bot no atendía a NADIE. `_on_text` ya usaba `_run_blocking`; el
+        # monitor se había quedado afuera, y es el que peor lo llevaba —
+        # corre cada 60 s hable alguien o no, así que un cluster lento
+        # congelaba el bot de forma periódica sin que nadie lo pidiera.
+        #
+        # Combinado con un `_run` que podía esperar para siempre (arreglado
+        # en `ssh_gateway`), esto no era lentitud: era un cuelgue definitivo
+        # del bot entero a partir de un solo trabajo.
+        vencidos = await self._en_hilo(self._service.sweep_expired_pendings)
         # Pedidos que se quedaron esperando una respuesta que no llegó. Va
         # ANTES de los trabajos y fuera del guard del monitor: cerrar una
         # consulta abierta no depende de que haya seguimiento configurado.
-        for chat_id, text in self._service.sweep_expired_pendings():
+        for chat_id, text in vencidos:
             try:
-                await context.bot.send_message(chat_id=chat_id, text=text)
-                await self._log_chat(chat_id, "bot", text)
+                await self._enviar(
+                    self._bot_sender(context, chat_id), text, chat_id=chat_id
+                )
             except Exception as exc:
                 logger.error("No pude avisar el vencimiento a chat_id=%s: %s", chat_id, exc)
 
         if self._job_monitor is None:  # pragma: no cover - guard defensivo
             return
-        for note in self._job_monitor.poll_and_notify():
+        for note in await self._en_hilo(self._job_monitor.poll_and_notify):
             try:
-                if note.monospace:
-                    await context.bot.send_message(
-                        chat_id=note.chat_id,
-                        text=f"<pre>{html.escape(note.text)}</pre>",
-                        parse_mode="HTML",
-                    )
-                else:
-                    await context.bot.send_message(chat_id=note.chat_id, text=note.text)
-                await self._log_chat(note.chat_id, "bot", note.text)
+                await self._enviar(
+                    self._bot_sender(context, note.chat_id),
+                    note.text,
+                    chat_id=note.chat_id,
+                    monospace=note.monospace,
+                )
             except Exception as exc:
+                # Sin acuse: el trabajo sigue activo y el próximo tick lo
+                # reintenta. Antes el monitor ya lo había dado por avisado
+                # antes de llegar acá, así que este `except` loguea… y el
+                # aviso se perdía para siempre.
                 logger.error("No pude notificar a chat_id=%s: %s", note.chat_id, exc)
+                continue
+            if note.acuse is not None:
+                await self._en_hilo(self._job_monitor.confirm_delivery, note.acuse)
+
+    @staticmethod
+    def _bot_sender(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+        """Adapta `context.bot.send_message` a la firma que espera `_enviar`.
+
+        El monitor no tiene un `Chat` a mano (no está contestando un update,
+        está avisando por su cuenta), así que manda por id.
+        """
+        async def enviar(cuerpo: str, **kwargs):
+            return await context.bot.send_message(
+                chat_id=chat_id, text=cuerpo, **kwargs
+            )
+
+        return enviar

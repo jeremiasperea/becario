@@ -14,6 +14,7 @@ from .models import (
     CommandResult,
     HistoryFilter,
     JobId,
+    JobStateReading,
     JobStatus,
     PendingEdit,
     PendingPlan,
@@ -91,10 +92,15 @@ class ClusterGateway(Protocol):
 
     def job_status(self, job_id: Optional[JobId]) -> CommandResult: ...
 
-    def job_state(self, job_id: JobId) -> Optional[str]:
+    def job_state(self, job_id: JobId) -> JobStateReading:
         """Estado crudo de Slurm (una palabra, vía `sacct --parsable2`),
         pensado para que el monitor lo interprete — no para mostrar al
-        usuario. None si no se pudo determinar."""
+        usuario.
+
+        Devuelve `JobStateReading` y no `Optional[str]` porque «no lo pude
+        determinar» son dos cosas distintas: que el cluster conteste y no
+        conozca el trabajo, y que no se haya podido preguntar. El monitor
+        actúa distinto en cada caso (ver `JobStateReading`)."""
         ...
 
     def job_exit_code(self, job_id: JobId) -> Optional[int]:
@@ -154,6 +160,22 @@ class ClusterGateway(Protocol):
         gigante (WAVECAR/CHGCAR pueden pesar GB). None = sin límite."""
         ...
 
+    def move_run(self, src: str, dest: str) -> CommandResult:
+        """Mueve una corrida de `.pending/` a su lugar definitivo. Dentro
+        del mismo filesystem es atómico: aparece entera o no aparece."""
+        ...
+
+    def discard_pending(self, path: str) -> CommandResult:
+        """Borra una corrida sin confirmar. Solo acepta rutas dentro de un
+        `.pending/`; cualquier otra cosa se rechaza sin ejecutar nada."""
+        ...
+
+    def sweep_pending(self, pending_base: str, older_than_minutes: int) -> CommandResult:
+        """Barre las corridas sin confirmar más viejas que N minutos. Cubre
+        lo que el borrado explícito no puede: confirmaciones vencidas sin
+        que nadie las toque, y reinicios entre la subida y el botón."""
+        ...
+
     def concat_files(self, sources: list[str], dest: str) -> CommandResult:
         """`cat` remoto de varios archivos en uno (armar POTCAR desde la
         biblioteca del cluster). Rutas ya validadas por el dominio."""
@@ -201,7 +223,24 @@ class JobTracker(Protocol):
 
     def update_status(self, job_id: str, owner_id: int, status: JobStatus) -> None: ...
 
-    def mark_notified(self, job_id: str, owner_id: int) -> None: ...
+    def mark_notified(self, job_id: str, owner_id: int) -> None:
+        """Deja de rastrear el trabajo.
+
+        OJO con cuándo llamarlo: solo después de que el aviso haya SALIDO
+        de verdad. Marcarlo antes convierte un envío fallido en un aviso
+        perdido para siempre, porque el trabajo ya no vuelve a aparecer en
+        `active_jobs()`."""
+        ...
+
+    def record_unreachable(self, job_id: str, owner_id: int) -> int:
+        """Anota una consulta en la que no se pudo leer el estado y
+        devuelve cuántas van SEGUIDAS. El monitor lo usa para dejar de
+        perseguir un trabajo del que ya no hay noticias."""
+        ...
+
+    def clear_unreachable(self, job_id: str, owner_id: int) -> None:
+        """Reinicia la racha: se pudo volver a leer el estado."""
+        ...
 
 
 class CalcRunRepository(Protocol):
