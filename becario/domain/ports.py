@@ -306,6 +306,17 @@ class RouterDecisionLog(Protocol):
         """Marca el desenlace: 'confirmed', 'cancelled' o 'error'."""
         ...
 
+    def add_failure(self, reason: str) -> None:
+        """Anota que el modelo NO llegó a pronunciarse (timeout, servidor
+        caído, error de la API).
+
+        Va aparte de `add` a propósito: no hubo decisión que registrar, y
+        contarlo como una ensuciaría las estadísticas del router con fallos
+        que no son suyos. Pero contarlo en algún lado hace falta — es lo
+        que separa «Ollama se cayó una vez» de «hace tres días que no
+        anda»."""
+        ...
+
 
 class ConfirmationStore(Protocol):
     """Guarda planes (uno o más pasos) pendientes de confirmación."""

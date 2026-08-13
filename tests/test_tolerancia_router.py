@@ -7,6 +7,7 @@ tests necesita cluster, ni Ollama, ni red — y esa es la razón de que puedan
 existir, y también de que no existieran: las fallas que cubren no se
 reproducen pidiéndole cosas a un sistema sano.
 """
+import sqlite3
 import httpx
 import pytest
 from becario.application.services import BecarioService, HELP_TEXT
@@ -101,6 +102,40 @@ class TestMensajeHonestoDelRouter:
             for reason in RouterFailureReason
         }
         assert len(set(textos.values())) == 3, "dos motivos comparten mensaje"
+
+    def test_el_fallo_queda_contado(self):
+        """«Cuántas veces falló el LLM» no se podía contestar: el fallo
+        salía por el log y ahí moría. Es la pregunta que separa «Ollama se
+        cayó una vez» de «hace tres días que no anda»."""
+        fallos = []
+
+        class LogQueCuenta:
+            def add(self, *a, **k): return 1
+            def set_outcome(self, *a, **k): ...
+            def add_failure(self, reason): fallos.append(reason)
+
+        service = _servicio_con_router(RouterCaido(RouterFailureReason.TIMEOUT))
+        service._decision_log = LogQueCuenta()
+
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert fallos == ["timeout"]
+
+    def test_si_la_contabilidad_falla_el_usuario_igual_recibe_su_mensaje(self):
+        class LogRoto:
+            def add(self, *a, **k): return 1
+            def set_outcome(self, *a, **k): ...
+            def add_failure(self, reason):
+                raise sqlite3.OperationalError("database is locked")
+
+        service = _servicio_con_router(
+            RouterCaido(RouterFailureReason.TIMEOUT, timeout_seconds=180)
+        )
+        service._decision_log = LogRoto()
+
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+
+        assert "Tiempo de espera agotado" in reply.text
 
     def test_un_fallo_del_modelo_no_ensucia_el_dataset_del_router(self):
         """No hubo decisión, así que no se registra ninguna: si se anotara

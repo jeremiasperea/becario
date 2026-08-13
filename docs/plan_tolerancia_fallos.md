@@ -220,13 +220,43 @@ Para un servicio que corre desatendido, el único síntoma es alguien diciendo
 «che, no me contesta» — que es, textualmente, lo que pasó el 18 de julio y el 2
 de agosto.
 
+**Cerrado.** Los cuatro reclamos, y **dos se habían resuelto solos** por el
+camino: el id de correlación lo trajo el error handler de la Etapa 0, y la
+distinción en los logs salió del tercer estado de la Etapa 2. Lo que faltaba:
+
+- **Contar los fallos del modelo.** Van a `fallos_router`, tabla propia. No
+  entran en `decisiones_router` por dos razones: no hubo decisión que
+  registrar —contarla ensuciaría las estadísticas del router con fallos que no
+  son suyos— y su columna `outcome` tiene un CHECK que SQLite no sabe alterar
+  sin recrear la tabla. Pagar una migración por esto era el precio equivocado.
+- **`scripts/salud.py`**, con código de salida para `cron`.
+
+Lo interesante del chequeo de salud es cuánto **no** hubo que construir. Casi
+todo lo que hace falta para saber si el bot está sano ya se venía registrando
+y no lo miraba nadie: el p90 de 118.1 s contra un timeout de 120 —el hallazgo
+que motivó la mitad de este plan— salió de una consulta a `decisiones_router`,
+una tabla que existía hacía meses. El script es esa consulta más tres sondas
+en vivo, con un umbral que avisa **mientras todavía hay margen** (al 75 % del
+timeout) en vez de cuando ya se perdieron pedidos.
+
+Dos bugs propios aparecieron al correrlo, los dos por el mismo motivo — un
+script que asume el mundo en el que fue escrito:
+
+- Reventaba con `no such column: poll_attempts` contra la base de producción.
+  Las columnas las agrega la migración suave al instanciar su repositorio, y
+  el chequeo abre la base en **solo lectura** sin pasar por ninguno: se puede
+  encontrar una base más vieja que el código. Un chequeo de salud que se cae
+  con una base vieja es lo contrario de lo que promete.
+- Silenciaba el logger `becario` **en el import**, y se llevó puesto el
+  logging de nueve tests que verifican mensajes. Lo detectó la suite. Un
+  import no debería cambiarle el estado global a nadie.
+
 ---
 
 ## Estado de ejecución
 
-Al 2026-08-11. La suite pasó de **972 a 1050 tests**, todo verde. **Las cuatro
-etapas están hechas**; queda pendiente T10 (observabilidad), que nunca tuvo
-etapa propia.
+Al 2026-08-13. La suite pasó de **972 a 1068 tests**, todo verde. **Las cuatro
+etapas están hechas**, y T10 —que nunca tuvo etapa propia— también.
 
 | Etapa | Estado | Qué se hizo |
 |---|---|---|
@@ -236,6 +266,7 @@ etapa propia.
 | 2 | ✅ | T5 completo: mensaje honesto, tercer estado y reintentos |
 | 3 | ✅ | T4 (acuse de entrega) y T6 (racha de consultas sin respuesta) |
 | 4 | ✅ | T7 (`.pending/` + `mv` + barrido) y T8 (cierre ordenado) |
+| — | ✅ | T10: contar los fallos del modelo y `scripts/salud.py` |
 
 ### Cómo quedó T7
 

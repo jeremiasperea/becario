@@ -259,6 +259,27 @@ class SQLiteRouterDecisionLog:
                 "CREATE INDEX IF NOT EXISTS idx_decisiones_router_outcome "
                 "ON decisiones_router (outcome, created_at)"
             )
+            # Los fallos van en su PROPIA tabla, no como un `outcome` más.
+            # Dos razones. Una: no hubo decisión que registrar — no hay pasos,
+            # no hay latencia comparable, y meterlos en `decisiones_router`
+            # ensuciaría las estadísticas del router con fallos que no son
+            # suyos. Dos: la columna `outcome` tiene un CHECK, y SQLite no
+            # sabe alterar un CHECK sin recrear la tabla — pagar una
+            # migración para esto sería el precio equivocado.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fallos_router (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    reason TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fallos_router_fecha "
+                "ON fallos_router (created_at)"
+            )
 
     def add(
         self, chat_id: int, user_id: int, text: str,
@@ -281,6 +302,31 @@ class SQLiteRouterDecisionLog:
                 "UPDATE decisiones_router SET outcome = ? WHERE id = ?",
                 (outcome, decision_id),
             )
+
+    def add_failure(self, reason: str) -> None:
+        """Anota que el modelo no llegó a pronunciarse.
+
+        Sin esto, «cuántas veces falló el LLM» no se podía contestar: el
+        fallo salía por el log y ahí moría. Y es la pregunta que separa
+        «Ollama se cayó una vez» de «hace tres días que no anda».
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO fallos_router (reason, model, created_at) VALUES (?, ?, ?)",
+                (reason, self._model, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def failures(self, since: Optional[str] = None) -> list[dict]:
+        """Fallos registrados, opcionalmente desde una fecha ISO. Como
+        `rows()`, no es parte del puerto: lo usa el chequeo de salud."""
+        sql = "SELECT * FROM fallos_router"
+        args: list = []
+        if since is not None:
+            sql += " WHERE created_at >= ?"
+            args.append(since)
+        sql += " ORDER BY id"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
     def rows(self, outcome: Optional[str] = None) -> list[dict]:
         """Decisiones registradas, opcionalmente filtradas por desenlace.

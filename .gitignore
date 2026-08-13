@@ -6,6 +6,10 @@ users.json
 # Base SQLite (historial, jobs)
 *.db
 becario.db
+# Los archivos WAL de SQLite: aparecen apenas alguien abre la base y
+# tienen los mismos datos que ella. `becario.db` estaba ignorado; estos no.
+becario.db-shm
+becario.db-wal
 # Estructuras atómicas generadas localmente
 /structures/
 
