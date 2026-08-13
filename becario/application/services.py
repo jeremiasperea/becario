@@ -817,7 +817,32 @@ class BecarioService:
             logger.info("Pedido pendiente vencido para user=%s", user_id)
             if edit.chat_id:
                 avisos.append((edit.chat_id, self._expired_pending_text(edit)))
+        self._purgar_confirmaciones_vencidas()
         return avisos
+
+    def _purgar_confirmaciones_vencidas(self) -> None:
+        """Saca de la base las confirmaciones que nadie tocó a tiempo.
+
+        `purge_expired()` estaba en el puerto y en las dos implementaciones
+        desde que las confirmaciones se persistieron, y **no lo llamaba
+        nadie**: una fila por cada tarjeta que alguien dejó vencer, para
+        siempre. Nada se rompía —`peek` y `pop` miran el TTL, así que una
+        vencida nunca se ejecuta— pero la tabla solo crecía.
+
+        Va acá y no en un barrido aparte porque el vencimiento de una
+        confirmación es exactamente lo mismo que ya se está atendiendo dos
+        líneas más arriba, con el mismo reloj y en el mismo tick.
+
+        Nunca interrumpe: si la base falla, el aviso de los pendientes —que
+        es lo que el usuario está esperando— tiene que salir igual.
+        """
+        try:
+            cuantas = self._confirmations.purge_expired()
+        except Exception:
+            logger.exception("No pude purgar las confirmaciones vencidas")
+            return
+        if cuantas:
+            logger.info("Confirmaciones vencidas purgadas: %s", cuantas)
 
     def _arm_pending_edit(
         self,

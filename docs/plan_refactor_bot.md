@@ -414,9 +414,10 @@ ahora lee el código de salida en vez de conjeturar.
 
 ### Fase 4 — Deuda medida (cuando haya lugar)
 
-- **D7:** el diagnóstico arranca por `sacct` (`ExitCode`, `DerivedExitCode`,
-  `Reason`) y traduce los códigos frecuentes; las hipótesis, si van, van
-  marcadas como hipótesis.
+- ~~**D7:** el diagnóstico arranca por `sacct`~~ — **hecho**, se adelantó en
+  la Fase 3 (ver el desvío ahí arriba): `_sin_salida` consulta
+  `job_exit_code` y traduce los códigos frecuentes en vez de conjeturar
+  desde la ausencia de archivos.
 - Unificar el flag `awaiting_params` entre el primer y el segundo ✏️
   (nota de CV24). Cosmético, pero es la clase de incoherencia que después
   hace dudar de un test.
