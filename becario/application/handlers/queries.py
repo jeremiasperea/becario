@@ -180,7 +180,14 @@ def _corridas_previas(
             # el default de 5 — cinco filas de historial no alcanzan para
             # cubrir las corridas de un material trabajado.
             for h in svc._history.search(HistoryFilter(owner_id=owner_id, limit=50)):
-                estados[str(h.get("job_id"))] = str(h.get("estado") or "")
+                # `search` devuelve `ORDER BY fecha DESC`, así que la PRIMERA
+                # fila de cada trabajo es su estado más reciente y las
+                # siguientes son su pasado. Con un `=` en vez de
+                # `setdefault` ganaba la más vieja: un trabajo que quedó en
+                # 'falló' volvía como 'enviado' y la regla más importante
+                # —no encadenar sobre una corrida rota— no disparaba nunca,
+                # sin que nada avisara.
+                estados.setdefault(str(h.get("job_id")), str(h.get("estado") or ""))
         except Exception:  # el historial es contexto, no puede tirar la consulta
             logger.warning("no pude leer el historial para las sugerencias", exc_info=True)
 

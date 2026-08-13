@@ -208,3 +208,24 @@ class TestElHandlerArmaElContexto:
     def test_la_intencion_esta_registrada(self, env):
         service, *_ = env
         assert Intent.SUGGEST in service._intent_handlers()
+
+    def test_gana_el_estado_MAS_RECIENTE_del_trabajo(self, env):
+        """El historial tiene una fila por transición ('enviado', y después
+        el desenlace) y `search` las devuelve `ORDER BY fecha DESC`. Quedarse
+        con la última iterada es quedarse con la MÁS VIEJA: un trabajo que
+        falló volvía como 'enviado' y la regla de no encadenar sobre una
+        corrida rota no disparaba nunca."""
+        service, _, _, history, *_ = env
+        service._calc_runs.add(
+            owner_id=ALICE.telegram_user_id, job_id="11", job_name="Zr_relajacion",
+            fingerprint=_huella(), run_dir="/r",
+        )
+        history.rows = [                       # como los devuelve SQLite:
+            {"job_id": "11", "estado": "falló"},    # más reciente primero
+            {"job_id": "11", "estado": "enviado"},
+        ]
+
+        reply = suggest(service, _ctx(service), {"formula": "Zr"})
+
+        assert "«falló»" in reply.text
+        assert "convergencia de ENCUT" not in reply.text
