@@ -572,6 +572,34 @@ class OllamaRouter:
         )
 
     def _chat_once(self, system_prompt: str, user_text: str, schema: dict) -> str:
+        """El POST crudo a `/api/chat`.
+
+        Sobre `think: False`: este router clasifica y extrae, nunca redacta.
+        Un modelo de razonamiento que gasta el presupuesto en su bloque de
+        *thinking* antes de emitir el JSON no está pensando mejor la
+        respuesta: está haciendo esperar al usuario de Telegram por prosa
+        que nadie lee. Por eso se apaga siempre, no por modelo.
+
+        Va hardcodeado y no como variable de entorno a propósito. ADR-0002
+        se ganó que cambiar de modelo sea cambiar `BECARIO_OLLAMA_MODEL` y
+        nada más; un segundo flag que hubiera que mantener en sincronía con
+        el primero devuelve el acople que ese ADR sacó.
+
+        Medido contra Ollama 0.31.2, mismo pedido y mismo schema, 3
+        corridas de cada lado y las dos con el modelo ya cargado:
+
+        - `qwen3:8b` (razonamiento) SIN el flag: 44,0 / 43,9 / 40,7 s, con
+          ~1250 caracteres de bloque de thinking cada vez. CON el flag:
+          3,3 / 3,2 / 3,2 s y thinking vacío. **~13× más rápido.**
+        - `qwen2.5-coder:14b` (el de producción, sin soporte de thinking):
+          Ollama acepta el campo y lo ignora. No hay regresión — era el
+          riesgo que podía tumbar el cambio, y se descartó antes de
+          escribirlo.
+
+        Ojo con `eval_count`/`eval_duration` para medir esto: en 0.31.2 NO
+        cuentan los tokens de thinking, así que dan casi idénticos con y
+        sin el flag. El costo real solo se ve en `total_duration`.
+        """
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",
@@ -583,6 +611,7 @@ class OllamaRouter:
                     ],
                     "stream": False,
                     "format": schema,  # <- structured output
+                    "think": False,  # <- ver docstring: no queremos razonamiento
                     "options": {"temperature": 0.0},
                 },
                 timeout=self._timeout,

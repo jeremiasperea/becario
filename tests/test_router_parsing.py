@@ -1,6 +1,8 @@
 """Tests del parseo de la salida del LLM con structured outputs."""
 import json
 
+import httpx
+
 from becario.domain.models import Intent, Plan, PlanStep
 from becario.infrastructure.ollama_router import (
     OllamaRouter,
@@ -190,6 +192,58 @@ class TestParseLLMOutputComposition:
         raw = '{"steps": [' + ",".join([step] * 6) + "]}"
         plan = parse(raw)
         assert plan.single_step.action is Intent.UNKNOWN
+
+
+class TestPayloadDeChat:
+    """Qué viaja en el POST a `/api/chat`, además del schema.
+
+    El `think: False` está justificado en el docstring de `_chat_once` con
+    una medición, pero un docstring no impide que alguien borre el campo:
+    el efecto de perderlo no es un test rojo sino un bot que tarda ~13×
+    más SOLO con modelos de razonamiento, que es exactamente el tipo de
+    regresión que nadie atribuye al commit que la causó.
+    """
+
+    def _payloads(self, monkeypatch, respuesta: str) -> list[dict]:
+        capturados: list[dict] = []
+
+        class _Respuesta:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"message": {"content": respuesta}}
+
+        def fake_post(url, *, json, timeout):  # noqa: A002 - firma de httpx
+            capturados.append(json)
+            return _Respuesta()
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        return capturados
+
+    def test_el_router_pide_no_razonar(self, monkeypatch):
+        capturados = self._payloads(
+            monkeypatch,
+            json.dumps({"steps": [{"action": "crear_directorio",
+                                   "params": {"ruta": "pruebas"}}]}),
+        )
+
+        OllamaRouter(model="qwen3:8b").route("crea una carpeta pruebas")
+
+        assert capturados, "el router no llegó a hacer el POST"
+        for payload in capturados:
+            assert payload["think"] is False
+
+    def test_tambien_en_la_segunda_pasada(self, monkeypatch):
+        # `extract_structure` es otra llamada al modelo, con otro prompt y
+        # otro schema. Si el flag viviera solo en el camino de `route`, el
+        # backfill del PR #24 seguiría pagando el bloque de thinking.
+        capturados = self._payloads(monkeypatch, json.dumps({"formula": "W"}))
+
+        OllamaRouter(model="qwen3:8b").extract_structure("bulk de W bcc")
+
+        assert capturados, "extract_structure no llegó a hacer el POST"
+        assert all(payload["think"] is False for payload in capturados)
 
 
 class TestSchema:
