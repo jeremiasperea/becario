@@ -151,8 +151,18 @@ class TestConfirmationStore:
         assert store.status(token) == "vencido"
 
 
-def _plan(requester_id: int = 1) -> PendingPlan:
-    return PendingPlan(chat_id=1, requester_id=requester_id, steps=[_action(requester_id)])
+def _plan(requester_id: int = 1, created_at: float | None = None) -> PendingPlan:
+    """`created_at` explícito para los tests de vencimiento.
+
+    Sin esto, un test que necesita que algo venza DESPUES de otra cosa
+    termina corriéndole una carrera al reloj; ver la nota de
+    `test_purge_borra_los_vencidos_y_deja_las_lapidas`.
+    """
+    plan = PendingPlan(chat_id=1, requester_id=requester_id,
+                       steps=[_action(requester_id)])
+    if created_at is not None:
+        plan.created_at = created_at
+    return plan
 
 
 class TestConfirmationStoreWithPendingPlan:
@@ -269,12 +279,24 @@ class TestSQLiteConfirmationStore:
         assert store.status(token) == "vencido"
 
     def test_purge_borra_los_vencidos_y_deja_las_lapidas(self, tmp_path):
-        store = self._store(tmp_path, ttl=0.01)
+        """TTL holgado y vencidos que nacen vencidos, en vez de TTL de 10 ms
+        más un sleep.
+
+        La versión anterior era intermitente y el modo de fallo enseña algo:
+        entre el `put` y el `pop` del consumido hay dos transacciones SQLite
+        contra un archivo real, y con la máquina cargada eso pasaba los
+        10 ms de TTL. El `pop` encontraba el plan YA vencido y devolvía None
+        SIN dejar lápida —a propósito, ver el docstring de `pop`—, así que
+        esa fila seguía contando como vencida-sin-consumir: la purga daba 3
+        y el `status` decía "vencido". El test le corría una carrera a su
+        propio setup.
+        """
+        store = self._store(tmp_path, ttl=60.0)
         consumido = store.put(_plan())
         store.pop(consumido)
-        store.put(_plan())
-        store.put(_plan())
-        time.sleep(0.05)
+        nacio_vencido = time.time() - 3600.0
+        store.put(_plan(created_at=nacio_vencido))
+        store.put(_plan(created_at=nacio_vencido))
 
         assert store.purge_expired() == 2  # solo los vencidos sin consumir
         assert store.status(consumido) == "consumido"
