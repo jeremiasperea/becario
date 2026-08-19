@@ -332,18 +332,44 @@ class TestDatosInvalidosNoLleganAlArchivo:
 
         assert exc.value.code == 1
 
-    def test_un_ssh_user_vacio_no_se_valida_sino_que_se_vuelve_a_preguntar(
+    @pytest.mark.parametrize(
+        "flag, kwargs",
+        [
+            ("--ssh-user", {"ssh_user": ""}),
+            ("--ssh-key", {"ssh_key": ""}),
+            ("--ssh-user", {"ssh_user": "   "}),
+        ],
+    )
+    def test_un_flag_pasado_vacio_falla_en_vez_de_ponerse_a_preguntar(
+        self, tmp_path, capsys, flag, kwargs
+    ):
+        """Un flag vacío es un error, no un dato ausente.
+
+        `argparse` ya distingue las dos cosas —`None` es «no lo pasaron»,
+        `""` es «lo pasaron vacío»— y el CLI las confundía: caía al modo
+        interactivo y pedía el dato por teclado. Para una persona eso apenas
+        sorprende; para el cron que registra usuarios con una variable de
+        entorno sin expandir es un proceso colgado esperando stdin, que es
+        mucho peor que un error con código 1.
+        """
+        path = tmp_path / "users.json"
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_add(_add_args(path, **kwargs))
+
+        assert exc.value.code == 1
+        assert flag in capsys.readouterr().out
+        assert not path.exists()
+
+    def test_omitir_el_flag_sigue_preguntando_por_teclado(
         self, tmp_path, monkeypatch
     ):
-        """Comportamiento actual, fijado porque sorprende: `--ssh-user ""`
-        no es un dato inválido para el CLI, es un dato ausente. Cae al modo
-        interactivo y pide el usuario por teclado, así que un script que lo
-        pase vacío se queda esperando stdin en vez de fallar con código 1.
-        """
+        """La contracara: rechazar el vacío no puede romper el modo
+        interactivo, que es el que usa una persona dándose de alta."""
         path = tmp_path / "users.json"
         _teclado(monkeypatch, "alice", "")  # usuario SSH y host
 
-        cmd_add(_add_args(path, ssh_user=""))
+        cmd_add(_add_args(path, ssh_user=None))
 
         assert JSONUserRegistry(str(path)).get_identity(111).ssh_user == "alice"
 
@@ -714,3 +740,154 @@ class TestMainDesdeLaLineaDeComandos:
         main()
 
         assert capturado["file"] == "users.json"
+
+
+# ---------------------------------------------------------------------------
+# Regresiones de los defectos que encontró esta suite
+# ---------------------------------------------------------------------------
+
+
+class TestQuitarNoEscribeSiNoQuito:
+    """`cmd_remove` guardaba SIEMPRE, hubiera borrado a alguien o no.
+
+    Parecía inofensivo porque reescribir el mismo contenido no se nota. No
+    lo era sobre un archivo que no existe: `_load` devuelve `{"users": []}`
+    y el guardado lo materializaba, así que un `--file` con un dedazo dejaba
+    un roster vacío NUEVO en disco y quien lo corrió creía haber dado de
+    baja a alguien. Ninguno de los tests de borrado lo veía porque todos
+    partían de un roster que ya existía.
+    """
+
+    def test_borrar_sobre_un_archivo_que_no_existe_no_lo_crea(self, tmp_path):
+        path = tmp_path / "users.json"
+
+        cmd_remove(argparse.Namespace(file=str(path), telegram_id=111))
+
+        assert not path.exists(), "creó un roster vacío donde no había ninguno"
+
+    def test_un_dedazo_en_la_ruta_no_deja_un_roster_fantasma(self, tmp_path, capsys):
+        # El caso realista: el roster bueno está en `users.json` y alguien
+        # escribe `user.json`. Ni se toca el bueno ni aparece el malo.
+        bueno = tmp_path / "users.json"
+        _roster(bueno, _entrada(111, "alice"))
+        antes = bueno.read_bytes()
+
+        cmd_remove(argparse.Namespace(file=str(tmp_path / "user.json"), telegram_id=111))
+
+        assert not (tmp_path / "user.json").exists()
+        assert bueno.read_bytes() == antes
+        assert "No encontrado" in capsys.readouterr().out
+
+    def test_no_toca_el_archivo_cuando_no_encontro_a_nadie(self, tmp_path):
+        """No reescribir también deja la fecha de modificación quieta.
+
+        Sobre un archivo de control de acceso, un `mtime` que se mueve sin
+        que haya cambiado nada es ruido para cualquiera que audite o
+        monitoree el archivo."""
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"))
+        mtime_antes = path.stat().st_mtime_ns
+
+        cmd_remove(argparse.Namespace(file=str(path), telegram_id=999))
+
+        assert path.stat().st_mtime_ns == mtime_antes
+
+    def test_cuando_si_borra_escribe(self, tmp_path):
+        # La contracara obvia, para que "no escribir" no se vuelva "no hacer".
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"), _entrada(222, "bob"))
+
+        cmd_remove(argparse.Namespace(file=str(path), telegram_id=111))
+
+        assert _ids(path) == [222]
+
+
+class TestElCLIAdministraLoQueElBotAcepta:
+    """La asimetría que hacía inservible al CLI justo cuando hacía falta.
+
+    `JSONUserRegistry.reload()` hace `raw.get("users", [])` y saltea las
+    entradas inválidas logueando el error: el bot arranca igual y reporta
+    «nadie registrado». El CLI hacía `data["users"]` y `u["telegram_user_id"]`
+    directo, así que sobre el MISMO archivo moría con un `KeyError` pelado.
+    O sea: el bot te decía que el roster estaba mal y la herramienta para
+    arreglarlo era la única que no lo podía abrir.
+    """
+
+    def test_un_json_sin_la_clave_users_se_puede_dar_de_alta(self, tmp_path):
+        path = tmp_path / "users.json"
+        path.write_text("{}", encoding="utf-8")
+
+        cmd_add(_add_args(path))
+
+        assert JSONUserRegistry(str(path)).get_identity(111).ssh_user == "alice"
+
+    def test_un_json_sin_la_clave_users_se_puede_listar(self, tmp_path, capsys):
+        path = tmp_path / "users.json"
+        path.write_text("{}", encoding="utf-8")
+
+        cmd_list(argparse.Namespace(file=str(path)))
+
+        assert "Roster vacío" in capsys.readouterr().out
+
+    def test_una_entrada_incompleta_no_impide_dar_de_alta_a_otro(self, tmp_path):
+        """Y la entrada rota NO se borra en el camino.
+
+        Borrar en silencio algo que no entendemos es peor que dejarlo: nadie
+        pidió esa baja, y el archivo es el único registro de que esa persona
+        alguna vez estuvo."""
+        path = tmp_path / "users.json"
+        _roster(path, {"ssh_user": "sin_id"}, _entrada(222, "bob"))
+
+        cmd_add(_add_args(path, telegram_id=333, ssh_user="carol"))
+
+        entradas = json.loads(path.read_text())["users"]
+        assert {"ssh_user": "sin_id"} in entradas
+        assert JSONUserRegistry(str(path)).get_identity(333).ssh_user == "carol"
+
+    def test_una_entrada_incompleta_no_impide_borrar_a_otro(self, tmp_path):
+        path = tmp_path / "users.json"
+        _roster(path, {"ssh_user": "sin_id"}, _entrada(222, "bob"))
+
+        cmd_remove(argparse.Namespace(file=str(path), telegram_id=222))
+
+        entradas = json.loads(path.read_text())["users"]
+        assert entradas == [{"ssh_user": "sin_id"}]
+
+    def test_listar_muestra_la_entrada_rota_marcada_en_vez_de_explotar(
+        self, tmp_path, capsys
+    ):
+        """`list` es la herramienta con la que alguien va a diagnosticar por
+        qué el bot no lo reconoce: tiene que poder MOSTRAR el problema."""
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"), {"display_name": "Sin datos"})
+
+        cmd_list(argparse.Namespace(file=str(path)))
+
+        salida = capsys.readouterr().out
+        assert "alice" in salida
+        assert "entrada inválida" in salida
+        assert "telegram_user_id" in salida
+
+    def test_una_clave_users_que_no_es_lista_falla_limpio(self, tmp_path, capsys):
+        """Acá sí se corta, y a propósito: normalizar a `[]` en silencio
+        perdería lo que hubiera adentro, que es el mismo riesgo que motiva
+        que un JSON roto explote."""
+        path = tmp_path / "users.json"
+        path.write_text('{"users": {"111": "alice"}}', encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_add(_add_args(path))
+
+        assert exc.value.code == 1
+        assert "no es una lista" in capsys.readouterr().out
+        assert path.read_text(encoding="utf-8") == '{"users": {"111": "alice"}}'
+
+    def test_un_json_que_no_es_objeto_falla_limpio(self, tmp_path, capsys):
+        path = tmp_path / "users.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_list(argparse.Namespace(file=str(path)))
+
+        assert exc.value.code == 1
+        assert "no es un objeto JSON" in capsys.readouterr().out
