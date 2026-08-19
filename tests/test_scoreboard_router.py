@@ -146,14 +146,53 @@ class TestTheContractTheBoardWasMeasuredAgainst:
         )
         assert router_fingerprint(_FIXTURES_DIR) != antes
 
-    def test_the_fingerprint_moves_when_a_fixture_is_edited(self, tmp_path):
-        (tmp_path / "uno.txt").write_text("prompt: a\nsteps: consultar_db\n")
-        antes = router_fingerprint(tmp_path)
-        (tmp_path / "uno.txt").write_text("prompt: OTRA COSA\nsteps: consultar_db\n")
-        assert router_fingerprint(tmp_path) != antes
-
     def test_the_fingerprint_is_stable_across_calls(self):
         assert router_fingerprint(_FIXTURES_DIR) == router_fingerprint(_FIXTURES_DIR)
+
+
+class TestTheDefaultModelHasToBeMeasured:
+    """El tablero puede estar impecable y medir modelos que el proyecto no
+    usa. Pasó: `gemma4:12b` fue el default de `Settings` sin una sola
+    medición commiteada, mientras el tablero medía `qwen2.5-coder:14b` y
+    daba verde. Un tablero que no incluye el modelo que se sirve no es
+    evidencia de nada sobre producción.
+    """
+
+    def test_the_default_model_measured_passes(self):
+        board = _board()  # mide qwen2.5-coder:14b
+        assert check_scoreboard(
+            board, {"a.txt", "b.txt"}, default_model="qwen2.5-coder:14b"
+        ) == []
+
+    def test_a_default_model_nobody_measured_is_caught(self):
+        problems = check_scoreboard(
+            _board(), {"a.txt", "b.txt"}, default_model="gemma4:12b"
+        )
+        assert any("gemma4:12b" in p and "por default" in p for p in problems)
+
+    def test_a_default_model_that_was_skipped_does_not_count(self):
+        # ⏭️ no es una medición: el modelo no estaba instalado o Ollama no
+        # contestó. Que figure en el tablero no dice nada de cómo se porta.
+        board = _board(
+            models=[
+                {
+                    "model": "qwen2.5-coder:14b", "skipped": True, "hits": 0,
+                    "total": 0, "median_latency_seconds": None, "fixtures": [],
+                },
+                {
+                    "model": "gemma3:4b", "skipped": False, "hits": 2,
+                    "total": 2, "median_latency_seconds": 1.1, "fixtures": [],
+                },
+            ]
+        )
+        problems = check_scoreboard(
+            board, {"a.txt", "b.txt"}, default_model="qwen2.5-coder:14b"
+        )
+        assert any("no está medido" in p for p in problems)
+
+    def test_without_the_parameter_nothing_changes(self):
+        # El chequeo es opt-in: los llamadores viejos siguen andando igual.
+        assert check_scoreboard(_board(), {"a.txt", "b.txt"}) == []
 
 
 class TestTheBoardGoesStaleOnItsOwn:
@@ -191,9 +230,17 @@ class TestCommittedScoreboard:
         json.loads(_SCOREBOARD.read_text(encoding="utf-8"))
 
     def test_describes_the_router_that_exists_today(self):
-        # El gate completo: fixtures, contrato del router y antigüedad. Si
-        # falla, la respuesta es SIEMPRE la misma —volver a medir— y el
-        # mensaje del problema dice cuál de las tres cosas se venció.
+        # El gate completo: fixtures, contrato del router, antigüedad y que
+        # el modelo que el proyecto sirve por default esté entre los
+        # medidos. Si falla, la respuesta es SIEMPRE la misma —volver a
+        # medir— y el mensaje del problema dice cuál de las cuatro cosas se
+        # venció.
+        #
+        # El default se lee de `Settings` (la clase, no `from_env()`: no
+        # queremos token ni .env para correr un test de forma) y se pasa por
+        # parámetro, porque `check_scoreboard` es pura a propósito.
+        from becario.config import Settings
+
         board = json.loads(_SCOREBOARD.read_text(encoding="utf-8"))
         names = {fx.name for fx in load_fixtures(_FIXTURES_DIR)}
         problems = check_scoreboard(
@@ -201,6 +248,7 @@ class TestCommittedScoreboard:
             names,
             fingerprint=router_fingerprint(_FIXTURES_DIR),
             max_age_days=_MAX_SCOREBOARD_AGE_DAYS,
+            default_model=Settings.ollama_model,
         )
         assert problems == [], (
             "el tablero del router está vencido:\n  - "

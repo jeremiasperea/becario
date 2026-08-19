@@ -492,7 +492,9 @@ class OllamaRouter:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "gemma4:12b",
+        # Mismo default que `Settings.ollama_model` (becario/config.py): el
+        # único modelo con medición commiteada en docs/scoreboard_router.json.
+        model: str = "qwen2.5-coder:14b",
         timeout: float = 180.0,  # ver el porqué del número en `config.Settings`
     ) -> None:
         self._base_url = base_url.rstrip("/")

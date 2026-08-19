@@ -91,7 +91,11 @@ class Settings:
     ollama_url: str = "http://localhost:11434"
     # El default apunta a la máquina de producción del bot; en desarrollo
     # se pisa con BECARIO_OLLAMA_MODEL en .env (p. ej. gemma3:4b en CPU).
-    ollama_model: str = "gemma4:12b"
+    # Es el ÚNICO modelo con medición commiteada (docs/scoreboard_router.json:
+    # 8/8 fixtures, mediana 19.6 s por llamada). El default anterior
+    # (`gemma4:12b`) nunca tuvo una corrida del harness en el repo, así que
+    # el proyecto servía por default un modelo del que no había evidencia.
+    ollama_model: str = "qwen2.5-coder:14b"
     # 180 y no 120 por medición, no por prudencia: sobre las 44 decisiones de
     # `decisiones_router` en la bitácora, la mediana es 30 s pero el p90 es
     # 118.1 s — o sea que el sistema venía operando a dos segundos de su
@@ -138,7 +142,9 @@ class Settings:
             ssh_port=_int_env("BECARIO_SSH_PORT", "22"),
             users_file=os.environ.get("BECARIO_USERS_FILE", "users.json"),
             ollama_url=os.environ.get("BECARIO_OLLAMA_URL", "http://localhost:11434"),
-            ollama_model=os.environ.get("BECARIO_OLLAMA_MODEL", "gemma4:12b"),
+            ollama_model=os.environ.get(
+                "BECARIO_OLLAMA_MODEL", "qwen2.5-coder:14b"
+            ),
             ollama_timeout_seconds=_float_env("BECARIO_OLLAMA_TIMEOUT", "180"),
             db_path=os.environ.get("BECARIO_DB_PATH", "becario.db"),
             structures_dir=os.environ.get("BECARIO_STRUCTURES_DIR", "./structures"),

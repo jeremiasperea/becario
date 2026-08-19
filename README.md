@@ -323,20 +323,23 @@ los runners no tienen ni GPU ni los modelos instalados.
 
 Lo que CI sí hace es **negarse a creerle a una medición vencida**.
 `tests/test_scoreboard_router.py` falla si `docs/scoreboard_router.json` dejó
-de describir el router de hoy, por cualquiera de estas tres vías:
+de describir el router de hoy, por cualquiera de estas cuatro vías:
 
 | se venció porque… | lo detecta |
 |---|---|
 | apareció o desapareció un fixture | la lista de fixtures |
-| cambió el schema, un prompt o el texto de un fixture | `router_fingerprint`, un hash del contrato con el modelo |
+| cambió el schema, un prompt, una opción del pedido o el texto de un fixture | `router_fingerprint`, un hash del contrato con el modelo |
 | pasaron más de 30 días | `generated_at` |
+| el modelo que se sirve por default no está entre los medidos | `default_model`, resuelto desde `Settings` |
 
 Los dos primeros cubren el código; el tercero es el único remedio contra que
 el modelo cambie de comportamiento **sin que se mueva una línea**. Eso pasó: un
 fixture pasó de fallar de una forma a fallar de otra entre dos días, y el
-tablero commiteado siguió pareciendo válido. Cuando el gate falla, la
-respuesta es siempre la misma —volver a correr el harness, ~11 minutos con los
-dos modelos— y el mensaje del test dice cuál de las tres cosas se venció.
+tablero commiteado siguió pareciendo válido. El cuarto también pasó: el
+default de `Settings` fue `gemma4:12b` sin una sola medición commiteada,
+mientras el tablero medía otro modelo y daba verde. Cuando el gate falla, la
+respuesta es siempre la misma —volver a correr el harness— y el mensaje del
+test dice cuál de las cuatro cosas se venció.
 
 Para ampliar el set con casos reales, las decisiones que un humano confirmó en
 producción se vuelven fixtures:

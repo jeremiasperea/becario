@@ -11,10 +11,10 @@ sus ayudantes) SÍ son puras y SÍ se testean en
 `tests/test_live_router_fixtures.py`, sin red.
 
 `gemma3:4b` es el peor caso (HC4 del diseño: banco de pruebas, modelo
-más chico); `gemma4:12b` es el default de producción y no debe
-regresar. Si un modelo falla un fixture, el harness lo reporta y termina
-con exit code 1 — pensado para correrlo a mano antes de tocar el prompt
-o el schema del router.
+más chico); `qwen2.5-coder:14b` es el default de producción (`config.py`)
+y no debe regresar. Si un modelo falla un fixture, el harness lo reporta
+y termina con exit code 1 — pensado para correrlo a mano antes de tocar
+el prompt o el schema del router.
 
 Cada fixture se evalúa por MAYORÍA sobre `--attempts` intentos (default
 3, impar). Motivo (AR-2 / ADR-0006): `gemma4:12b` sobre CPU es
@@ -74,12 +74,13 @@ from becario.infrastructure.ollama_router import (  # noqa: E402
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "router"
 # gemma3:4b primero: es el peor caso (HC4) y el que gatea el presupuesto
-# de schema/prompt; gemma4:12b sigue siendo el default de `config.py` y no
-# debe regresar, aunque esté medido en 4/6 a 77.9s.
-# qwen2.5:7b es la línea base rápida (6/6 a 5.4s) y qwen2.5-coder:14b es el
-# que sirve producción hoy: ganó el benchmark de 13 casos del 2026-08-01 por
-# inventar menos. gemma4:e4b salió de la lista (6/6 pero 27s, superado por
-# los dos qwen).
+# de schema/prompt. qwen2.5:7b es la línea base rápida (6/6 a 5.4s) y
+# qwen2.5-coder:14b es el default de `config.py` y el que sirve producción
+# hoy: ganó el benchmark de 13 casos del 2026-08-01 por inventar menos, y es
+# el único con medición commiteada en docs/scoreboard_router.json.
+# gemma4:12b queda en la lista como comparación histórica (4/6 a 77.9s: fue
+# default sin que nadie lo midiera nunca). gemma4:e4b salió (6/6 pero 27s,
+# superado por los dos qwen).
 _DEFAULT_MODELS = ("gemma3:4b", "qwen2.5:7b", "qwen2.5-coder:14b", "gemma4:12b")
 
 
@@ -213,7 +214,8 @@ def _fallos_de_infraestructura(scores) -> int:
 
 def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     """Huella de TODO lo que decide qué mide el tablero: el schema que viaja
-    a Ollama, los cuatro prompts del router y el contenido de los fixtures.
+    a Ollama, las opciones del pedido, los cuatro prompts del router y el
+    contenido de los fixtures.
 
     Es la pieza que faltaba para cerrar el agujero. `check_scoreboard` ya
     detectaba que apareciera o desapareciera un fixture, pero no que
@@ -226,7 +228,8 @@ def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     Se hashea el CONTENIDO de los fixtures, no solo sus nombres: editarle
     el `prompt` a un fixture cambia lo que se está midiendo tanto como
     agregarlo.
-    """
+
+"""
     from becario.infrastructure import ollama_router as router_mod
 
     partes = [compact_json_schema_json(router_mod.RouterDecision)]
@@ -282,6 +285,7 @@ def check_scoreboard(
     *,
     fingerprint: Optional[str] = None,
     max_age_days: Optional[float] = None,
+    default_model: Optional[str] = None,
 ) -> list[str]:
     """Los problemas de un scoreboard commiteado; lista vacía = está al día.
 
@@ -291,7 +295,7 @@ def check_scoreboard(
     por 3 intentos son ~117 minutos, y los runners no tienen ni GPU ni el
     modelo instalado.
 
-    Tres formas de quedar vencido, y las tres se chequean acá:
+    Cuatro formas de quedar vencido, y las cuatro se chequean acá:
 
     1. **Cambió el set de fixtures.** Alguien agrega uno y no vuelve a
        correr el harness: el tablero deja de describir lo que hay en
@@ -303,6 +307,16 @@ def check_scoreboard(
     3. **Pasó el tiempo** (`max_age_days`): el código puede no haberse
        movido y el modelo comportarse distinto igual. Contra eso no hay
        hash que valga, solo volver a medir.
+    4. **El modelo que se sirve no es ninguno de los medidos**
+       (`default_model`): el tablero puede estar impecable y describir
+       modelos que el proyecto no usa. Pasó: `gemma4:12b` fue el default de
+       `Settings` sin una sola medición commiteada, mientras el tablero
+       medía otro modelo y daba verde.
+
+    `default_model` llega por parámetro y no se lee de `Settings` acá
+    adentro a propósito: esta función es pura —recibe los datos, no sale a
+    buscarlos— y así se puede testear sin entorno ni .env. Lo resuelve
+    quien la llama.
     """
     problems: list[str] = []
     if not isinstance(board, dict):
@@ -377,6 +391,23 @@ def check_scoreboard(
             "todos los modelos salteados: el scoreboard no mide nada "
             "(¿estaba Ollama abajo?)"
         )
+
+    if default_model is not None:
+        medidos = sorted(
+            str(entry.get("model"))
+            for entry in models
+            if isinstance(entry, dict) and not entry.get("skipped")
+        )
+        if default_model not in medidos:
+            problems.append(
+                f"el modelo que el proyecto usa por default ({default_model}) "
+                f"no está medido en el tablero (medidos: {medidos or 'ninguno'}): "
+                f"B.E.C.A.R.I.O. estaría sirviendo producción con un modelo "
+                f"del que no hay evidencia. Medilo con:\n"
+                f"  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
+                f"scripts/live_router_check.py --json docs/scoreboard_router.json "
+                f"--models {default_model}"
+            )
     return problems
 
 
