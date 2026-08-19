@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -348,7 +349,23 @@ class InMemoryConfirmationStore:
 
     Duck-typed: solo usa `.token`/`.expired()` de lo que guarda, así que
     aceptar `PendingPlan` (en vez del `PendingAction` de un solo paso que
-    guardaba antes) no cambió el comportamiento, solo el tipo declarado."""
+    guardaba antes) no cambió el comportamiento, solo el tipo declarado.
+
+    **Guarda y devuelve COPIAS, y eso no es paranoia.** `main.py` cablea el
+    store de SQLite: esta implementación ya no la usa nadie en producción y
+    sobrevive como doble de media suite. El de disco serializa a JSON, así
+    que lo que devuelve es siempre un objeto nuevo y mutarlo no toca lo
+    guardado. Mientras esta clase devolvía la referencia viva, las dos se
+    comportaban distinto ante la misma llamada: un test que mutara un plan
+    peekeado pasaba con el doble y fallaba contra el real. Es exactamente
+    la forma de los tres bugs que documenta `tests/test_contrato_de_dobles.py`,
+    y la única razón de que este fuera el cuarto es que ningún call site de
+    producción muta todavía (copian con `dict(...)`).
+
+    El costo es despreciable: un `PendingPlan` es una dataclass de datos
+    JSON-ables —por eso el de disco puede serializarla— y se copia una vez
+    por toque de botón.
+    """
 
     def __init__(self, ttl_seconds: float = 600.0) -> None:
         self._ttl = ttl_seconds
@@ -359,8 +376,11 @@ class InMemoryConfirmationStore:
         self._lock = threading.Lock()
 
     def put(self, plan: PendingPlan) -> str:
+        # Se copia AL GUARDAR además de al leer: quien llama sigue teniendo
+        # su `plan` en la mano para armar el mensaje de confirmación, y lo
+        # que le haga después no puede alterar lo que se va a ejecutar.
         with self._lock:
-            self._items[plan.token] = plan
+            self._items[plan.token] = deepcopy(plan)
         return plan.token
 
     def peek(self, token: str) -> Optional[PendingPlan]:
@@ -368,7 +388,7 @@ class InMemoryConfirmationStore:
             plan = self._items.get(token)
         if plan is None or plan.expired(self._ttl):
             return None
-        return plan
+        return deepcopy(plan)
 
     def status(self, token: str) -> str:
         """Ver el puerto. Cuatro respuestas, no tres: hay tokens que este
@@ -402,7 +422,10 @@ class InMemoryConfirmationStore:
             # Lápida acotada: solo para poder distinguir después "ya se
             # usó" de "no lo conozco". No guarda el plan, solo el id.
             self._consumed.append(token)
-        return plan
+        # Se copia igual que en `peek`, aunque acá ya no quede nada adentro:
+        # el contrato es "lo que devolvés es tuyo", y que dependa de si el
+        # plan seguía o no en el diccionario lo volvería impredecible.
+        return deepcopy(plan)
 
     def purge_expired(self) -> int:
         with self._lock:

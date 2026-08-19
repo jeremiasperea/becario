@@ -319,7 +319,22 @@ class RouterDecisionLog(Protocol):
 
 
 class ConfirmationStore(Protocol):
-    """Guarda planes (uno o más pasos) pendientes de confirmación."""
+    """Guarda planes (uno o más pasos) pendientes de confirmación.
+
+    **Lo guardado y lo devuelto son fotos, no referencias.** Mutar el plan
+    después de `put`, o el que devuelven `peek`/`pop`, no cambia nada de lo
+    que el store tiene adentro. La implementación que corre en producción
+    persiste en SQLite y no podría prometer otra cosa: lo que devuelve sale
+    de deserializar un archivo.
+
+    Se declara acá porque la alternativa se pagó. Mientras el store en
+    memoria entregaba la referencia viva, las dos implementaciones
+    contestaban distinto a la misma llamada, y un test escrito contra el
+    doble habría pasado mientras el código fallaba contra el real — la
+    cuarta repetición de la familia que documenta
+    `tests/test_contrato_de_dobles.py`. El contrato se verifica en
+    `TestContratoConfirmationStore`.
+    """
 
     def put(self, plan: PendingPlan) -> str: ...
 

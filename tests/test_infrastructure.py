@@ -244,6 +244,54 @@ class TestContratoConfirmationStore:
         assert store.purge_expired() == 2  # solo los vencidos sin consumir
         assert store.status(consumido) == "consumido"
 
+    def test_lo_que_devuelve_es_tuyo_y_no_toca_lo_guardado(self, crear_store, tmp_path):
+        """La divergencia que apareció al poner las dos bajo el mismo techo.
+
+        El de disco serializa a JSON, así que lo que devuelve es siempre un
+        objeto nuevo; el de memoria entregaba la referencia viva y mutarla
+        mutaba el store. Un test que mutara un plan peekeado habría pasado
+        con el doble y fallado contra el real: la cuarta de la familia de
+        `test_contrato_de_dobles.py`, y la única razón de que no explotara
+        es que ningún call site muta TODAVÍA (`services.py` copia con
+        `dict(...)` en los tres).
+
+        Se fija la semántica del de disco, no la del otro, porque es la que
+        corre en producción y la única de las dos que se puede sostener: un
+        store persistente no puede devolver una referencia a algo que vive
+        en un archivo.
+        """
+        store = crear_store(tmp_path, 600.0)
+        token = store.put(_plan())
+
+        prestado = store.peek(token)
+        prestado.steps[0].payload["job_id"] = "INTRUSO"
+        prestado.chat_id = 99999
+
+        de_nuevo = store.peek(token)
+        assert de_nuevo.steps[0].payload == {"job_id": "1"}
+        assert de_nuevo.chat_id != 99999
+        # Y lo que finalmente se ejecuta tampoco quedó contaminado.
+        assert store.pop(token).steps[0].payload == {"job_id": "1"}
+
+    def test_mutar_el_plan_despues_de_guardarlo_no_cambia_lo_que_se_ejecuta(
+        self, crear_store, tmp_path
+    ):
+        """La otra punta: `put` también tiene que sacar una foto.
+
+        Quien llama se queda con su `plan` en la mano para armar el texto de
+        la confirmación —el mensaje que la persona lee antes de apretar ✅—.
+        Si lo que se guarda siguiera atado a ese objeto, el plan mostrado y
+        el plan ejecutado podrían separarse, que es la peor forma de este
+        bug: el usuario aprueba una cosa y corre otra.
+        """
+        store = crear_store(tmp_path, 600.0)
+        plan = _plan()
+        token = store.put(plan)
+
+        plan.steps[0].payload["job_id"] = "OTRO"
+
+        assert store.pop(token).steps[0].payload == {"job_id": "1"}
+
 
 class TestSQLiteConfirmationStore:
     """Lo que es propio del store en disco y no puede ir al contrato
