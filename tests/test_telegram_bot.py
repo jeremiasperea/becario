@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from becario.application.job_monitor import JobAck, Notification
-from becario.application.services import Reply
+from becario.application.services import FOREIGN_CONFIRMATION_TEXT, Reply
 from becario.presentation.telegram_bot import TelegramBot
 
 # Token con formato válido para PTB; nunca se usa contra la red.
@@ -98,17 +98,34 @@ class FakeTranscriber:
 
 
 class FakeCallbackQuery:
-    def __init__(self, chat: FakeChat, user_id: int, data: str) -> None:
+    """Doble del toque de un botón.
+
+    `markup_edits` cuenta los intentos de quitarle los botones al mensaje
+    original: no alcanza con mirar lo que se envió, porque hay un camino
+    —el toque ajeno— cuyo contrato es justamente NO tocar ese mensaje, y
+    "no pasó nada" solo se puede afirmar si algo lo estaba contando.
+    """
+
+    def __init__(
+        self, chat: FakeChat, user_id: int, data: str, fallar_al_editar: bool = False
+    ) -> None:
         self.from_user = SimpleNamespace(id=user_id)
         self.data = data
         self.message = SimpleNamespace(chat=chat)
         self.answers: list[tuple] = []
+        self.markup_edits = 0
+        self._fallar_al_editar = fallar_al_editar
 
     async def answer(self, text=None, show_alert=False):
         self.answers.append((text, show_alert))
 
     async def edit_message_reply_markup(self, reply_markup=None):
-        pass
+        # Se cuenta el INTENTO, no el éxito: un mensaje demasiado viejo para
+        # editar igual fue tocado, y el test que mira ese caso necesita
+        # distinguirlo de no haberlo intentado nunca.
+        self.markup_edits += 1
+        if self._fallar_al_editar:
+            raise RuntimeError("Message can't be edited")
 
 
 class FakeBotAPI:
@@ -466,3 +483,174 @@ class TestTypingIndicator:
         asyncio.run(bot._on_text(FakeUpdate(chat, user_id=7, text="hola"), None))
 
         assert chat.sent == ["ok"]
+
+
+class TestToqueAjenoEnLosBotones:
+    """Los botones los ve todo el chat, así que los puede apretar cualquiera.
+
+    El servicio ya rechaza la confirmación ajena
+    (`test_service.py::TestConfirmationFlow::test_foreign_confirmation_is_rejected`),
+    pero QUÉ hace el bot con ese rechazo es decisión de la presentación, y esa
+    mitad no la miraba nadie. El contrato tiene tres partes y las tres son
+    visibles para el usuario: la alerta va SOLO a quien tocó, el mensaje
+    original CONSERVA sus botones, y al chat no llega nada.
+
+    Si se rompe, el daño no le cae al intruso sino a la víctima: a quien sí
+    puede decidir le desaparecen los botones por el toque de un tercero, y se
+    entera por un mensaje en el chat que nunca pidió.
+    """
+
+    def _toque_ajeno(self, data: str = "confirm:tok1"):
+        chat_log = FakeChatLog()
+        bot, service = _make_bot(Reply(text=FOREIGN_CONFIRMATION_TEXT), chat_log)
+        chat = FakeChat(chat_id=555)
+        query = FakeCallbackQuery(chat, user_id=7, data=data)
+        asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+        return query, chat, chat_log
+
+    def test_la_alerta_va_solo_a_quien_toco_y_como_alerta(self):
+        # `show_alert=True` es lo que hace que Telegram lo muestre como cartel
+        # y no como el aviso fugaz de arriba: el intruso tiene que enterarse
+        # de que su toque no hizo nada.
+        query, _, _ = self._toque_ajeno()
+
+        assert query.answers == [(FOREIGN_CONFIRMATION_TEXT, True)]
+
+    def test_no_le_saca_los_botones_a_quien_si_puede_decidir(self):
+        """El corazón del caso: el mensaje original queda intacto.
+
+        Quitarle el teclado sería dejar a la persona autorizada sin forma de
+        confirmar ni cancelar, por una acción que no fue suya."""
+        query, _, _ = self._toque_ajeno()
+
+        assert query.markup_edits == 0
+
+    def test_no_ensucia_el_chat_compartido(self):
+        _, chat, _ = self._toque_ajeno()
+
+        assert chat.sent == []
+
+    def test_el_rechazo_no_queda_registrado_como_respuesta_del_bot(self):
+        # El toque SÍ se registra (es un pedido del usuario y la bitácora
+        # audita quién apretó qué), pero el rechazo nunca fue un mensaje del
+        # bot en ese chat: anotarlo como tal inventaría una conversación.
+        _, _, chat_log = self._toque_ajeno()
+
+        assert chat_log.entries == [(555, "user", "confirmar")]
+
+    def test_vale_igual_para_el_boton_de_cancelar(self):
+        # `reject` tiene su propio chequeo de dueño en el servicio, y la
+        # presentación no debe tratarlo distinto: cancelar lo ajeno también
+        # es decidir por otro.
+        query, chat, _ = self._toque_ajeno(data="cancel:tok1")
+
+        assert query.answers == [(FOREIGN_CONFIRMATION_TEXT, True)]
+        assert query.markup_edits == 0
+        assert chat.sent == []
+
+
+class TestBotonQueElBotNoConoce:
+    """Fail-closed en la frontera: `data` viene de Telegram, no de nosotros.
+
+    Un `callback_data` que este bot no emite (mensaje de una versión vieja,
+    o alguien jugando con la API) no puede caer en el `reply` sin asignar de
+    la rama anterior. Se contesta con un aviso y se sigue.
+    """
+
+    def test_una_accion_desconocida_avisa_en_vez_de_reventar(self):
+        bot, service = _make_bot(Reply(text="no debería usarse"), FakeChatLog())
+        chat = FakeChat(chat_id=555)
+        query = FakeCallbackQuery(chat, user_id=7, data="borrar_todo:tok1")
+
+        asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+
+        assert chat.sent == ["⚠️ Acción desconocida."]
+        # Y lo que más importa: no llegó a la aplicación.
+        assert service.calls == []
+
+
+class TestMensajeDemasiadoViejoParaEditar:
+    """Telegram no deja editar mensajes viejos, y eso no es culpa del usuario.
+
+    Quitar los botones es cosmético; entregar el resultado de lo que ya se
+    ejecutó, no. Si el `edit` falla y se lleva puesta la respuesta, el usuario
+    confirma un `sbatch`, el trabajo se encola de verdad, y él se queda
+    mirando un mensaje con botones que no le contesta nada.
+    """
+
+    def test_si_no_puede_quitar_los_botones_la_respuesta_llega_igual(self, caplog):
+        bot, _ = _make_bot(Reply(text="🚀 Enviado como 12345."), FakeChatLog())
+        chat = FakeChat(chat_id=555)
+        query = FakeCallbackQuery(
+            chat, user_id=7, data="confirm:tok1", fallar_al_editar=True
+        )
+
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+
+        assert query.markup_edits == 1, "ni siquiera intentó quitar los botones"
+        assert chat.sent == ["🚀 Enviado como 12345."]
+        assert "No pude quitar los botones" in caplog.text
+
+
+class TestElBarridoDeVencidosLlegaAlChat:
+    """La otra mitad del vencimiento de pedidos.
+
+    `test_service.py::TestExpirySweepNotifies` prueba que el servicio PRODUCE
+    los avisos; que salgan del proceso es trabajo del tick y no lo miraba
+    nadie. Un pedido que quedó esperando una respuesta que nunca llegó y del
+    que además nunca se avisa es una conversación abierta para siempre: el
+    usuario cree que el bot sigue pensando.
+    """
+
+    class _BotAPISelectivo:
+        """Doble de `context.bot` que falla solo para ciertos chats."""
+
+        def __init__(self, fallan: set[int] = frozenset()) -> None:
+            self._fallan = set(fallan)
+            self.sent: list[tuple] = []
+
+        async def send_message(self, chat_id, text, parse_mode=None):
+            if chat_id in self._fallan:
+                raise RuntimeError("chat bloqueado")
+            self.sent.append((chat_id, text))
+
+    def _tick(self, vencidos, fallan=frozenset(), con_monitor=False):
+        bot, service = _make_bot(Reply(text="ok"), FakeChatLog())
+        service.expired = vencidos
+        if con_monitor:
+            bot._job_monitor = SimpleNamespace(
+                poll_and_notify=lambda: [], confirm_delivery=lambda _a: None
+            )
+        api = self._BotAPISelectivo(fallan)
+        asyncio.run(bot._on_monitor_tick(SimpleNamespace(bot=api)))
+        return api
+
+    def test_un_pedido_vencido_se_avisa_al_chat_que_lo_esperaba(self):
+        api = self._tick([(111, "⌛ Se venció el pedido de ZrO2.")], con_monitor=True)
+
+        assert api.sent == [(111, "⌛ Se venció el pedido de ZrO2.")]
+
+    def test_se_avisan_aunque_no_haya_seguimiento_configurado(self):
+        """El aviso va ANTES del guard del monitor, y es a propósito.
+
+        Cerrar una consulta que quedó abierta no depende de que haya
+        seguimiento de trabajos: son dos features distintas y un despliegue
+        sin `job_monitor` no debería dejar conversaciones colgadas."""
+        api = self._tick([(111, "⌛ Se venció el pedido.")], con_monitor=False)
+
+        assert api.sent == [(111, "⌛ Se venció el pedido.")]
+
+    def test_un_chat_que_falla_no_deja_sin_aviso_a_los_demas(self, caplog):
+        # Un usuario que bloqueó al bot hace fallar SU envío. Si eso cortara
+        # el loop, los vencidos de todos los que vienen después se perderían
+        # en silencio por culpa de un tercero.
+        with caplog.at_level(logging.ERROR):
+            api = self._tick(
+                [(111, "a"), (222, "b"), (333, "c")],
+                fallan={222},
+                con_monitor=True,
+            )
+
+        assert api.sent == [(111, "a"), (333, "c")]
+        assert "222" in caplog.text
