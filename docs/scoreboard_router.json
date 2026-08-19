@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-13T20:30:34+00:00",
+  "generated_at": "2026-08-19T05:05:40+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,21 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
-  "router_fingerprint": "edf703710f55e7b3",
+  "router_fingerprint": "6bee8c4f1c4a2100",
   "models": [
     {
       "model": "qwen2.5-coder:14b",
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 19.551,
+      "median_latency_seconds": 21.164,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.045,
+          "latency_seconds": 6.158,
           "error": null
         },
         {
@@ -34,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.027,
+          "latency_seconds": 6.658,
           "error": null
         },
         {
@@ -42,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 23.642,
+          "latency_seconds": 24.575,
           "error": null
         },
         {
@@ -50,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 26.901,
+          "latency_seconds": 27.668,
           "error": null
         },
         {
@@ -58,7 +58,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 14.369,
+          "latency_seconds": 15.057,
           "error": null
         },
         {
@@ -66,7 +66,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 25.979,
+          "latency_seconds": 26.566,
           "error": null
         },
         {
@@ -74,7 +74,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.771,
+          "latency_seconds": 25.751,
           "error": null
         },
         {
@@ -82,7 +82,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.258,
+          "latency_seconds": 12.331,
           "error": null
         }
       ]

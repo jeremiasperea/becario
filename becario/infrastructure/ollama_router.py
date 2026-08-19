@@ -486,6 +486,33 @@ def compact_json_schema(model: type[BaseModel]) -> dict:
     return _strip_schema_titles(model.model_json_schema())
 
 
+def build_chat_payload(
+    *, model: str, system_prompt: str, user_text: str, schema: dict
+) -> dict:
+    """El cuerpo exacto del POST a `/api/chat`, armado aparte del envío.
+
+    Vive fuera de `_chat_once` para que se pueda inspeccionar SIN red. El
+    tablero del router (`scripts/live_router_check.py`) hashea todo lo que
+    decide qué se está midiendo, y estas opciones —`think`, `options`,
+    `stream`, `format`— cambian lo que el modelo recibe tanto como el
+    prompt o el schema. Mientras el dict vivía adentro del `try` del POST
+    no había forma de leerlo sin hacer la llamada, y por ahí se coló el
+    `think: False` (commit 476922b, 13× de diferencia de latencia en
+    modelos de razonamiento) con la huella del tablero intacta.
+    """
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "stream": False,
+        "format": schema,  # <- structured output
+        "think": False,  # <- ver `OllamaRouter._chat_once`: no queremos razonamiento
+        "options": {"temperature": 0.0},
+    }
+
+
 class OllamaRouter:
     """Router basado en structured outputs de Ollama (Gemma-compatible)."""
 
@@ -601,21 +628,19 @@ class OllamaRouter:
         Ojo con `eval_count`/`eval_duration` para medir esto: en 0.31.2 NO
         cuentan los tokens de thinking, así que dan casi idénticos con y
         sin el flag. El costo real solo se ve en `total_duration`.
+
+        El cuerpo del pedido lo arma `build_chat_payload` (arriba), no esta
+        función: así el harness del tablero puede hashearlo sin red.
         """
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_text},
-                    ],
-                    "stream": False,
-                    "format": schema,  # <- structured output
-                    "think": False,  # <- ver docstring: no queremos razonamiento
-                    "options": {"temperature": 0.0},
-                },
+                json=build_chat_payload(
+                    model=self._model,
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    schema=schema,
+                ),
                 timeout=self._timeout,
             )
             response.raise_for_status()

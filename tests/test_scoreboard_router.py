@@ -146,6 +146,72 @@ class TestTheContractTheBoardWasMeasuredAgainst:
         )
         assert router_fingerprint(_FIXTURES_DIR) != antes
 
+    def test_the_fingerprint_moves_when_a_payload_option_moves(self, monkeypatch):
+        # El punto ciego que dejó pasar el `think: False` del commit 476922b:
+        # la huella miraba schema y prompts, pero no las opciones del pedido.
+        # Un `temperature` distinto es otro router —el modelo recibe otra
+        # cosa— aunque el prompt no se haya tocado.
+        from becario.infrastructure import ollama_router as router_mod
+
+        antes = router_fingerprint(_FIXTURES_DIR)
+        original = router_mod.build_chat_payload
+
+        def con_otra_temperatura(**kwargs):
+            payload = original(**kwargs)
+            payload["options"] = {**payload["options"], "temperature": 0.7}
+            return payload
+
+        monkeypatch.setattr(router_mod, "build_chat_payload", con_otra_temperatura)
+        assert router_fingerprint(_FIXTURES_DIR) != antes, (
+            "cambiar una opción del payload no movió la huella: el tablero "
+            "va a seguir diciendo que describe el router de hoy. Revisá que "
+            "`chat_payload_shape()` (scripts/live_router_check.py) siga "
+            "entrando en `router_fingerprint`."
+        )
+
+    def test_the_fingerprint_moves_when_a_payload_key_disappears(self, monkeypatch):
+        # El caso exacto de 476922b, al revés: sacar `think` del payload
+        # devuelve el bloque de razonamiento (13× de latencia medido en
+        # qwen3:8b) sin tocar una línea de prompt.
+        from becario.infrastructure import ollama_router as router_mod
+
+        antes = router_fingerprint(_FIXTURES_DIR)
+        original = router_mod.build_chat_payload
+
+        def sin_think(**kwargs):
+            payload = original(**kwargs)
+            payload.pop("think", None)
+            return payload
+
+        monkeypatch.setattr(router_mod, "build_chat_payload", sin_think)
+        assert router_fingerprint(_FIXTURES_DIR) != antes, (
+            "sacar una clave del payload no movió la huella: el gate no "
+            "está mirando el pedido que viaja a Ollama. Revisá "
+            "`chat_payload_shape()` en scripts/live_router_check.py."
+        )
+
+    def test_the_payload_shape_keeps_the_options_and_hides_the_volatile_parts(self):
+        # Qué entra y qué no en la huella. El modelo es una FILA del tablero,
+        # no el contrato: si entrara, medir otro modelo invalidaría la
+        # medición anterior y dos corridas dejarían de ser comparables. Las
+        # opciones sí entran: son lo que el modelo recibe.
+        from scripts.live_router_check import chat_payload_shape
+
+        forma = chat_payload_shape()
+        assert '"think": false' in forma
+        assert '"temperature": 0.0' in forma
+        assert "<modelo>" in forma and "<user_text>" in forma, (
+            "el payload hasheado tiene que usar centinelas en las partes "
+            "volátiles (modelo, texto del usuario, schema); si no, la huella "
+            "cambia por cosas que no son el contrato del router."
+        )
+
+    def test_the_fingerprint_moves_when_a_fixture_is_edited(self, tmp_path):
+        (tmp_path / "uno.txt").write_text("prompt: a\nsteps: consultar_db\n")
+        antes = router_fingerprint(tmp_path)
+        (tmp_path / "uno.txt").write_text("prompt: OTRA COSA\nsteps: consultar_db\n")
+        assert router_fingerprint(tmp_path) != antes
+
     def test_the_fingerprint_is_stable_across_calls(self):
         assert router_fingerprint(_FIXTURES_DIR) == router_fingerprint(_FIXTURES_DIR)
 

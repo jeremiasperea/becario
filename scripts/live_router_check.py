@@ -229,16 +229,53 @@ def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     el `prompt` a un fixture cambia lo que se está midiendo tanto como
     agregarlo.
 
-"""
+    Las OPCIONES del pedido entraron después, por el mismo agujero visto de
+    nuevo: el commit 476922b agregó `think: False` al POST —13× de
+    diferencia de latencia en modelos de razonamiento, o sea otro router— y
+    la huella no se movió, porque solo miraba schema y prompts. El autor lo
+    notó a mano; el gate no. Mañana alguien toca `temperature` o `num_ctx`
+    y el tablero sigue jurando que describe el router de hoy.
+
+    Se hashea `build_chat_payload` (el cuerpo real del POST) armado con
+    CENTINELAS en las partes volátiles: el modelo configurado es una
+    dimensión aparte del tablero —una fila por modelo—, y el texto del
+    usuario y el schema ya se hashean por su cuenta. Lo que queda en el
+    hash es lo estructural: qué claves viajan, los roles de los mensajes y
+    el valor de cada opción. Así la huella no depende de cómo se llamen las
+    variables locales de `_chat_once`, solo de lo que el modelo recibe.
+    """
     from becario.infrastructure import ollama_router as router_mod
 
-    partes = [compact_json_schema_json(router_mod.RouterDecision)]
+    partes = [
+        compact_json_schema_json(router_mod.RouterDecision),
+        f"payload={chat_payload_shape()}",
+    ]
     for nombre in sorted(n for n in dir(router_mod) if n.endswith("_PROMPT")):
         partes.append(f"{nombre}={getattr(router_mod, nombre)}")
     for path in sorted(fixtures_dir.glob("*.txt")):
         partes.append(f"{path.name}={path.read_text(encoding='utf-8')}")
     crudo = "\n\x00".join(partes).encode("utf-8")
     return hashlib.sha256(crudo).hexdigest()[:16]
+
+
+def chat_payload_shape() -> str:
+    """El cuerpo del POST a `/api/chat` serializado de forma estable, con
+    centinelas donde el contenido es volátil.
+
+    Los centinelas son a propósito: si el modelo, el mensaje del usuario o
+    el schema entraran con su valor real, la huella cambiaría al cambiar de
+    modelo (que es una fila del tablero, no un cambio de router) y no se
+    podría comparar una corrida con otra.
+    """
+    from becario.infrastructure import ollama_router as router_mod
+
+    payload = router_mod.build_chat_payload(
+        model="<modelo>",
+        system_prompt="<system_prompt>",
+        user_text="<user_text>",
+        schema={"<schema>": True},
+    )
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
 
 def compact_json_schema_json(model) -> str:
