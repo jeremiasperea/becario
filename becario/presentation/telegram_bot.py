@@ -31,7 +31,7 @@ from telegram.ext import (
 from ..application.job_monitor import JobMonitorService
 from ..application.services import FOREIGN_CONFIRMATION_TEXT, BecarioService, Reply
 from ..domain.ports import ChatLogRepository, Transcriber
-from ..incidentes import FALLO_INESPERADO, nuevo_incidente
+from ..incidentes import FALLO_INESPERADO, FALLO_TRAS_CONFIRMAR, nuevo_incidente
 
 logger = logging.getLogger(__name__)
 
@@ -421,9 +421,9 @@ class TelegramBot:
         if reply.text == FOREIGN_CONFIRMATION_TEXT:
             # Toque ajeno: avisar solo a quien tocó, sin ensuciar el chat ni
             # sacarle los botones a quien sí puede decidir.
-            await query.answer(reply.text, show_alert=True)
+            await self._acusar_toque(query, reply.text, alerta=True)
             return
-        await query.answer()
+        await self._acusar_toque(query)
         # El mensaje original (con las condiciones del envío) se conserva
         # para poder revisarlo después: solo se quitan los botones, y el
         # resultado llega como mensaje aparte.
@@ -431,13 +431,76 @@ class TelegramBot:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:  # p. ej. mensaje demasiado viejo para editar
             logger.warning("No pude quitar los botones del mensaje original.")
-        if query.message is not None:
+        if query.message is None:
+            return
+        try:
             await self._enviar(
                 query.message.chat.send_message,
                 reply.text,
                 chat_id=query.message.chat.id,
                 monospace=reply.monospace,
             )
+        except Exception:
+            if action != "confirm":
+                raise  # nada se ejecutó: el handler global dice la verdad
+            await self._fallo_entregando_tras_confirmar(query.message.chat)
+
+    async def _acusar_toque(
+        self, query, texto: Optional[str] = None, *, alerta: bool = False
+    ) -> None:
+        """Acusa recibo del toque, y NO puede tumbar el resto.
+
+        Telegram caduca los callbacks: `answer()` sobre uno viejo levanta
+        `BadRequest("Query is too old and response timeout expired")`. Pasó
+        dos veces en una sola sesión, sobre una tarjeta de quince minutos, y
+        el usuario recibió un incidente —que suena a que el bot está roto—
+        cuando lo único que había pasado es que se tardó. Peor: la
+        confirmación ya había vencido por su propio TTL, así que `reject`
+        tenía listo un «⌛ Esta confirmación expiró o ya fue usada» que
+        explica exactamente qué pasó, y ese mensaje nunca llegó a mandarse.
+
+        La línea de abajo —`edit_message_reply_markup`— ya contemplaba esta
+        misma condición. Quien la escribió previó el mensaje viejo para el
+        `edit` y no para el `answer`, una línea antes.
+        """
+        try:
+            if texto is None:
+                await query.answer()
+            else:
+                await query.answer(texto, show_alert=alerta)
+        except Exception:
+            logger.warning(
+                "No pude acusar el toque del botón (¿callback vencido?).",
+                exc_info=True,
+            )
+
+    async def _fallo_entregando_tras_confirmar(self, chat) -> None:
+        """No se pudo entregar el resultado de un ✅. El aviso NO puede decir
+        «no ejecuté nada».
+
+        Para cuando esto corre, `confirm` ya volvió: el `sbatch` pudo haber
+        salido. El texto del handler global dice «no ejecuté nada, podés
+        volver a intentarlo», y sobre un trabajo ya encolado eso son dos
+        trabajos en la cola y dos veces las horas de cómputo por un error
+        que el usuario nunca vio.
+
+        Desde acá no hay forma de saber si se ejecutó, así que se dice eso.
+        Se falla hacia el lado barato: mandar a verificar de más molesta,
+        afirmar que no pasó nada cuando pasó cuesta plata.
+        """
+        incidente = nuevo_incidente()
+        logger.exception(
+            "Incidente %s: no pude entregar el resultado de una confirmación",
+            incidente,
+        )
+        try:
+            await self._enviar(
+                chat.send_message,
+                FALLO_TRAS_CONFIRMAR.format(incidente=incidente),
+                chat_id=chat.id,
+            )
+        except Exception:
+            logger.error("Incidente %s: tampoco pude avisarle al usuario.", incidente)
 
     # ------------------------------------------------------------------
     # Cierre del loop: aviso proactivo cuando un trabajo termina
