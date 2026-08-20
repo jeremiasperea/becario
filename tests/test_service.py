@@ -1604,6 +1604,30 @@ class TestExplainRespondePreguntas:
 
         assert service._remote_base in reply.text
 
+    def test_contesta_por_los_botones_cuando_preguntan_por_la_interfaz(self, env):
+        """El otro caso real, un escalón más arriba.
+
+        Frente a un batch de ocho pasos equivocado, el usuario escribió
+        «Aquí debería haber una opción de modificar» y recibió el volcado de
+        configuración: cierto, y sobre otra cosa. `explicar` sabía contestar
+        «¿dónde buscaste?» y no reconocía un comentario sobre su PROPIA
+        interfaz — que es lo único que el usuario podía preguntar mirando
+        una tarjeta con botones.
+        """
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="acá debería haber una opción de modificar",
+        )
+
+        assert "✏️" in reply.text
+        # Y lo que hace falta saber para usarlo: que nada se ejecutó todavía
+        # y que se puede apuntar el paso sin reescribir el plan.
+        assert "paso 2" in reply.text
+        assert "✅" in reply.text and "❌" in reply.text
+
     def test_con_un_pendiente_vivo_la_pregunta_no_llega(self, env):
         """LIMITACIÓN conocida, fijada para que se vea.
 
@@ -2162,6 +2186,91 @@ class TestBatchConfirmation:
         service.reject(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
         gw = factory.gateways["alice"]
         assert gw.made_dirs == [] and gw.submitted == []
+
+
+class TestTheBatchCanBeCorrected:
+    """Frente al batch MÁS equivocado de la sesión, las únicas salidas eran
+    ✅ y ❌.
+
+    Ocho pasos con el material mal, la red mal, las superceldas cambiadas y
+    el vacío perdido — y el usuario escribió «Aquí debería haber una opción
+    de modificar». Tenía razón: `allow_modify` existe y se usa en el camino
+    de un solo cálculo, y el preview del batch no lo ofrecía. Aprobar algo
+    que no es lo pedido o tirar el plan entero y reescribirlo no son dos
+    opciones, son la misma.
+    """
+
+    def _batch(self, service, router):
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W", "red_cristalina": "bcc"}),
+        ])
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+
+    def test_the_preview_offers_the_modify_button(self, env):
+        service, router, *_ = env
+        reply = self._batch(service, router)
+        assert reply.needs_confirmation and reply.allow_modify
+
+    def test_pressing_it_lists_the_plan_so_the_step_can_be_pointed_at(self, env):
+        service, router, *_ = env
+        prep = self._batch(service, router)
+        ask = service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        # Con tres pasos hace falta saber a cuál apuntar: el plan se
+        # muestra, igual que en un plan compuesto.
+        assert "paso" in ask.text.lower()
+        assert "Zr" in ask.text and "W" in ask.text
+
+    def test_a_correction_rebuilds_the_whole_batch(self, env):
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (3, {"red_cristalina": "fcc"})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 3: el W es fcc",
+        )
+        # Vuelve a ser un batch (no se degradó a otro camino) y sigue
+        # esperando confirmación: corregir no ejecuta.
+        assert reply.needs_confirmation and reply.allow_modify
+        assert "fcc" in reply.text
+        gw = factory.gateways.get("alice")
+        assert gw is None or gw.submitted == []
+
+    def test_the_corrected_batch_is_what_gets_executed(self, env):
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (2, {"nodos": 3})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: 3 nodos",
+        )
+        service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        # Lo que salió al cluster es el plan CORREGIDO, no el original.
+        enviados = factory.gateways["alice"].submitted
+        assert len(enviados) == 2
+        assert enviados[0].nodes == 3
+
+    def test_nothing_touched_the_cluster_while_correcting(self, env):
+        # Un batch no materializa nada hasta confirmar (ADR-0007). Pasar por
+        # ✏️ no puede romper esa promesa a mitad de camino.
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (3, {"red_cristalina": "fcc"})
+        service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 3: el W es fcc",
+        )
+        gw = factory.gateways.get("alice")
+        assert gw is None or (gw.made_dirs == [] and gw.submitted == [])
 
 
 class TestAnswerPropagationDoesNotOverreach:

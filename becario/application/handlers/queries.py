@@ -197,5 +197,15 @@ def explain(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
 
     lines.append(f"• Corridas: las dejo en {svc._remote_base} de tu cuenta del cluster.")
     lines.append(f"• Cuenta: entro como {ctx.identity.ssh_user}.")
+    # Los botones también son «cómo estoy hecho», y son la parte que el
+    # usuario mira cuando pregunta por la interfaz. Frente a un batch de
+    # ocho pasos equivocado, alguien escribió «acá debería haber una opción
+    # de modificar» y recibió los tres bullets de arriba: ciertos, y sobre
+    # otra cosa. El ✏️ estaba a un campo de distancia de existir.
+    lines.append(
+        "• Botones: cuando te muestro un plan, nada se ejecuta hasta que "
+        "toques ✅. Con ✏️ lo corregís sin reescribirlo entero (podés "
+        "apuntar el paso: «paso 2: 4 nodos») y con ❌ lo descartás."
+    )
 
     return Reply(text="\n".join(lines))

@@ -1,0 +1,14 @@
+# Un comentario sobre la INTERFAZ del bot, no sobre el cluster. Se ruteó a
+# `explicar` —que es lo correcto— y devolvió el volcado de configuración:
+# dónde busca los POTCAR, dónde deja las corridas. Cierto, y sobre otra
+# cosa. Es D2 un escalón más arriba: el bot sabe contestar «¿dónde
+# buscaste?» y no reconocía una pregunta sobre sus propios botones.
+id: CV32
+titulo: preguntar por la interfaz contesta por los botones
+origen: chat_messages 2026-08-20
+sintoma: respondió "🛠️ Así estoy configurado: • POTCAR..." a un comentario sobre la interfaz
+
+> Aquí debería haber una opción de modificar
+espera: ok
+contiene: ✏️
+no_contiene: No pude interpretar
