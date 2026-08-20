@@ -7,6 +7,7 @@ así que hay defensa en profundidad: validación semántica (Pydantic)
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 import shlex
@@ -63,12 +64,16 @@ def _es_base_de_pendientes(path: str) -> bool:
 def _format_tree(base: str, find_output: str) -> str:
     """Emula la salida de `tree -L 2` a partir de `find -maxdepth 2`.
 
-    Recibe rutas absolutas (una por línea, ya ordenadas por `sort`) y
-    dibuja el árbol con ramas (├──/└──), igual que `tree`: para decidir
-    la rama de cada entrada hace falta saber si es la última hija de su
-    padre, así que primero se arma la jerarquía y después se renderiza.
-    El orden lexicográfico de `sort` garantiza que cada padre aparece
-    antes que sus hijos y que los hermanos quedan agrupados.
+    Recibe rutas absolutas (una por línea, en cualquier orden) y dibuja el
+    árbol con ramas (├──/└──), igual que `tree`: para decidir la rama de
+    cada entrada hace falta saber si es la última hija de su padre, así que
+    primero se arma la jerarquía y después se renderiza.
+
+    Los hermanos se ordenan acá, al renderizar, y no con un `| sort` en el
+    cluster. Ese pipe se comía el código de salida de `find` —una ruta
+    inexistente volvía `ok=True` y sin salida, o sea indistinguible de un
+    directorio vacío—, y ordenar por nodo es además más fiel a un árbol que
+    ordenar las rutas completas como texto.
     """
     base_depth = len(PurePosixPath(base).parts)
     tree: dict = {}
@@ -84,7 +89,7 @@ def _format_tree(base: str, find_output: str) -> str:
     lines = [base]
 
     def _render(node: dict, prefix: str) -> None:
-        names = list(node)
+        names = sorted(node)
         for i, name in enumerate(names):
             last = i == len(names) - 1
             lines.append(f"{prefix}{'└── ' if last else '├── '}{name}")
@@ -92,6 +97,37 @@ def _format_tree(base: str, find_output: str) -> str:
 
     _render(tree, "")
     return "\n".join(lines)
+
+
+# Cuántos vecinos se nombran cuando ninguno se parece al pedido: bastantes
+# para orientar, pocos para que el mensaje siga entrando en un chat.
+_MAX_HERMANOS = 10
+
+
+def _sugerir_hermanos(nombre: str, hermanos: list[str]) -> str:
+    """El «¿quisiste decir…?» de una ruta que no existe, dados sus vecinos.
+
+    Mismo trato que el vocabulario de tags de VASP: decir que algo no existe
+    es honesto pero deja al usuario en el mismo lugar. El prefijo va primero
+    porque es el caso real —se pide `Zr_relajacion` y la corrida es
+    `Zr_relajacion_20260819_225757`— y difflib después, para los tipeos.
+    """
+    if not hermanos:
+        return "El directorio que lo contiene está vacío."
+    cerca = [h for h in hermanos if h.startswith(nombre)]
+    cerca += [
+        h for h in difflib.get_close_matches(nombre, hermanos, n=3, cutoff=0.6)
+        if h not in cerca
+    ]
+    if cerca:
+        return "¿Quisiste decir " + " o ".join(f"«{h}»" for h in cerca[:3]) + "?"
+    resto = len(hermanos) - _MAX_HERMANOS
+    return (
+        "Ahí al lado hay: "
+        + ", ".join(hermanos[:_MAX_HERMANOS])
+        + (f" (y {resto} más)" if resto > 0 else "")
+        + "."
+    )
 
 
 class SSHClusterGateway:
@@ -352,15 +388,52 @@ class SSHClusterGateway:
         )
         if result.ok or "not found" not in result.stderr:
             return result
+        # Sin pipe a propósito. `find <ruta> | sort` devuelve el código de
+        # salida de `sort`, o sea 0 aunque la ruta no exista: el error se iba
+        # por stderr y el listado vacío se dibujaba como un directorio vacío,
+        # que es la única respuesta de todo el bot que directamente MIENTE.
+        # El orden lo pone `_format_tree`, que no pierde nada al hacerlo.
         found = self._run(
-            f"find {shlex.quote(path)} -mindepth 1 -maxdepth 2 | sort", reintentable=True
+            f"find {shlex.quote(path)} -mindepth 1 -maxdepth 2", reintentable=True
         )
         if not found.ok:
-            return found
+            return self._explicar_find_fallido(path, found)
         return CommandResult(
             ok=True,
             stdout=_format_tree(path, found.stdout),
             stderr=found.stderr,
+        )
+
+    def _explicar_find_fallido(self, path: str, fallo: CommandResult) -> CommandResult:
+        """`find` falló: ¿la ruta no existe, o es otra cosa?
+
+        Se pregunta por el directorio padre en vez de leer el stderr: el
+        texto de `find` depende del locale del cluster, la lista de hermanos
+        no. Y si no existe, los hermanos son la respuesta útil — las corridas
+        llevan timestamp (`Zr_relajacion_20260819_225757`), así que el nombre
+        que el usuario escribe de memoria casi nunca es el que está.
+        """
+        if fallo.transitorio:
+            return fallo  # no se pudo mirar; no hay nada que concluir
+        partes = PurePosixPath(path)
+        padre, nombre = str(partes.parent), partes.name
+        if not nombre or padre == path:
+            return fallo
+        vecinos = self._run(
+            f"find {shlex.quote(padre)} -mindepth 1 -maxdepth 1", reintentable=True
+        )
+        if not vecinos.ok:
+            return fallo
+        hermanos = sorted({
+            PurePosixPath(linea.strip()).name
+            for linea in vecinos.stdout.splitlines() if linea.strip()
+        })
+        if nombre in hermanos:
+            return fallo  # existe: `find` falló por otra cosa (permisos)
+        return CommandResult(
+            ok=False,
+            stderr=f"No existe {path}. {_sugerir_hermanos(nombre, hermanos)}".strip(),
+            reason=fallo.reason,
         )
 
     def upload_file(self, local_path: str, remote_path: str) -> CommandResult:

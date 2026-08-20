@@ -512,7 +512,97 @@ class TestSSHCommandConstruction:
             if cmd.startswith("tree")
             else find_failure
         )
+        # Tampoco se pudo mirar el padre: no hay nada que concluir, y el
+        # fallo original es más honesto que una explicación inventada.
         assert gw.list_directory("/data/nada") is find_failure
+
+    def test_list_directory_fallback_does_not_pipe_to_sort(self):
+        # `find <ruta> | sort` devuelve el código de salida de `sort`: una
+        # ruta inexistente volvía ok=True y sin salida, o sea idéntica a un
+        # directorio vacío. El bot dibujaba ese vacío como si existiera.
+        gw = self._sin_tree({"find": CommandResult(ok=True, stdout="")})
+        gw.list_directory("/data/runs")
+        assert gw.commands[-1] == "find /data/runs -mindepth 1 -maxdepth 2"
+
+    def _sin_tree(self, respuestas: dict):
+        """Gateway sin `tree`, con una respuesta por comando `find`."""
+        gw = RecordingGateway()
+
+        def _run(cmd, *, reintentable=False):
+            gw.commands.append(cmd)
+            if cmd.startswith("tree"):
+                return CommandResult(ok=False, stderr="tree: command not found")
+            # El primer fragmento que matchea gana, así que las respuestas
+            # van de la ruta más específica a la más general.
+            for fragmento, resultado in respuestas.items():
+                if fragmento in cmd:
+                    return resultado
+            raise AssertionError(f"comando inesperado: {cmd}")
+
+        gw._run = _run
+        return gw
+
+    def test_a_missing_path_is_reported_as_missing_not_as_empty(self):
+        gw = self._sin_tree({
+            "/data/runs/Zr_relajacion ": CommandResult(
+                ok=False, stderr="find: '/data/runs/Zr_relajacion': No such file or directory",
+                reason=CommandFailureReason.COMMAND,
+            ),
+            "/data/runs ": CommandResult(
+                ok=True, stdout="/data/runs/W_relajacion_20260819_231020\n",
+            ),
+        })
+        result = gw.list_directory("/data/runs/Zr_relajacion")
+        assert not result.ok
+        assert "No existe /data/runs/Zr_relajacion" in result.message
+
+    def test_a_missing_run_suggests_the_one_that_is_there(self):
+        # El caso real: las corridas llevan timestamp, así que el nombre que
+        # el usuario escribe de memoria nunca es el que está en el cluster.
+        gw = self._sin_tree({
+            "/data/runs/Zr_relajacion ": CommandResult(ok=False, stderr="find: no existe"),
+            "/data/runs ": CommandResult(
+                ok=True,
+                stdout=(
+                    "/data/runs/Zr_relajacion_20260819_225757\n"
+                    "/data/runs/W_relajacion_20260819_231020\n"
+                ),
+            ),
+        })
+        result = gw.list_directory("/data/runs/Zr_relajacion")
+        assert "Zr_relajacion_20260819_225757" in result.message
+        assert "W_relajacion_20260819_231020" not in result.message
+
+    def test_without_anything_alike_it_names_what_is_there(self):
+        gw = self._sin_tree({
+            "/data/runs/porahi ": CommandResult(ok=False, stderr="find: no existe"),
+            "/data/runs ": CommandResult(ok=True, stdout="/data/runs/W_bcc\n"),
+        })
+        result = gw.list_directory("/data/runs/porahi")
+        assert "W_bcc" in result.message
+
+    def test_a_path_that_exists_but_cannot_be_read_keeps_its_own_error(self):
+        # `find` falló, pero el nombre SÍ está entre los hermanos: no es que
+        # no exista — son permisos, y decir "no existe" sería otra mentira.
+        denegado = CommandResult(
+            ok=False, stderr="find: '/data/runs/privado': Permission denied",
+            reason=CommandFailureReason.COMMAND,
+        )
+        gw = self._sin_tree({
+            "/data/runs/privado ": denegado,
+            "/data/runs ": CommandResult(ok=True, stdout="/data/runs/privado\n"),
+        })
+        assert gw.list_directory("/data/runs/privado") is denegado
+
+    def test_a_transport_failure_is_not_diagnosed_as_a_missing_path(self):
+        # Se cortó la conexión: no se pudo mirar nada. Reintentable, y el
+        # motivo tiene que sobrevivir para que el reintento sepa que puede.
+        caido = CommandResult(
+            ok=False, stderr="conexión cerrada",
+            reason=CommandFailureReason.TRANSPORT,
+        )
+        gw = self._sin_tree({"find": caido})
+        assert gw.list_directory("/data/runs/loquesea") is caido
 
     def test_upload_creates_remote_dir_quoted(self, monkeypatch):
         gw = RecordingGateway()
