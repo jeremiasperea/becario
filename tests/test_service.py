@@ -294,6 +294,18 @@ class FakeCalcRuns:
         ]
         return found[:limit]
 
+    def find_by_job_id(self, owner_id, job_id):
+        # El dueño filtra acá igual que en el WHERE del repositorio real:
+        # un doble que devolviera la corrida de cualquiera dejaría pasar
+        # un llamador que se olvidó de acotar.
+        return next(
+            (
+                r for r in reversed(self.rows)
+                if r["owner_id"] == owner_id and str(r["job_id"]) == str(job_id)
+            ),
+            None,
+        )
+
 
 class FakeJobTracker:
     def __init__(self):
@@ -761,6 +773,114 @@ class TestListFiles:
         )
         assert "No pude resolver el home remoto" in reply.text
         assert gateway.listed_dirs == []
+
+
+class TestTheLastRunIsExpressable:
+    """«El último cálculo» es un ancla que el bot TIENE y que el router no
+    podía nombrar.
+
+    Cuatro intentos de pedir el listado de una corrida, ninguno funcionó.
+    Lo que emitió, textual:
+
+        listar_archivos(base=corridas, destino_remoto=<nombre_del_ultimo_calculo>)
+        listar_archivos(base=corridas, destino_remoto=run_14)
+
+    Un placeholder con corchetes y un directorio inventado. No es que el
+    modelo no entendiera: entendió y no tuvo con qué decirlo, porque `base`
+    conocía 'home', 'corridas' y 'absoluta' y nada más. Es la misma forma
+    del bug que arregló el enum `base` en su momento, y la prueba de que es
+    del schema y no del modelo es que «mostrame el CONTCAR» SÍ andaba: la
+    capacidad estaba en el handler de al lado.
+    """
+
+    RUN_DIR = "/data/runs/Zr_relajacion_20260819_225757"
+    OTRO_RUN = "/data/runs/W_relajacion_20260819_231020"
+
+    def _seed(self, service):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "14", "Zr_relajacion", "{}", self.RUN_DIR
+        )
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "15", "W_relajacion", "{}", self.OTRO_RUN
+        )
+
+    def _listar(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.LIST_FILES, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="mostrame los archivos del último cálculo",
+        )
+
+    def test_it_lists_the_most_recent_run(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida"})
+        assert factory.gateways["alice"].listed_dirs == [self.OTRO_RUN]
+
+    def test_a_formula_narrows_it_to_that_material(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida", "formula": "Zr"})
+        assert factory.gateways["alice"].listed_dirs == [self.RUN_DIR]
+
+    def test_a_job_number_picks_that_run(self, env):
+        # «qué archivos dejó el job 14»: el dato existe, ahora se puede decir.
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida", "job_id": "14"})
+        assert factory.gateways["alice"].listed_dirs == [self.RUN_DIR]
+
+    def test_a_subpath_hangs_off_the_run(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(
+            service, router,
+            {"base": "ultima_corrida", "destino_remoto": "encut_400"},
+        )
+        assert factory.gateways["alice"].listed_dirs == [f"{self.OTRO_RUN}/encut_400"]
+
+    def test_another_persons_job_is_not_reachable_by_guessing_the_number(self, env):
+        # El número de job es adivinable. El dueño va en la consulta, no en
+        # un filtro posterior (ADR-0004).
+        service, router, factory, *_ = env
+        service._calc_runs.add(
+            BOB.telegram_user_id, "99", "Zr_relajacion", "{}", "/data/runs/de_bob"
+        )
+        reply = self._listar(service, router, {"base": "ultima_corrida", "job_id": "99"})
+        assert not reply.ok
+        assert "99" in reply.text
+        assert factory.gateways.get("alice") is None or (
+            factory.gateways["alice"].listed_dirs == []
+        )
+
+    def test_without_any_run_it_says_so_instead_of_inventing_a_path(self, env):
+        service, router, factory, *_ = env
+        reply = self._listar(service, router, {"base": "ultima_corrida"})
+        assert not reply.ok
+        assert "No encontré corridas tuyas" in reply.text
+        assert factory.gateways.get("alice") is None or (
+            factory.gateways["alice"].listed_dirs == []
+        )
+
+    def test_the_anchor_is_the_same_one_view_file_already_used(self, env):
+        # Las dos formas de nombrar la última corrida tienen que dar el
+        # MISMO directorio: que fueran dos códigos distintos es exactamente
+        # por qué una andaba y la otra no.
+        service, router, factory, *_ = env
+        self._seed(service)
+        cluster = factory.for_identity(ALICE)
+        cluster.remote_files[f"{self.OTRO_RUN}/CONTCAR"] = "celda\n"
+
+        router.next = RoutedRequest(
+            intent=Intent.VIEW_FILE, params={"nombre_archivo": "CONTCAR"}
+        )
+        vista = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mostrame el CONTCAR"
+        )
+        self._listar(service, router, {"base": "ultima_corrida"})
+
+        assert self.OTRO_RUN in vista.text
+        assert cluster.listed_dirs == [self.OTRO_RUN]
 
 
 class TestViewFile:

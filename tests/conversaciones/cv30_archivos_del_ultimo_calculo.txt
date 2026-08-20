@@ -1,0 +1,18 @@
+# Cuatro intentos de pedir el listado de una corrida, ninguno funcionó. El
+# router emitió un placeholder literal con corchetes
+# (destino_remoto=<nombre_del_ultimo_calculo>) y un directorio inventado
+# (run_14, que no existe). El dato estaba: vive en corridas_vasp.run_dir.
+# Agravante: la palabra «cálculo» tira hacia el historial — tres de los
+# cuatro intentos rutearon a consultar_db y mostraron una tabla que nadie
+# había pedido.
+id: CV30
+titulo: listar los archivos del último cálculo
+origen: chat_messages 2026-08-20 (4 intentos)
+sintoma: destino_remoto=<nombre_del_ultimo_calculo> y destino_remoto=run_14, ambos inventados
+
+> mostrame los archivos del último cálculo
+espera: ok
+no_contiene: No pude interpretar
+no_contiene: Historial
+no_regex: <[a-z_]+>
+no_regex: run_\d+\b

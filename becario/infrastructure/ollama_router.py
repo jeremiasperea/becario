@@ -125,8 +125,9 @@ class RouterParams(BaseModel):
         description=(
             "dónde ancla destino_remoto: 'home' (el home del usuario), "
             "'corridas' (el directorio de trabajo del bot, y también "
-            "cuando no dice dónde) o 'absoluta' (el usuario escribió una "
-            "ruta que empieza con /)"
+            "cuando no dice dónde), 'ultima_corrida' (el usuario habla de "
+            "SU último cálculo, o del de un job) o 'absoluta' (el usuario "
+            "escribió una ruta que empieza con /)"
         ),
     )
     destino_remoto: Optional[str] = Field(
@@ -239,9 +240,11 @@ _SYSTEM_PROMPT = (
     # es sensible a cuánto pesa cada sección, no solo a lo que dice.
     "Toda ruta lleva 'base', que dice DÓNDE ancla: 'home' (el usuario "
     "habla de SU home), 'corridas' (el directorio de trabajo del bot, y "
-    "también cuando no dice dónde) o 'absoluta' (el usuario escribió una "
-    "ruta que empieza con /). 'destino_remoto' es lo que va DESPUÉS de la "
-    "base, sin barra inicial, y va vacío si no nombró subcarpeta.\n"
+    "también cuando no dice dónde), 'ultima_corrida' (habla de SU último "
+    "cálculo o corrida, o de la de un job: ahí va 'job_id') o 'absoluta' "
+    "(el usuario escribió una ruta que empieza con /). 'destino_remoto' es "
+    "lo que va DESPUÉS de la base, sin barra inicial, y va vacío si no "
+    "nombró subcarpeta.\n"
     "Ejemplos:\n"
     "'dame los parámetros de red del cálculo del zirconio bulk' -> "
     "consultar_resultados, formula=Zr\n"
@@ -302,6 +305,14 @@ _SYSTEM_PROMPT = (
     "'mostrame la estructura de archivos del cluster' -> listar_archivos, "
     "base=corridas\n"
     "'listá mi home' -> listar_archivos, base=home\n"
+    # «cálculo» tira fuerte hacia consultar_db: en la sesión real, tres de
+    # cuatro intentos de listar los archivos de una corrida terminaron
+    # mostrando el historial. Estos dos ejemplos existen para desarmar esa
+    # atracción, y van acá —entre los de listar_archivos— y no arriba.
+    "'mostrame los archivos del último cálculo' / 'qué hay en la última "
+    "corrida' -> listar_archivos, base=ultima_corrida\n"
+    "'qué archivos dejó el job 14' -> listar_archivos, "
+    "base=ultima_corrida, job_id=14\n"
     "'mostramelo en forma de tree' / 'mostrame todo' -> listar_archivos, "
     "base=corridas (si el pedido refiere a lo anterior o solo pide un "
     "formato, el sistema muestra el árbol del workspace)\n"

@@ -48,6 +48,23 @@ class FakeCalcRuns:
         self.queries.append((owner_id, job_name_prefix, limit))
         return list(self.rows)
 
+    def find_by_job_id(self, owner_id, job_id):
+        return next(
+            (r for r in self.rows if str(r.get("job_id")) == str(job_id)), None
+        )
+
+    # `relaxed_source` solo lee las recientes, pero el doble sustituye al
+    # puerto ENTERO: la mitad que nadie usa hoy es la que deja de avisar
+    # cuando alguien la use mañana (es la tesis de test_contrato_de_dobles).
+    def add(self, owner_id, job_id, job_name, fingerprint, run_dir) -> None:
+        self.rows.append({
+            "owner_id": owner_id, "job_id": job_id, "job_name": job_name,
+            "fingerprint": fingerprint, "run_dir": run_dir,
+        })
+
+    def find_by_name(self, owner_id, job_name, limit=3):
+        return [r for r in self.rows if r.get("job_name") == job_name][:limit]
+
 
 class FakeCluster:
     """Cluster con archivos en memoria. `state` es lo que devuelve sacct."""

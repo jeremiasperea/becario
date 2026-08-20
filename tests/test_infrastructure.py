@@ -785,6 +785,21 @@ class TestSQLiteJobTracker:
         assert all(r["owner_id"] == 111 for r in rows)  # nunca ve las de otro
         assert repo.find_by_name(111, "W_relajacion") == []
 
+    def test_calc_run_lookup_by_job_id_is_scoped_to_the_owner(self, tmp_path):
+        # Ancla de «los archivos del job 14». El número de job lo escribe el
+        # usuario y es adivinable, así que el dueño va en la CONSULTA: pedir
+        # el directorio del trabajo de otro devuelve None, no el registro
+        # para que el llamador lo filtre después (ADR-0004).
+        from becario.infrastructure.storage import SQLiteCalcRunRepository
+
+        repo = SQLiteCalcRunRepository(str(tmp_path / "runs.db"))
+        repo.add(111, "14", "Zr_relajacion", "{}", "/data/runs/mia")
+        repo.add(222, "99", "W_relajacion", "{}", "/data/runs/ajena")
+
+        assert repo.find_by_job_id(111, "14")["run_dir"] == "/data/runs/mia"
+        assert repo.find_by_job_id(111, "99") is None
+        assert repo.find_by_job_id(111, "no-existe") is None
+
     def test_workflow_column_soft_migration(self, tmp_path):
         """Una base creada antes de la columna `workflow` se migra sola."""
         import sqlite3
