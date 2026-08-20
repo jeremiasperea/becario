@@ -99,6 +99,10 @@ class Pregunta:
     archivo: str         # de qué archivo sale el hecho
     hecho: str           # qué hay que calcular
     ya_existe: str = ""  # dónde lo calcula el repo hoy
+    # Qué debería emitir el brazo C. `NINGUNO` es la respuesta CORRECTA para
+    # lo que el bot no sabe calcular: abstenerse es acertar (punto 2 del
+    # plan, «no ofrecer lo que no se sabe hacer»).
+    dato_esperado: str = "ninguno"
     # Verificador: corre el código que ya existe sobre el fragmento real y
     # devuelve el valor. `None` = no hay nada que correr todavía.
     verificar: Optional[Callable[[], object]] = field(default=None, compare=False)
@@ -115,6 +119,7 @@ def _ultima_energia() -> Optional[float]:
 CORPUS: list[Pregunta] = [
     Pregunta(
         texto="Cuantas vueltas iónicas hizo?",
+        dato_esperado="pasos_ionicos",
         origen="real",
         archivo="OSZICAR",
         hecho="contar los pasos iónicos (líneas 'N F= …')",
@@ -123,6 +128,7 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="qué energía dio?",
+        dato_esperado="energia",
         origen="sintetica",
         archivo="OSZICAR",
         hecho="último E0",
@@ -131,6 +137,7 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="convergió la relajación?",
+        dato_esperado="convergencia",
         origen="sintetica",
         archivo="OSZICAR + INCAR",
         hecho="pasos iónicos contra NSW",
@@ -138,6 +145,7 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="cuántos átomos tiene la celda?",
+        dato_esperado="atomos",
         origen="sintetica",
         archivo="POSCAR/CONTCAR",
         hecho="suma de la línea de conteos",
@@ -145,6 +153,7 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="cuánto le quedó el parámetro de red?",
+        dato_esperado="parametros_red",
         origen="sintetica",
         archivo="CONTCAR",
         hecho="a, b, c, α, β, γ de la celda",
@@ -166,6 +175,7 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="por qué falló?",
+        dato_esperado="diagnostico",
         origen="sintetica",
         archivo="vasp.out + código de salida",
         hecho="diagnóstico del fallo",
@@ -179,6 +189,102 @@ CORPUS: list[Pregunta] = [
         ya_existe="",  # esta SÍ es interpretación: no hay hecho puntual
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Brazo C — el vocabulario que falta
+# ---------------------------------------------------------------------------
+# El brazo B mostró que el ruteo llega al handler correcto y PIERDE el
+# pedido: siete preguntas distintas emiten el mismo plan. La hipótesis de
+# este brazo es que falta cómo DECIR qué dato se pidió, igual que faltaba
+# cómo decir «mi home» antes del enum `base`.
+#
+# El vocabulario lista SOLO los datos que el bot ya sabe calcular (brazo A).
+# Lo que no está adentro tiene que abstenerse, no elegir el más parecido:
+# es la misma decisión del punto 2 del plan, y acá se puede medir — para
+# tres de las nueve preguntas la respuesta correcta es «ninguno».
+_DATOS = (
+    "pasos_ionicos", "energia", "convergencia",
+    "atomos", "parametros_red", "diagnostico",
+)
+
+_C_PROMPT = (
+    "Sos el extractor de B.E.C.A.R.I.O., un asistente de cluster HPC. El "
+    "mensaje pregunta por UN dato de un cálculo VASP que ya corrió. Decí "
+    "cuál de estos datos pide:\n"
+    "- pasos_ionicos: cuántas vueltas o pasos iónicos hizo la relajación\n"
+    "- energia: la energía final del cálculo\n"
+    "- convergencia: si la relajación llegó al criterio o se quedó sin pasos\n"
+    "- atomos: cuántos átomos tiene la celda\n"
+    "- parametros_red: a, b, c y los ángulos de la celda\n"
+    "- diagnostico: por qué falló la corrida\n"
+    "Si el mensaje pide cualquier otra cosa —otro dato, el archivo entero, "
+    "un resumen libre— poné 'ninguno'. NO elijas el más parecido: solo esos "
+    "seis se pueden calcular, y contestar otro con cara de correcto es peor "
+    "que decir que no se sabe.\n"
+    "'formula' y 'job_id' solo si el mensaje los nombra."
+)
+
+_C_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "dato": {"type": "string", "enum": [*_DATOS, "ninguno"]},
+        "formula": {"type": "string"},
+        "job_id": {"type": "string"},
+    },
+    "required": ["dato"],
+}
+
+
+def medir_vocabulario(modelo: str, url: str, repeticiones: int, timeout: float) -> dict:
+    """¿Alcanza con darle al plan una forma de nombrar el dato?"""
+    from becario.infrastructure.ollama_router import OllamaRouter
+
+    router = OllamaRouter(model=modelo, base_url=url, timeout=timeout)
+    filas = []
+    for p in CORPUS:
+        emitidos, latencias = [], []
+        for _ in range(repeticiones):
+            arranque = time.monotonic()
+            try:
+                crudo = router._chat(_C_PROMPT, p.texto, _C_SCHEMA)
+                dato = (json.loads(crudo or "{}").get("dato") or "ninguno").strip()
+            except (RouterUnavailableError, ValueError):
+                dato = "<sin respuesta>"
+            latencias.append(time.monotonic() - arranque)
+            emitidos.append(dato)
+        aciertos = sum(1 for d in emitidos if d == p.dato_esperado)
+        filas.append({
+            "pregunta": p.texto,
+            "origen": p.origen,
+            "esperado": p.dato_esperado,
+            "emitidos": emitidos,
+            "aciertos": aciertos,
+            "intentos": repeticiones,
+            "latencia_mediana": round(sorted(latencias)[len(latencias) // 2], 2),
+        })
+    return {"modelo": modelo, "repeticiones": repeticiones, "filas": filas}
+
+
+def imprimir_vocabulario(res: dict) -> None:
+    print(f"\n== Brazo C — vocabulario de datos, con {res['modelo']} ==")
+    for f in res["filas"]:
+        etiqueta = "REAL " if f["origen"] == "real" else "sint."
+        marca = "✅" if f["aciertos"] == f["intentos"] else "❌"
+        vistos = ", ".join(dict.fromkeys(f["emitidos"]))
+        print(f"{marca} [{etiqueta}] {f['pregunta']}  ({f['latencia_mediana']}s)")
+        print(f"       esperado {f['esperado']}  ·  emitió {vistos}")
+    # Se separan porque son dos preguntas distintas: elegir bien dentro del
+    # vocabulario, y ABSTENERSE fuera de él. Un brazo que acierta todo lo
+    # que conoce y nunca se abstiene no sirve — es E4 otra vez.
+    dentro = [f for f in res["filas"] if f["esperado"] != "ninguno"]
+    fuera = [f for f in res["filas"] if f["esperado"] == "ninguno"]
+    for nombre, grupo in (("elige bien", dentro), ("se abstiene", fuera)):
+        if not grupo:
+            continue
+        ok = sum(f["aciertos"] for f in grupo)
+        tot = sum(f["intentos"] for f in grupo)
+        print(f"   ── {nombre}: {ok}/{tot}")
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +435,10 @@ def main() -> int:
         "--ruteo", action="store_true",
         help="además del inventario, medir qué emite el router (necesita Ollama)",
     )
+    parser.add_argument(
+        "--vocabulario", action="store_true",
+        help="medir el brazo C: el enum de datos candidato (necesita Ollama)",
+    )
     parser.add_argument("--modelo", default="qwen2.5-coder:14b")
     parser.add_argument("--url", default="http://localhost:11434")
     parser.add_argument("--repeticiones", type=int, default=3)
@@ -349,7 +459,10 @@ def main() -> int:
     }
     if args.desde_json:
         guardado = json.loads(Path(args.desde_json).read_text(encoding="utf-8"))
-        imprimir_ruteo(guardado["ruteo"])
+        if "ruteo" in guardado:
+            imprimir_ruteo(guardado["ruteo"])
+        if "vocabulario" in guardado:
+            imprimir_vocabulario(guardado["vocabulario"])
         return 0
     if args.ruteo:
         if os.environ.get("BECARIO_LIVE_ROUTER_CHECK") != "1":
@@ -362,6 +475,20 @@ def main() -> int:
         res = medir_ruteo(args.modelo, args.url, args.repeticiones, args.timeout)
         imprimir_ruteo(res)
         reporte["ruteo"] = res
+
+    if args.vocabulario:
+        if os.environ.get("BECARIO_LIVE_ROUTER_CHECK") != "1":
+            print(
+                "\n--vocabulario pega contra un Ollama real: exportá "
+                "BECARIO_LIVE_ROUTER_CHECK=1 para confirmarlo explícitamente.",
+                file=sys.stderr,
+            )
+            return 1
+        voc = medir_vocabulario(
+            args.modelo, args.url, args.repeticiones, args.timeout
+        )
+        imprimir_vocabulario(voc)
+        reporte["vocabulario"] = voc
 
     if args.json:
         Path(args.json).write_text(

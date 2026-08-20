@@ -321,11 +321,42 @@ Un hallazgo lateral: el OSZICAR que el bot mostró estaba **truncado**
 (`… (archivo truncado)`), así que ni el humano podía contar sobre lo que
 vio. La pregunta no era comodidad, era la única salida.
 
-Con esto el diseño cambia de forma: en vez de un camino nuevo que
-interprete archivos, lo que corresponde medir después es un vocabulario de
-hechos —contra el mismo corpus, con los mismos dos brazos— para que el plan
-pueda llevar cuál se pidió. Queda para su propio trabajo; esto era la
-medición, no la solución.
+*Brazo C — el vocabulario candidato. **18/18 elige bien, 9/9 se
+abstiene**, 3/3 unánime en las nueve.*
+
+El brazo C le da al plan un campo para nombrar el dato, con un enum de seis
+valores: exactamente los seis que el brazo A encontró ya calculados. Lo que
+no está adentro tiene que contestar `ninguno` — el punto 2 de este mismo
+plan, *no ofrecer lo que no se sabe hacer*, ahora medible: tres de las nueve
+preguntas están afuera a propósito.
+
+Por eso la métrica va partida y no promediada. Un brazo que acierta todo lo
+que conoce y nunca se abstiene sería E4 con otra cara: a «resumime el
+OUTCAR» le contestaría la energía, con toda confianza. Las tres
+abstenciones son la mitad que más valía medir, y salieron 9/9.
+
+De paso: 2.5 s por llamada contra los ~10 s del schema grande.
+
+**La conclusión es la misma que con el enum `base`: el problema era que
+faltaba cómo decirlo.** No hace falta un camino que interprete archivos.
+Hacen falta un campo y seis parsers que ya están escritos.
+
+#### Lo que esta medición NO dice
+
+Tres límites, para que nadie la lea de más:
+
+1. El corpus tiene **una** pregunta real y ocho que escribí yo, y el enum
+   salió de la misma lista. Que alineen no es evidencia fuerte: está
+   medido contra sí mismo. Las abstenciones son lo único que podría haber
+   salido mal y no salió.
+2. El brazo C es una llamada AISLADA con schema chico. En producción el
+   campo va al schema grande —donde muerden el presupuesto de ADR-0006 y
+   el orden de los ejemplos, las dos cosas que este plan ya vio romper— o
+   a una segunda pasada tipo `extract_structure`. Cuál de las dos es la
+   decisión que sigue, y se mide antes de elegirla.
+3. Nada de esto midió las RESPUESTAS, solo el ruteo. Que el bot sepa que le
+   pidieron `pasos_ionicos` no es que sepa contestarlo bien sobre un
+   OSZICAR de 2 MB.
 
 Ojo con dos cosas al leer el reporte: el corpus tiene **una** pregunta real
 y ocho inventadas, y la primera versión del brazo B medía «ruteos que
