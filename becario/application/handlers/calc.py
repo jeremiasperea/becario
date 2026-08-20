@@ -35,6 +35,7 @@ from ...domain.models import (
     needs_explicit_lattice,
     normalize_crystal_system,
 )
+from ...domain.fuera_de_alcance import LO_QUE_SE_ARMAR
 from ...domain.reglas_fisicas import advertencias
 from ..context import Reply, _Ctx
 from ..relaxed_source import RelaxedSourceError, resolve_relaxed_structure
@@ -158,10 +159,8 @@ def build_structure_request(params: dict) -> "StructureRequest | Reply":
         # hacer, pero el pedido seguía viaje disfrazado de bulk de Zr.
         return Reply(
             text=(
-                f"⚠️ «{formula}» no es una fórmula química que sepa leer. Si "
-                "querés dos materiales juntos (una heterostructura, algo "
-                "sobre un sustrato), todavía no sé armarlo: puedo hacer "
-                "bulks, losas y moléculas de un material por vez."
+                f"⚠️ «{formula}» no es una fórmula química que sepa leer.\n\n"
+                + LO_QUE_SE_ARMAR
             ),
             ok=False,
         )
