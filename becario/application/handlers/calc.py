@@ -31,6 +31,7 @@ from ...domain.models import (
     StructureSource,
     VaspCalcRequest,
     elements_of,
+    is_plausible_formula,
     needs_explicit_lattice,
     normalize_crystal_system,
 )
@@ -122,17 +123,25 @@ def _calc_fingerprint(req: VaspCalcRequest) -> str:
     return json.dumps(data, sort_keys=True, default=str)
 
 
-def validate_structure_params(params: dict) -> Optional[Reply]:
-    """Los chequeos de `modify_structure` que NO tocan nada: devuelve el
-    `Reply` que corresponde si al pedido le falta un dato o pide algo que
-    este camino no sabe hacer, o `None` si la estructura se puede armar.
+def build_structure_request(params: dict) -> "StructureRequest | Reply":
+    """Arma el `StructureRequest` desde los parámetros crudos, o devuelve el
+    `Reply` que explica por qué no se puede. SIN I/O: sirve igual para el
+    preview del batch (validar sin ejecutar) que para el camino que después
+    construye el archivo. Mismo contrato que `_build_calc_request`.
 
-    Vive separado del handler porque el preview del batch necesita
-    exactamente esto: validar sin ejecutar. Sin él, un slab al que le falta
-    la cara se stagea igual y el usuario aprueba un plan que no se puede
-    cumplir — cambiar un fallo silencioso por otro no es una mejora.
+    Construir el pedido ES la validación. Antes esto chequeaba a mano un
+    subconjunto —que hubiera fórmula, que una losa trajera su cara— y
+    dejaba pasar todo lo demás: por eso un paso con `formula='Zr_on_W'`
+    llegaba al preview del batch con un botón de aprobar, cuando
+    `StructureRequest` lo rechaza en el acto. Ofrecerle al usuario aprobar
+    algo que está garantizado que falla es la misma clase de mentira que
+    dibujar vacío un directorio que no existe.
+
+    Lo que se pregunta —la cara de una losa, la red de un compuesto— va
+    ANTES de construir, porque el modelo exige esos campos y su error no
+    sabe preguntar. Todo lo demás lo decide el pedido armado.
     """
-    formula = params.get("formula") or params.get("formula_quimica")
+    formula = str(params.get("formula") or params.get("formula_quimica") or "").strip()
     if not formula:
         # Misma razón que en `prepare_calc`: es una pregunta, y una pregunta
         # que no deja el pedido esperando obliga al usuario a repetirlo
@@ -142,6 +151,20 @@ def validate_structure_params(params: dict) -> Optional[Reply]:
             '"generá un POSCAR de Si diamond 2x2x2".',
             ok=False, awaiting_params=True,
         )
+    if not is_plausible_formula(formula):
+        # Frontera fail-closed, y va primero porque de acá en adelante todo
+        # lee la fórmula: `elements_of` decide si hace falta una red, y sobre
+        # `Zr_on_W` respondía `['Zr']` — apilar dos materiales no se sabe
+        # hacer, pero el pedido seguía viaje disfrazado de bulk de Zr.
+        return Reply(
+            text=(
+                f"⚠️ «{formula}» no es una fórmula química que sepa leer. Si "
+                "querés dos materiales juntos (una heterostructura, algo "
+                "sobre un sustrato), todavía no sé armarlo: puedo hacer "
+                "bulks, losas y moléculas de un material por vez."
+            ),
+            ok=False,
+        )
     kind_raw = str(params.get("tipo_estructura", "")).lower()
     kind = (
         StructureKind(kind_raw)
@@ -149,15 +172,15 @@ def validate_structure_params(params: dict) -> Optional[Reply]:
         else StructureKind.BULK
     )
     if kind is StructureKind.SLAB and not params.get("miller"):
-        return _ask_for_miller(str(formula))
+        return _ask_for_miller(formula)
     # Las moléculas salen de la base G2 por nombre, no de `bulk()`: H2O
     # tiene dos elementos y NO necesita red. Solo el cristal la pide.
     if kind is not StructureKind.MOLECULE and needs_explicit_lattice(
-        str(formula),
+        formula,
         params.get("red_cristalina"),
         params.get("parametro_red"),
     ):
-        return _ask_for_lattice(str(formula))
+        return _ask_for_lattice(formula)
     # Generar un archivo suelto arma la estructura IDEAL con ASE: no pasa
     # por Materials Project ni por el CONTCAR de una corrida previa. Si el
     # pedido nombró otra fuente hay que decirlo, porque devolver la ideal
@@ -174,25 +197,16 @@ def validate_structure_params(params: dict) -> Optional[Reply]:
             ),
             ok=False,
         )
-    return None
-
-
-def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
-    if (problema := validate_structure_params(params)) is not None:
-        return problema
-    formula = params.get("formula") or params.get("formula_quimica")
+    fmt_raw = str(params.get("formato_salida", "vasp")).lower()
+    fmt = (
+        OutputFormat(fmt_raw)
+        if fmt_raw in OutputFormat._value2member_map_
+        else OutputFormat.VASP
+    )
+    sc = params.get("supercelda") or [1, 1, 1]
     try:
-        kind_raw = str(params.get("tipo_estructura", "")).lower()
-        kind = (
-            StructureKind(kind_raw)
-            if kind_raw in StructureKind._value2member_map_
-            else StructureKind.BULK
-        )
-        fmt_raw = str(params.get("formato_salida", "vasp")).lower()
-        fmt = OutputFormat(fmt_raw) if fmt_raw in OutputFormat._value2member_map_ else OutputFormat.VASP
-        sc = params.get("supercelda") or [1, 1, 1]
-        req = StructureRequest(
-            formula=str(formula),
+        return StructureRequest(
+            formula=formula,
             kind=kind,
             crystal=params.get("red_cristalina"),
             lattice_a=params.get("parametro_red"),
@@ -204,6 +218,23 @@ def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         )
     except (ValidationError, ValueError, TypeError) as exc:
         return Reply(text=f"⚠️ Parámetros de estructura inválidos:\n{exc}", ok=False)
+
+
+def validate_structure_params(params: dict) -> Optional[Reply]:
+    """El pedido de estructura, visto solo como «¿se puede o no?».
+
+    Es `build_structure_request` para quien no necesita el pedido armado
+    sino el motivo: el preview del batch, que valida cada paso antes de
+    stagearlo.
+    """
+    resultado = build_structure_request(params)
+    return resultado if isinstance(resultado, Reply) else None
+
+
+def modify_structure(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    req = build_structure_request(params)
+    if isinstance(req, Reply):
+        return req
 
     try:
         result = svc._structures.build(req)
