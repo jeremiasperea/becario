@@ -1,0 +1,213 @@
+{
+  "generado": "2026-08-20T21:43:25+00:00",
+  "inventario": {
+    "total": 9,
+    "ya_calculado_en_el_repo": 6,
+    "filas": [
+      {
+        "pregunta": "Cuantas vueltas iónicas hizo?",
+        "origen": "real",
+        "archivo": "OSZICAR",
+        "hecho": "contar los pasos iónicos (líneas 'N F= …')",
+        "ya_existe": "relaxed_source._IONIC_STEP_RE (se usa en _check_convergence)",
+        "valor_verificado": 2,
+        "error": null
+      },
+      {
+        "pregunta": "qué energía dio?",
+        "origen": "sintetica",
+        "archivo": "OSZICAR",
+        "hecho": "último E0",
+        "ya_existe": "queries._parse_last_e0 y job_monitor._parse_last_e0",
+        "valor_verificado": -17.097775,
+        "error": null
+      },
+      {
+        "pregunta": "convergió la relajación?",
+        "origen": "sintetica",
+        "archivo": "OSZICAR + INCAR",
+        "hecho": "pasos iónicos contra NSW",
+        "ya_existe": "relaxed_source._check_convergence (devuelve además el aviso)",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "cuántos átomos tiene la celda?",
+        "origen": "sintetica",
+        "archivo": "POSCAR/CONTCAR",
+        "hecho": "suma de la línea de conteos",
+        "ya_existe": "job_monitor._parse_poscar_n_atoms",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "cuánto le quedó el parámetro de red?",
+        "origen": "sintetica",
+        "archivo": "CONTCAR",
+        "hecho": "a, b, c, α, β, γ de la celda",
+        "ya_existe": "queries._parse_poscar_cell (es lo que contesta consultar_resultados)",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "con qué ENCUT corrió?",
+        "origen": "sintetica",
+        "archivo": "INCAR",
+        "hecho": "leer un tag del INCAR",
+        "ya_existe": "",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "cuántos pasos electrónicos tardó la primera vuelta?",
+        "origen": "sintetica",
+        "archivo": "OSZICAR",
+        "hecho": "contar líneas DAV/RMM antes del primer 'F='",
+        "ya_existe": "",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "por qué falló?",
+        "origen": "sintetica",
+        "archivo": "vasp.out + código de salida",
+        "hecho": "diagnóstico del fallo",
+        "ya_existe": "job_monitor (el aviso de trabajo terminado ya lo arma)",
+        "valor_verificado": null,
+        "error": null
+      },
+      {
+        "pregunta": "resumime qué dice el OUTCAR",
+        "origen": "sintetica",
+        "archivo": "OUTCAR",
+        "hecho": "resumen libre",
+        "ya_existe": "",
+        "valor_verificado": null,
+        "error": null
+      }
+    ]
+  },
+  "ruteo": {
+    "modelo": "qwen2.5-coder:14b",
+    "repeticiones": 3,
+    "filas": [
+      {
+        "pregunta": "Cuantas vueltas iónicas hizo?",
+        "origen": "real",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 12.02
+      },
+      {
+        "pregunta": "qué energía dio?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 8.57
+      },
+      {
+        "pregunta": "convergió la relajación?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 11.65
+      },
+      {
+        "pregunta": "cuántos átomos tiene la celda?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 8.26
+      },
+      {
+        "pregunta": "cuánto le quedó el parámetro de red?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 8.21
+      },
+      {
+        "pregunta": "con qué ENCUT corrió?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 8.18
+      },
+      {
+        "pregunta": "cuántos pasos electrónicos tardó la primera vuelta?",
+        "origen": "sintetica",
+        "emitidos": [
+          "consultar_resultados",
+          "consultar_resultados",
+          "consultar_resultados"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 13.87
+      },
+      {
+        "pregunta": "por qué falló?",
+        "origen": "sintetica",
+        "emitidos": [
+          "explicar",
+          "explicar",
+          "explicar"
+        ],
+        "utiles": 0,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 7.74
+      },
+      {
+        "pregunta": "resumime qué dice el OUTCAR",
+        "origen": "sintetica",
+        "emitidos": [
+          "ver_archivo",
+          "ver_archivo",
+          "ver_archivo"
+        ],
+        "utiles": 3,
+        "intentos": 3,
+        "fallos_de_router": 0,
+        "latencia_mediana": 10.99
+      }
+    ]
+  }
+}

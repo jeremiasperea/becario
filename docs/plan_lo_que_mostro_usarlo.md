@@ -276,6 +276,62 @@ El más grande de los seis y el menos urgente. Requiere que el bot
 interprete un archivo, no que lo muestre. Conviene medirlo antes de
 diseñarlo, como se hizo con el router en dos etapas.
 
+#### Lo que dijo la medición
+
+Se midió antes de diseñar, con `scripts/medir_preguntas_de_contenido.py`
+sobre nueve preguntas —la real más ocho de la misma familia, marcadas como
+sintéticas— y el resultado corrige el párrafo de arriba. **Estas preguntas
+no piden interpretación: piden un parseo, y la mayoría de esos parseos ya
+están escritos.**
+
+*Brazo A — inventario, sin LLM. **6 de 9 ya se calculan en el repo.***
+
+La pregunta real es una de ellas:
+
+```
+✅ [REAL ] Cuantas vueltas iónicas hizo?
+       ya está en: relaxed_source._IONIC_STEP_RE (se usa en _check_convergence)
+       verificado sobre el fragmento real -> 2
+```
+
+`_check_convergence` cuenta los pasos iónicos en cada relajación, para
+avisar si se quedó sin NSW. El bot **tenía el número**, lo dice en otra
+frase por otro motivo, y cuando se lo preguntaron contestó «no pude
+interpretar tu pedido». Es E1 un escalón más adentro: la capacidad está en
+el módulo de al lado y no hay cómo nombrarla.
+
+De las nueve, una sola pide interpretación de verdad —«resumime qué dice el
+OUTCAR», que no tiene un hecho puntual que calcular—. Las otras dos que
+faltan son parsers chicos: leer un tag del INCAR, contar pasos electrónicos.
+
+*Brazo B — ruteo, con Ollama. **3 planes distintos para 9 hechos
+distintos; 7 de 9 preguntas comparten plan con otra.***
+
+El router no se pierde: manda siete de las nueve a `consultar_resultados`,
+3/3 unánime. El problema es que ese handler contesta UNA cosa fija —los
+parámetros de red y el E0 de la última corrida— sin importar qué se
+preguntó. Dos preguntas caen bien de casualidad (justo piden eso); las
+otras cinco reciben, con toda confianza, la respuesta a otra pregunta.
+
+O sea que el ruteo **pierde el pedido**: «cuántas vueltas iónicas hizo» y
+«qué energía dio» producen el mismo plan byte a byte. No falta un handler
+que interprete archivos — falta que el plan pueda decir QUÉ hecho se pidió.
+
+Un hallazgo lateral: el OSZICAR que el bot mostró estaba **truncado**
+(`… (archivo truncado)`), así que ni el humano podía contar sobre lo que
+vio. La pregunta no era comodidad, era la única salida.
+
+Con esto el diseño cambia de forma: en vez de un camino nuevo que
+interprete archivos, lo que corresponde medir después es un vocabulario de
+hechos —contra el mismo corpus, con los mismos dos brazos— para que el plan
+pueda llevar cuál se pidió. Queda para su propio trabajo; esto era la
+medición, no la solución.
+
+Ojo con dos cosas al leer el reporte: el corpus tiene **una** pregunta real
+y ocho inventadas, y la primera versión del brazo B medía «ruteos que
+nombran el archivo» y daba 24/27 — un número que sonaba bien y no medía
+nada. Está anotado en el script para que no se repita.
+
 ## Cómo se verifica
 
 Los seis salen de mensajes reales, así que van a `tests/conversaciones/`
