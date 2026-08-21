@@ -1,5 +1,5 @@
 {
-  "generado": "2026-08-20T23:13:51+00:00",
+  "generado": "2026-08-21T03:14:29+00:00",
   "inventario": {
     "total": 9,
     "ya_calculado_en_el_repo": 6,
@@ -225,7 +225,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.99
+        "latencia_mediana": 3.46
       },
       {
         "pregunta": "qué energía dio?",
@@ -238,7 +238,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.29
+        "latencia_mediana": 2.87
       },
       {
         "pregunta": "convergió la relajación?",
@@ -251,7 +251,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.73
+        "latencia_mediana": 2.68
       },
       {
         "pregunta": "cuántos átomos tiene la celda?",
@@ -264,7 +264,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.29
+        "latencia_mediana": 2.24
       },
       {
         "pregunta": "cuánto le quedó el parámetro de red?",
@@ -277,7 +277,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.52
+        "latencia_mediana": 2.51
       },
       {
         "pregunta": "con qué ENCUT corrió?",
@@ -290,7 +290,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.28
+        "latencia_mediana": 2.51
       },
       {
         "pregunta": "cuántos pasos electrónicos tardó la primera vuelta?",
@@ -303,20 +303,20 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.29
+        "latencia_mediana": 2.26
       },
       {
         "pregunta": "por qué falló?",
         "origen": "sintetica",
-        "esperado": "diagnostico",
+        "esperado": "ninguno",
         "emitidos": [
-          "diagnostico",
-          "diagnostico",
-          "diagnostico"
+          "ninguno",
+          "ninguno",
+          "ninguno"
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.5
+        "latencia_mediana": 2.45
       },
       {
         "pregunta": "resumime qué dice el OUTCAR",
@@ -329,7 +329,7 @@
         ],
         "aciertos": 3,
         "intentos": 3,
-        "latencia_mediana": 2.57
+        "latencia_mediana": 2.32
       }
     ]
   }

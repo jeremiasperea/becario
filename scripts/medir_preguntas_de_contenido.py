@@ -71,7 +71,12 @@ from becario.application.handlers.queries import (  # noqa: E402
     _parse_last_e0,
     _parse_poscar_cell,
 )
+from becario.domain.datos_de_corrida import NINGUNO  # noqa: E402
 from becario.domain.models import RouterUnavailableError  # noqa: E402
+from becario.infrastructure.ollama_router import (  # noqa: E402
+    _DATO_PROMPT,
+    _DATO_SCHEMA,
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 _FIXTURES = _ROOT / "tests" / "fixtures" / "contenido"
@@ -102,7 +107,7 @@ class Pregunta:
     # Qué debería emitir el brazo C. `NINGUNO` es la respuesta CORRECTA para
     # lo que el bot no sabe calcular: abstenerse es acertar (punto 2 del
     # plan, «no ofrecer lo que no se sabe hacer»).
-    dato_esperado: str = "ninguno"
+    dato_esperado: str = NINGUNO
     # Verificador: corre el código que ya existe sobre el fragmento real y
     # devuelve el valor. `None` = no hay nada que correr todavía.
     verificar: Optional[Callable[[], object]] = field(default=None, compare=False)
@@ -175,7 +180,9 @@ CORPUS: list[Pregunta] = [
     ),
     Pregunta(
         texto="por qué falló?",
-        dato_esperado="diagnostico",
+        # Era `diagnostico` cuando el vocabulario tenía seis valores. Con
+        # cinco, la respuesta correcta es abstenerse.
+        dato_esperado=NINGUNO,
         origen="sintetica",
         archivo="vasp.out + código de salida",
         hecho="diagnóstico del fallo",
@@ -203,37 +210,16 @@ CORPUS: list[Pregunta] = [
 # Lo que no está adentro tiene que abstenerse, no elegir el más parecido:
 # es la misma decisión del punto 2 del plan, y acá se puede medir — para
 # tres de las nueve preguntas la respuesta correcta es «ninguno».
-_DATOS = (
-    "pasos_ionicos", "energia", "convergencia",
-    "atomos", "parametros_red", "diagnostico",
-)
-
-_C_PROMPT = (
-    "Sos el extractor de B.E.C.A.R.I.O., un asistente de cluster HPC. El "
-    "mensaje pregunta por UN dato de un cálculo VASP que ya corrió. Decí "
-    "cuál de estos datos pide:\n"
-    "- pasos_ionicos: cuántas vueltas o pasos iónicos hizo la relajación\n"
-    "- energia: la energía final del cálculo\n"
-    "- convergencia: si la relajación llegó al criterio o se quedó sin pasos\n"
-    "- atomos: cuántos átomos tiene la celda\n"
-    "- parametros_red: a, b, c y los ángulos de la celda\n"
-    "- diagnostico: por qué falló la corrida\n"
-    "Si el mensaje pide cualquier otra cosa —otro dato, el archivo entero, "
-    "un resumen libre— poné 'ninguno'. NO elijas el más parecido: solo esos "
-    "seis se pueden calcular, y contestar otro con cara de correcto es peor "
-    "que decir que no se sabe.\n"
-    "'formula' y 'job_id' solo si el mensaje los nombra."
-)
-
-_C_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "dato": {"type": "string", "enum": [*_DATOS, "ninguno"]},
-        "formula": {"type": "string"},
-        "job_id": {"type": "string"},
-    },
-    "required": ["dato"],
-}
+# El brazo C usa el prompt y el schema DE PRODUCCIÓN, no una copia. La
+# primera versión los tenía duplicados acá, y una copia se desincroniza el
+# día que alguien toca el original: la medición seguiría dando 18/18 sobre
+# un vocabulario que ya no es el que corre.
+#
+# Se midió con seis valores y se implementaron CINCO: `diagnostico` quedó
+# afuera porque el diagnóstico de un fallo vive hoy en el monitor, atado al
+# aviso proactivo, y traerlo hasta acá es su propio trabajo. Prometerlo en
+# la lista sin poder cumplirlo sería el defecto que este plan vino a cerrar,
+# así que la pregunta «por qué falló?» pasó a esperar `ninguno`.
 
 
 def medir_vocabulario(modelo: str, url: str, repeticiones: int, timeout: float) -> dict:
@@ -247,8 +233,8 @@ def medir_vocabulario(modelo: str, url: str, repeticiones: int, timeout: float) 
         for _ in range(repeticiones):
             arranque = time.monotonic()
             try:
-                crudo = router._chat(_C_PROMPT, p.texto, _C_SCHEMA)
-                dato = (json.loads(crudo or "{}").get("dato") or "ninguno").strip()
+                crudo = router._chat(_DATO_PROMPT, p.texto, _DATO_SCHEMA)
+                dato = (json.loads(crudo or "{}").get("dato") or NINGUNO).strip()
             except (RouterUnavailableError, ValueError):
                 dato = "<sin respuesta>"
             latencias.append(time.monotonic() - arranque)
@@ -277,8 +263,8 @@ def imprimir_vocabulario(res: dict) -> None:
     # Se separan porque son dos preguntas distintas: elegir bien dentro del
     # vocabulario, y ABSTENERSE fuera de él. Un brazo que acierta todo lo
     # que conoce y nunca se abstiene no sirve — es E4 otra vez.
-    dentro = [f for f in res["filas"] if f["esperado"] != "ninguno"]
-    fuera = [f for f in res["filas"] if f["esperado"] == "ninguno"]
+    dentro = [f for f in res["filas"] if f["esperado"] != NINGUNO]
+    fuera = [f for f in res["filas"] if f["esperado"] == NINGUNO]
     for nombre, grupo in (("elige bien", dentro), ("se abstiene", fuera)):
         if not grupo:
             continue
