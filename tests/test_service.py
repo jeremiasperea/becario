@@ -1658,6 +1658,120 @@ class TestExplainRespondePreguntas:
         )
 
 
+class TestPreguntasPorUnDatoDeLaCorrida:
+    """«¿Cuántas vueltas iónicas hizo?» sobre un OSZICAR que el bot acababa
+    de mostrar, y que terminó en el texto de ayuda.
+
+    Medido antes de diseñarlo: la pregunta no pedía interpretar el archivo
+    —el conteo ya existía en `relaxed_source`— sino poder DECIR qué dato se
+    pedía. El ruteo emitía el mismo plan byte a byte para siete preguntas
+    distintas, así que el handler contestaba lo mismo a todas.
+    """
+
+    RUN_DIR = "/data/runs/zr_relax"
+
+    def _setup(self, service, factory, oszicar=None, incar=None):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "14", "Zr_relajacion", "{}", self.RUN_DIR
+        )
+        cluster = factory.for_identity(ALICE)
+        cluster.remote_files[f"{self.RUN_DIR}/CONTCAR"] = _CONTCAR_ZR
+        cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"] = oszicar or (
+            "   1 F= -.17096101E+02 E0= -.17098019E+02  d E =-.17E+02\n"
+            "   2 F= -.17095638E+02 E0= -.17097775E+02  d E =0.46E-03\n"
+        )
+        if incar is not None:
+            cluster.remote_files[f"{self.RUN_DIR}/INCAR"] = incar
+        return cluster
+
+    def _preguntar(self, service, router, dato):
+        router.next = RoutedRequest(
+            intent=Intent.QUERY_RESULTS, params={"formula": "Zr", "dato": dato}
+        )
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="x"
+        )
+
+    def test_cuenta_las_vueltas_ionicas(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "pasos_ionicos")
+        assert reply.ok
+        assert "2 paso(s) iónico(s)" in reply.text
+        # Y dice de qué corrida salió: un número suelto no sirve.
+        assert "Zr_relajacion" in reply.text and "14" in reply.text
+
+    def test_la_energia_es_el_ultimo_e0(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "energia")
+        assert "-17.097775" in reply.text
+
+    def test_cuenta_los_atomos_de_la_celda(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "atomos")
+        assert "2 átomo(s)" in reply.text
+
+    def test_convergio_compara_los_pasos_contra_el_nsw(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory, incar="IBRION = 2\nNSW = 180\n")
+        reply = self._preguntar(service, router, "convergencia")
+        assert reply.ok
+        assert "convergió" in reply.text and "2 de 180" in reply.text
+
+    def test_quedarse_sin_nsw_no_es_haber_convergido(self, env):
+        # El caso peligroso: termina sin error y la estructura NO está
+        # relajada. Mismo criterio que `relaxed_source`, misma advertencia.
+        service, router, factory, *_ = env
+        self._setup(service, factory, incar="IBRION = 2\nNSW = 2\n")
+        reply = self._preguntar(service, router, "convergencia")
+        assert not reply.ok
+        assert "NO está relajada" in reply.text
+
+    def test_sin_incar_no_se_afirma_nada_sobre_la_convergencia(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)  # sin INCAR
+        reply = self._preguntar(service, router, "convergencia")
+        assert not reply.ok
+        assert "No pude verificar" in reply.text
+
+    def test_un_dato_fuera_del_vocabulario_se_dice_no_se_contesta_otro(self, env):
+        # Lo que hacía antes: la pregunta caía en `consultar_resultados` y
+        # recibía los parámetros de red — otra respuesta, con cara de
+        # correcta. Ahora rebota diciendo qué SÍ se puede.
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "ninguno")
+        assert not reply.ok
+        assert "no está entre ellos" in reply.text
+        assert "pasos iónicos" in reply.text or "vueltas" in reply.text
+        assert "a = " not in reply.text  # NO contestó los parámetros de red
+
+    def test_sin_dato_contesta_lo_general_como_siempre(self, env):
+        # Plan viejo, router caído o pregunta general: el camino de antes
+        # sigue intacto. La segunda pasada es una mejora, no un requisito.
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, None)
+        assert reply.ok
+        assert "a = 3.2300" in reply.text
+
+    def test_un_dato_inventado_tampoco_rompe(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "cantidad_de_vueltas")
+        assert reply.ok and "a = 3.2300" in reply.text
+
+    def test_un_oszicar_ilegible_no_inventa_un_numero(self, env):
+        service, router, factory, *_ = env
+        cluster = self._setup(service, factory)
+        del cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"]
+        reply = self._preguntar(service, router, "pasos_ionicos")
+        assert not reply.ok
+        assert "OSZICAR" in reply.text
+
+
 class TestQueryResults:
     """'dame los parámetros de red del Zr' lee la celda de la corrida
     previa (CONTCAR si hubo relajación) en vez de contestar el historial."""

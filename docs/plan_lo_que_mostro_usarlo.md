@@ -363,6 +363,41 @@ y ocho inventadas, y la primera versión del brazo B medía «ruteos que
 nombran el archivo» y daba 24/27 — un número que sonaba bien y no medía
 nada. Está anotado en el script para que no se repita.
 
+#### Lo que se implementó
+
+Segunda pasada, no campo del schema grande. El límite 2 de arriba decía que
+la evidencia era de la llamada corta y aislada, así que se implementó eso y
+no lo otro: `OllamaRouter.extract_dato`, con la misma forma que
+`extract_structure` —que ya es exactamente esta figura para el eje del
+material— y `_backfill_dato` completando `dato` cuando el plan tiene
+EXACTAMENTE un paso de `consultar_resultados` que no lo trae. Cuesta una
+llamada corta y solo sobre planes de consulta: los cálculos, listados y
+archivos no pagan nada. Fail-open, igual que la otra pasada.
+
+El vocabulario vive en el dominio (`becario/domain/datos_de_corrida.py`),
+con las funciones que calculan cada dato. El prompt del router se ARMA con
+ese enum en vez de repetirlo, así que agregar un valor y olvidarse de
+explicarlo es imposible.
+
+**Se implementaron cinco de los seis medidos.** `diagnostico` quedó afuera:
+el diagnóstico de un fallo vive hoy en el monitor, atado al aviso
+proactivo, y traerlo hasta acá es su propio trabajo. Dejarlo en la lista
+sin poder cumplirlo sería exactamente el defecto que este plan vino a
+cerrar, así que se sacó y se **volvió a medir** con el vocabulario real —
+una medición sobre un enum que no es el que corre no dice nada:
+
+    ── elige bien: 15/15
+    ── se abstiene: 12/12
+
+Y «por qué falló?» pasó a abstenerse, correctamente, ahora que el bot no
+promete contestarlo por este camino.
+
+Del lado del handler, `consultar_resultados` contesta el dato pedido y, si
+el modelo dijo `ninguno`, dice que no sabe calcularlo y enumera lo que sí
+— en vez de devolver los parámetros de red como si nada, que era responder
+otra cosa con cara de respuesta. Sin `dato` (plan viejo, router caído,
+pregunta general) el camino de antes queda intacto.
+
 ## Cómo se verifica
 
 Los seis salen de mensajes reales, así que van a `tests/conversaciones/`
