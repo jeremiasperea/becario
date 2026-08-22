@@ -60,25 +60,34 @@ _TIMEOUT_LECTURA = 90.0
 logger = logging.getLogger(__name__)
 
 
-class _SesionConTope(requests.Session):
-    """`requests.Session` que le pone tope a todo lo que sale.
+def _poner_tope(sesion: requests.Session, timeout: tuple[float, float]) -> requests.Session:
+    """Le agrega un tope de espera a una sesión YA armada, sin reemplazarla.
 
-    Existe porque `MPRester` no acepta `timeout` —solo `session`— y
-    `requests` sin `timeout` espera PARA SIEMPRE. El manejo del vencimiento
-    ya estaba escrito acá abajo (`RequestsTimeout` se mapea a `NETWORK` y se
-    reintenta); lo único que faltaba era que el vencimiento pudiera ocurrir.
+    Existe porque `MPRester` no acepta `timeout`, y la salida obvia —pasarle
+    `session=`— es una trampa. Su constructor hace
+    `self.session = session or BaseRester._create_session(...)`, y ese `or`
+    quiere decir que la sesión que uno pasa no se COMPLEMENTA con la de la
+    biblioteca: la REEMPLAZA. Y `_create_session` es lo que pone la cabecera
+    `x-api-key`, el user-agent y el adaptador con reintentos y manejo de
+    429/502/504.
 
-    `setdefault` y no asignación: si algún día un llamador pide su propio
-    tope, gana el suyo.
+    Se probó así primero y salió caro: Materials Project quedó respondiendo
+    sin autenticar, ZrO2 dejó de traer sus polimorfos, y la repregunta por
+    la fase —que depende de esos polimorfos— desapareció. Cinco escenarios
+    de la batería en rojo (CV16–CV20) por agregar un timeout.
+
+    Envolver el `request` de la sesión que la biblioteca ya armó agrega el
+    tope y no saca nada. `setdefault` y no asignación: si un llamador pide
+    su propio tope, gana el suyo.
     """
+    original = sesion.request
 
-    def __init__(self, timeout: tuple[float, float]) -> None:
-        super().__init__()
-        self._timeout = timeout
+    def request(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout)
+        return original(method, url, **kwargs)
 
-    def request(self, method, url, **kwargs):  # type: ignore[override]
-        kwargs.setdefault("timeout", self._timeout)
-        return super().request(method, url, **kwargs)
+    sesion.request = request  # type: ignore[method-assign]
+    return sesion
 
 
 class MaterialsProjectProvider:
@@ -94,10 +103,11 @@ class MaterialsProjectProvider:
         self._rester_factory = rester_factory or self._default_rester
 
     def _default_rester(self) -> object:
-        return MPRester(
-            api_key=self._api_key,
-            session=_SesionConTope((_TIMEOUT_CONEXION, _TIMEOUT_LECTURA)),
-        )
+        # La sesión la arma `mp_api` (con su key, su user-agent y sus
+        # reintentos); acá solo se le agrega el tope de espera.
+        rester = MPRester(api_key=self._api_key)
+        _poner_tope(rester.session, (_TIMEOUT_CONEXION, _TIMEOUT_LECTURA))
+        return rester
 
     # ------------------------------------------------------------------
     def resolve(self, query: StructureQuery) -> StructureResolution:
