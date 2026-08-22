@@ -276,6 +276,93 @@ El más grande de los seis y el menos urgente. Requiere que el bot
 interprete un archivo, no que lo muestre. Conviene medirlo antes de
 diseñarlo, como se hizo con el router en dos etapas.
 
+#### Lo que dijo la medición
+
+Se midió antes de diseñar, con `scripts/medir_preguntas_de_contenido.py`
+sobre nueve preguntas —la real más ocho de la misma familia, marcadas como
+sintéticas— y el resultado corrige el párrafo de arriba. **Estas preguntas
+no piden interpretación: piden un parseo, y la mayoría de esos parseos ya
+están escritos.**
+
+*Brazo A — inventario, sin LLM. **6 de 9 ya se calculan en el repo.***
+
+La pregunta real es una de ellas:
+
+```
+✅ [REAL ] Cuantas vueltas iónicas hizo?
+       ya está en: relaxed_source._IONIC_STEP_RE (se usa en _check_convergence)
+       verificado sobre el fragmento real -> 2
+```
+
+`_check_convergence` cuenta los pasos iónicos en cada relajación, para
+avisar si se quedó sin NSW. El bot **tenía el número**, lo dice en otra
+frase por otro motivo, y cuando se lo preguntaron contestó «no pude
+interpretar tu pedido». Es E1 un escalón más adentro: la capacidad está en
+el módulo de al lado y no hay cómo nombrarla.
+
+De las nueve, una sola pide interpretación de verdad —«resumime qué dice el
+OUTCAR», que no tiene un hecho puntual que calcular—. Las otras dos que
+faltan son parsers chicos: leer un tag del INCAR, contar pasos electrónicos.
+
+*Brazo B — ruteo, con Ollama. **3 planes distintos para 9 hechos
+distintos; 7 de 9 preguntas comparten plan con otra.***
+
+El router no se pierde: manda siete de las nueve a `consultar_resultados`,
+3/3 unánime. El problema es que ese handler contesta UNA cosa fija —los
+parámetros de red y el E0 de la última corrida— sin importar qué se
+preguntó. Dos preguntas caen bien de casualidad (justo piden eso); las
+otras cinco reciben, con toda confianza, la respuesta a otra pregunta.
+
+O sea que el ruteo **pierde el pedido**: «cuántas vueltas iónicas hizo» y
+«qué energía dio» producen el mismo plan byte a byte. No falta un handler
+que interprete archivos — falta que el plan pueda decir QUÉ hecho se pidió.
+
+Un hallazgo lateral: el OSZICAR que el bot mostró estaba **truncado**
+(`… (archivo truncado)`), así que ni el humano podía contar sobre lo que
+vio. La pregunta no era comodidad, era la única salida.
+
+*Brazo C — el vocabulario candidato. **18/18 elige bien, 9/9 se
+abstiene**, 3/3 unánime en las nueve.*
+
+El brazo C le da al plan un campo para nombrar el dato, con un enum de seis
+valores: exactamente los seis que el brazo A encontró ya calculados. Lo que
+no está adentro tiene que contestar `ninguno` — el punto 2 de este mismo
+plan, *no ofrecer lo que no se sabe hacer*, ahora medible: tres de las nueve
+preguntas están afuera a propósito.
+
+Por eso la métrica va partida y no promediada. Un brazo que acierta todo lo
+que conoce y nunca se abstiene sería E4 con otra cara: a «resumime el
+OUTCAR» le contestaría la energía, con toda confianza. Las tres
+abstenciones son la mitad que más valía medir, y salieron 9/9.
+
+De paso: 2.5 s por llamada contra los ~10 s del schema grande.
+
+**La conclusión es la misma que con el enum `base`: el problema era que
+faltaba cómo decirlo.** No hace falta un camino que interprete archivos.
+Hacen falta un campo y seis parsers que ya están escritos.
+
+#### Lo que esta medición NO dice
+
+Tres límites, para que nadie la lea de más:
+
+1. El corpus tiene **una** pregunta real y ocho que escribí yo, y el enum
+   salió de la misma lista. Que alineen no es evidencia fuerte: está
+   medido contra sí mismo. Las abstenciones son lo único que podría haber
+   salido mal y no salió.
+2. El brazo C es una llamada AISLADA con schema chico. En producción el
+   campo va al schema grande —donde muerden el presupuesto de ADR-0006 y
+   el orden de los ejemplos, las dos cosas que este plan ya vio romper— o
+   a una segunda pasada tipo `extract_structure`. Cuál de las dos es la
+   decisión que sigue, y se mide antes de elegirla.
+3. Nada de esto midió las RESPUESTAS, solo el ruteo. Que el bot sepa que le
+   pidieron `pasos_ionicos` no es que sepa contestarlo bien sobre un
+   OSZICAR de 2 MB.
+
+Ojo con dos cosas al leer el reporte: el corpus tiene **una** pregunta real
+y ocho inventadas, y la primera versión del brazo B medía «ruteos que
+nombran el archivo» y daba 24/27 — un número que sonaba bien y no medía
+nada. Está anotado en el script para que no se repita.
+
 ## Cómo se verifica
 
 Los seis salen de mensajes reales, así que van a `tests/conversaciones/`
