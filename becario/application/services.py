@@ -590,6 +590,13 @@ class BecarioService:
             actions.append(PendingAction(
                 chat_id=ctx.chat_id, requester_id=ctx.user_id,
                 intent=step.action, description=line, payload=dict(step.parametros),
+                # El pedido original viaja con cada paso, igual que en el
+                # camino de un solo cálculo: es lo que habilita el ✏️. Sin
+                # esto, frente al batch MÁS equivocado de la sesión —ocho
+                # pasos, con el material y la red mal— las únicas salidas
+                # eran ✅ y ❌: aprobar algo que no es lo pedido, o tirar el
+                # plan entero y volver a escribirlo.
+                request_intent=step.action, request_params=dict(step.parametros),
             ))
         pending = PendingPlan(
             chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=actions,
@@ -608,6 +615,7 @@ class BecarioService:
             ),
             needs_confirmation=True,
             confirmation_token=token,
+            allow_modify=pending.allow_modify,
         )
 
     def _intent_handlers(self) -> dict:

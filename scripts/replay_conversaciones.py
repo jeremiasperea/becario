@@ -65,7 +65,7 @@ _SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "tests" / "conversacio
 #   sintoma: ...          (qué se vio fallar en la bitácora; solo documenta)
 #   > texto del usuario   (turno: mensaje entrante)
 #   boton: confirmar|cancelar|modificar
-#   espera: ok|error|confirmacion|dato   (flags esperados del último turno)
+#   espera: ok|error|confirmacion|modificable|dato  (flags del último turno)
 #   contiene: substring
 #   no_contiene: substring
 #   regex: patrón
@@ -232,6 +232,12 @@ def _flatten(reply) -> tuple[str, set[str], Optional[str]]:
             token = r.confirmation_token
         if r.needs_confirmation:
             flags.add("confirmacion")
+        if r.needs_confirmation and r.allow_modify:
+            # Que el plan se pueda CORREGIR es parte de lo que el usuario
+            # ve, y hasta acá no se podía afirmar en un escenario: el
+            # preview del batch ofrecía ✅ y ❌ y nada más, y eso pasaba
+            # inadvertido para la batería.
+            flags.add("modificable")
         if r.awaiting_params:
             flags.add("dato")
         if top:

@@ -1,0 +1,12 @@
+# Un batch de varios pasos tiene que poder CORREGIRSE. En la sesión real,
+# frente al batch más equivocado de todos —ocho pasos con el material y la
+# red mal— las únicas salidas eran ✅ y ❌: aprobar algo que no era lo
+# pedido, o tirar el plan entero y volver a escribirlo. El usuario lo dijo:
+# «Aquí debería haber una opción de modificar».
+id: CV31
+titulo: el preview de un batch ofrece corregirlo, no solo aprobarlo o tirarlo
+origen: chat_messages 2026-08-20
+sintoma: el preview del batch no ofrecía ✏️ aunque allow_modify ya existía
+
+> creá la carpeta pruebas y relajá el bulk de Zr hcp y el de W bcc
+espera: confirmacion, modificable
