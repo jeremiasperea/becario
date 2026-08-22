@@ -8,10 +8,12 @@ R4 (mp-id), R9 (conversión) y R6/R7 (mapeo de errores).
 from __future__ import annotations
 
 import pytest
+import requests
 from ase import Atoms
 from mp_api.client import MPRestError
 from pymatgen.core import Lattice, Structure
 from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from becario.domain.models import (
     StructureQuery,
@@ -19,7 +21,13 @@ from becario.domain.models import (
     StructureResolutionError,
     StructureResolutionReason,
 )
-from becario.infrastructure.materials_project import MaterialsProjectProvider
+import becario.infrastructure.materials_project as mp_mod
+from becario.infrastructure.materials_project import (
+    _TIMEOUT_CONEXION,
+    _TIMEOUT_LECTURA,
+    MaterialsProjectProvider,
+    _SesionConTope,
+)
 
 
 # --- estructuras reales mínimas -------------------------------------------
@@ -165,4 +173,75 @@ class TestErrorMapping:
         fake = _FakeRester(search_error=RequestsConnectionError("no net"))
         with pytest.raises(StructureResolutionError) as exc:
             _provider(fake).resolve(StructureQuery(formula="Fe2O3"))
+        assert exc.value.reason is StructureResolutionReason.NETWORK
+
+
+class TestLaEsperaTieneTope:
+    """`requests` sin `timeout` espera para siempre, y eso pasó de verdad.
+
+    La batería de conversaciones quedó trabada 7 h 22 min con 2 minutos de
+    CPU, bloqueada leyendo un socket a `api.materialsproject.org` que estaba
+    ESTABLECIDO y no devolvía nada. No falló: se quedó callada. Un hilo
+    colgado no vuelve nunca y nadie se entera hasta que alguien mira `ps`.
+
+    Se espía `requests.Session.request` —el PADRE— y no el método de
+    `_SesionConTope`: pisar el método que se quiere verificar deja el test
+    probándose a sí mismo. (Primera versión de estos tests, corregida.)
+    """
+
+    @staticmethod
+    def _espiar(monkeypatch) -> dict:
+        vistos: dict = {}
+
+        def falso_request(self, method, url, **kwargs):
+            vistos.update(kwargs)
+            return "no-se-usa"
+
+        monkeypatch.setattr(requests.Session, "request", falso_request)
+        return vistos
+
+    def test_le_pone_tope_a_todo_lo_que_sale(self, monkeypatch):
+        vistos = self._espiar(monkeypatch)
+
+        _SesionConTope((3.0, 7.0)).request("GET", "https://ejemplo")
+
+        assert vistos["timeout"] == (3.0, 7.0)
+
+    def test_un_tope_explicito_del_llamador_gana(self, monkeypatch):
+        # `setdefault`, no asignación: si alguien pide el suyo, manda el suyo.
+        vistos = self._espiar(monkeypatch)
+
+        _SesionConTope((3.0, 7.0)).request("GET", "https://ejemplo", timeout=1.0)
+
+        assert vistos["timeout"] == 1.0
+
+    def test_el_rester_de_produccion_sale_con_la_sesion_con_tope(self, monkeypatch):
+        # El agujero real estaba acá: `_default_rester` abría un `MPRester`
+        # pelado. Que la sesión exista no sirve si producción no la usa.
+        #
+        # Se intercepta la CLASE en vez de construir un `MPRester` de verdad:
+        # su constructor sale a la red, y la primera versión de este test
+        # colgó la suite entera — el mismo defecto que se está arreglando,
+        # cometido en su propio test.
+        armado = {}
+
+        def falso_mprester(**kwargs):
+            armado.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(mp_mod, "MPRester", falso_mprester)
+        MaterialsProjectProvider(api_key="x" * 32)._default_rester()
+
+        sesion = armado["session"]
+        assert isinstance(sesion, _SesionConTope)
+        assert sesion._timeout == (_TIMEOUT_CONEXION, _TIMEOUT_LECTURA)
+
+    def test_un_vencimiento_se_trata_como_fallo_de_red(self):
+        # O sea: reintentable. El mapeo ya existía; lo que no existía era la
+        # posibilidad de que el vencimiento ocurriera.
+        fake = _FakeRester(search_error=RequestsTimeout("se acabó la espera"))
+
+        with pytest.raises(StructureResolutionError) as exc:
+            _provider(fake).resolve(StructureQuery(formula="Fe2O3"))
+
         assert exc.value.reason is StructureResolutionReason.NETWORK

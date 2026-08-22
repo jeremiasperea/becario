@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+import logging
+
+import requests
 from mp_api.client import MPRester, MPRestError
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -39,6 +42,44 @@ _SUMMARY_FIELDS = [
 # Cuántas alternativas ofrecer cuando el nombre era ambiguo.
 _MAX_ALTERNATIVES = 5
 
+# Topes de espera contra MP: (conectar, leer), en segundos.
+#
+# Medido, no estimado: la batería de conversaciones quedó TRABADA 7 horas y 22
+# minutos con 2 minutos de CPU, bloqueada leyendo un socket a
+# `api.materialsproject.org` que estaba ESTABLECIDO y no devolvía nada. No
+# falló: se quedó callada, que es peor — un hilo colgado no vuelve nunca y
+# nadie se entera hasta que alguien mira `ps`.
+#
+# La lectura es generosa a propósito: una búsqueda en MP puede tardar decenas
+# de segundos legítimamente, y cortar antes cambiaría un cuelgue por un falso
+# fallo. Con los 3 intentos de `reintentar`, el peor caso queda acotado en
+# ~4,5 minutos en vez de infinito.
+_TIMEOUT_CONEXION = 10.0
+_TIMEOUT_LECTURA = 90.0
+
+logger = logging.getLogger(__name__)
+
+
+class _SesionConTope(requests.Session):
+    """`requests.Session` que le pone tope a todo lo que sale.
+
+    Existe porque `MPRester` no acepta `timeout` —solo `session`— y
+    `requests` sin `timeout` espera PARA SIEMPRE. El manejo del vencimiento
+    ya estaba escrito acá abajo (`RequestsTimeout` se mapea a `NETWORK` y se
+    reintenta); lo único que faltaba era que el vencimiento pudiera ocurrir.
+
+    `setdefault` y no asignación: si algún día un llamador pide su propio
+    tope, gana el suyo.
+    """
+
+    def __init__(self, timeout: tuple[float, float]) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def request(self, method, url, **kwargs):  # type: ignore[override]
+        kwargs.setdefault("timeout", self._timeout)
+        return super().request(method, url, **kwargs)
+
 
 class MaterialsProjectProvider:
     """`StructureProvider` real. `rester_factory` se inyecta en tests para no
@@ -53,7 +94,10 @@ class MaterialsProjectProvider:
         self._rester_factory = rester_factory or self._default_rester
 
     def _default_rester(self) -> object:
-        return MPRester(api_key=self._api_key)
+        return MPRester(
+            api_key=self._api_key,
+            session=_SesionConTope((_TIMEOUT_CONEXION, _TIMEOUT_LECTURA)),
+        )
 
     # ------------------------------------------------------------------
     def resolve(self, query: StructureQuery) -> StructureResolution:
