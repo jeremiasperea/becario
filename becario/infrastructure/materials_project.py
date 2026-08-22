@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+import logging
+
+import requests
 from mp_api.client import MPRester, MPRestError
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -39,6 +42,53 @@ _SUMMARY_FIELDS = [
 # Cuántas alternativas ofrecer cuando el nombre era ambiguo.
 _MAX_ALTERNATIVES = 5
 
+# Topes de espera contra MP: (conectar, leer), en segundos.
+#
+# Medido, no estimado: la batería de conversaciones quedó TRABADA 7 horas y 22
+# minutos con 2 minutos de CPU, bloqueada leyendo un socket a
+# `api.materialsproject.org` que estaba ESTABLECIDO y no devolvía nada. No
+# falló: se quedó callada, que es peor — un hilo colgado no vuelve nunca y
+# nadie se entera hasta que alguien mira `ps`.
+#
+# La lectura es generosa a propósito: una búsqueda en MP puede tardar decenas
+# de segundos legítimamente, y cortar antes cambiaría un cuelgue por un falso
+# fallo. Con los 3 intentos de `reintentar`, el peor caso queda acotado en
+# ~4,5 minutos en vez de infinito.
+_TIMEOUT_CONEXION = 10.0
+_TIMEOUT_LECTURA = 90.0
+
+logger = logging.getLogger(__name__)
+
+
+def _poner_tope(sesion: requests.Session, timeout: tuple[float, float]) -> requests.Session:
+    """Le agrega un tope de espera a una sesión YA armada, sin reemplazarla.
+
+    Existe porque `MPRester` no acepta `timeout`, y la salida obvia —pasarle
+    `session=`— es una trampa. Su constructor hace
+    `self.session = session or BaseRester._create_session(...)`, y ese `or`
+    quiere decir que la sesión que uno pasa no se COMPLEMENTA con la de la
+    biblioteca: la REEMPLAZA. Y `_create_session` es lo que pone la cabecera
+    `x-api-key`, el user-agent y el adaptador con reintentos y manejo de
+    429/502/504.
+
+    Se probó así primero y salió caro: Materials Project quedó respondiendo
+    sin autenticar, ZrO2 dejó de traer sus polimorfos, y la repregunta por
+    la fase —que depende de esos polimorfos— desapareció. Cinco escenarios
+    de la batería en rojo (CV16–CV20) por agregar un timeout.
+
+    Envolver el `request` de la sesión que la biblioteca ya armó agrega el
+    tope y no saca nada. `setdefault` y no asignación: si un llamador pide
+    su propio tope, gana el suyo.
+    """
+    original = sesion.request
+
+    def request(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout)
+        return original(method, url, **kwargs)
+
+    sesion.request = request  # type: ignore[method-assign]
+    return sesion
+
 
 class MaterialsProjectProvider:
     """`StructureProvider` real. `rester_factory` se inyecta en tests para no
@@ -53,7 +103,11 @@ class MaterialsProjectProvider:
         self._rester_factory = rester_factory or self._default_rester
 
     def _default_rester(self) -> object:
-        return MPRester(api_key=self._api_key)
+        # La sesión la arma `mp_api` (con su key, su user-agent y sus
+        # reintentos); acá solo se le agrega el tope de espera.
+        rester = MPRester(api_key=self._api_key)
+        _poner_tope(rester.session, (_TIMEOUT_CONEXION, _TIMEOUT_LECTURA))
+        return rester
 
     # ------------------------------------------------------------------
     def resolve(self, query: StructureQuery) -> StructureResolution:
