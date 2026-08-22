@@ -23,6 +23,7 @@ from becario.domain.models import (
     ViewFileRequest,
     ASE_CRYSTALS,
     descartar_numeros_inventados,
+    elements_of,
     is_plausible_formula,
     needs_explicit_lattice,
     normalize_crystal,
@@ -590,6 +591,41 @@ class TestIsPlausibleFormula:
     )
     def test_implausible_formulas(self, formula):
         assert is_plausible_formula(formula) is False
+
+
+class TestElementsOfFailsLoudly:
+    """`elements_of` decide si un pedido es un elemento (ASE) o un compuesto
+    (Materials Project), y de ahí sale si hay que preguntar por la red.
+
+    Antes cortaba en el primer token ilegible y devolvía lo que hubiera
+    juntado: `'Zr_on_W'` daba `['Zr']`. Ese descarte silencioso es cómo un
+    pedido imposible —apilar Zr sobre W— llegó a un preview de ocho pasos
+    disfrazado de bulk de Zr. Lo que no se entiende entero es un error.
+    """
+
+    @pytest.mark.parametrize("formula, esperado", [
+        ("W", ["W"]),
+        ("Fe2O3", ["Fe", "O"]),
+        ("ZrO2", ["Zr", "O"]),
+        ("H2O2", ["H", "O"]),  # sin repetir
+    ])
+    def test_reads_real_formulas(self, formula, esperado):
+        assert elements_of(formula) == esperado
+
+    @pytest.mark.parametrize("formula", [
+        "Zr_on_W",       # el caso real: heterostructura pedida por chat
+        "Zr sobre W",
+        "ZrXx",          # 'Xx' no es un símbolo de la tabla periódica
+        "ultimocalculo",
+    ])
+    def test_an_unreadable_formula_is_an_error(self, formula):
+        with pytest.raises(ValueError):
+            elements_of(formula)
+
+    def test_the_error_names_the_formula(self):
+        # El mensaje viaja hasta el usuario: tiene que decir qué rechazó.
+        with pytest.raises(ValueError, match="Zr_on_W"):
+            elements_of("Zr_on_W")
 
 
 class TestNormalizeCrystal:

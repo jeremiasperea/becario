@@ -2281,6 +2281,70 @@ class TestMissingLatticeIsAsked:
         assert not reply.awaiting_params
 
 
+class TestAnImpossibleStructureIsRefused:
+    """Apilar dos materiales no está en `StructureKind`, así que el pedido
+    tiene que rebotar — no producir la interpretación más parecida.
+
+    El caso real: «armá una supercelda de Zr sobre W 2x2/3x3, con 15 Å de
+    vacío» devolvió un batch de ocho pasos listo para aprobar de un botón,
+    con `formula='Zr_on_W'`, `red_cristalina='bcc_fcc'` y el vacío perdido.
+    Ninguno de esos dos valores existe: el preview validaba un subconjunto
+    hecho a mano y dejaba pasar todo lo demás.
+    """
+
+    def _pedir(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="armá una supercelda de Zr sobre W",
+        )
+
+    def test_a_stacked_formula_is_refused_and_nothing_is_built(self, env):
+        service, router, _f, _h, _c, structures, *_ = env
+        reply = self._pedir(service, router, {
+            "formula": "Zr_on_W", "red_cristalina": "bcc_fcc",
+            "supercelda": [2, 2, 2],
+        })
+        assert not reply.ok
+        assert "Zr_on_W" in reply.text
+        assert structures.requests == []
+        # Rebota diciendo qué SÍ sabe hacer, no con un volcado de pydantic.
+        assert "validation error" not in reply.text.lower()
+        # Y no se queda esperando un dato: no falta nada, no se puede.
+        assert not reply.awaiting_params
+
+    def test_an_invalid_lattice_is_refused_before_anything_is_offered(self, env):
+        # La fórmula es real, la red no. Antes esto no se miraba en el
+        # preview: `validate_structure_params` no construía el pedido.
+        service, router, _f, _h, _c, structures, *_ = env
+        reply = self._pedir(service, router, {
+            "formula": "Zr", "red_cristalina": "bcc_fcc",
+        })
+        assert not reply.ok
+        assert structures.requests == []
+
+    def test_the_batch_preview_refuses_instead_of_offering_a_button(self, env):
+        # Lo que más duele: ocho pasos prolijos con un ✅ debajo, y el paso
+        # 8 garantizado a fallar. Si un paso no se puede armar, no hay batch.
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(
+                action=Intent.MODIFY_STRUCTURE,
+                parametros={"formula": "Zr_on_W", "red_cristalina": "bcc_fcc"},
+            ),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+        ])
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá Zr sobre W y relajalo",
+        )
+        assert not reply.needs_confirmation and reply.confirmation_token is None
+        assert "Zr_on_W" in reply.text
+        # Ni el preview ni nada: el batch no llegó a stagearse.
+        gw = factory.gateways.get("alice")
+        assert gw is None or (gw.made_dirs == [] and gw.submitted == [])
+
+
 class TestMissingMillerIsAsked:
     """Falta la cara de la losa: se pregunta y el pedido queda esperando.
 

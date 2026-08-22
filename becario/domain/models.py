@@ -110,13 +110,10 @@ def is_plausible_formula(formula: str) -> bool:
     """
     if not _FORMULA_RE.match(formula):
         return False
-    pos = 0
-    while pos < len(formula):
-        match = _ELEMENT_TOKEN_RE.match(formula, pos)
-        if not match or match.group(1) not in _ELEMENT_SYMBOLS:
-            return False
-        pos = match.end()
-    return True
+    try:
+        return bool(elements_of(formula))
+    except ValueError:
+        return False
 
 
 # Campos numéricos donde un valor inventado NO falla: entra al INCAR o al
@@ -172,13 +169,22 @@ def descartar_numeros_inventados(params: dict, texto: str) -> tuple[dict, list[s
 def elements_of(formula: str) -> list[str]:
     """Símbolos de elemento (en orden de aparición, sin repetir) de una
     fórmula. 'Fe2O3' -> ['Fe', 'O']; 'W' -> ['W']. Sirve para distinguir un
-    elemento simple (ASE) de un compuesto (Materials Project)."""
+    elemento simple (ASE) de un compuesto (Materials Project).
+
+    La fórmula tiene que leerse ENTERA como símbolos de la tabla periódica;
+    si no, es `ValueError`. Antes esta función cortaba en el primer token
+    que no entendía y devolvía lo que hubiera juntado hasta ahí: por eso
+    `elements_of('Zr_on_W')` daba `['Zr']` y un pedido imposible —apilar Zr
+    sobre W— sobrevivía como si fuera un bulk de Zr, hasta llegarle al
+    usuario en un preview de ocho pasos. Descartar en silencio es peor que
+    fallar: lo que queda parece razonable.
+    """
     out: list[str] = []
     pos = 0
     while pos < len(formula):
         match = _ELEMENT_TOKEN_RE.match(formula, pos)
-        if not match:
-            break
+        if not match or match.group(1) not in _ELEMENT_SYMBOLS:
+            raise ValueError(f"fórmula ilegible: {formula!r}")
         symbol = match.group(1)
         if symbol not in out:
             out.append(symbol)
