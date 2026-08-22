@@ -8,12 +8,14 @@ fuente de verdad para el contrato con el LLM.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from ..domain.datos_de_corrida import DESCRIPCIONES, NINGUNO, DatoDeCorrida
 from ..domain.models import (
     Intent,
     Plan,
@@ -390,6 +392,32 @@ _STRUCT_PROMPT = (
 )
 
 
+# El prompt del dato se ARMA con el vocabulario del dominio en vez de
+# repetirlo: si mañana entra un valor nuevo al enum y nadie lo explica acá,
+# el modelo tendría que adivinar qué significa. Así no puede pasar.
+_DATO_PROMPT = (
+    "Sos el extractor de B.E.C.A.R.I.O., un asistente de cluster HPC. El "
+    "mensaje pregunta por UN dato de un cálculo VASP que ya corrió. Decí "
+    "cuál de estos datos pide:\n"
+    + "".join(f"- {d.value}: {DESCRIPCIONES[d]}\n" for d in DatoDeCorrida)
+    + "Si el mensaje pide cualquier otra cosa —otro dato, el archivo entero, "
+    f"un resumen libre— poné '{NINGUNO}'. NO elijas el más parecido: solo "
+    "esos se pueden calcular, y contestar otro con cara de correcto es peor "
+    "que decir que no se sabe."
+)
+
+_DATO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "dato": {
+            "type": "string",
+            "enum": [*(d.value for d in DatoDeCorrida), NINGUNO],
+        },
+    },
+    "required": ["dato"],
+}
+
+
 # Intents cuyo handler necesita el material para poder hacer algo. Los dos
 # lo repreguntan si falta, así que un backfill que no encuentra nada no
 # rompe: solo deja el pedido como estaba.
@@ -609,7 +637,8 @@ class OllamaRouter:
 
     def route(self, user_text: str) -> Plan:
         raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
-        return self._backfill_structure(user_text, self.parse_llm_output(raw))
+        plan = self._backfill_structure(user_text, self.parse_llm_output(raw))
+        return self._backfill_dato(user_text, plan)
 
     def extract_structure(self, user_text: str) -> dict:
         """Segunda pasada enfocada: extrae SOLO la estructura (formula/
@@ -654,6 +683,73 @@ class OllamaRouter:
             k: v for k in _STRUCTURE_KEYS
             if (v := extracted.get(k)) not in (None, "", [], {})
         }
+
+    def extract_dato(self, user_text: str) -> str:
+        """Segunda pasada enfocada: QUÉ dato de la corrida pide el mensaje.
+
+        Existe por lo mismo que `extract_structure`, en otro eje. El schema
+        grande clasifica bien —«cuántas vueltas iónicas hizo» va a
+        `consultar_resultados`, unánime— y ahí se detiene: no tiene dónde
+        poner CUÁL dato se pidió. Medido sobre nueve preguntas: 3 planes
+        distintos para 9 hechos distintos, o sea que «cuántas vueltas
+        iónicas hizo» y «qué energía dio» salían idénticos byte a byte y el
+        handler contestaba lo mismo a las dos.
+
+        Con el vocabulario que efectivamente corre —cinco valores— la
+        pasada corta acierta 15/15 dentro y se abstiene 12/12 fuera, en
+        2,5 s contra los ~10 s del schema grande. Lo segundo importa tanto
+        como lo primero: un extractor que nunca contesta `ninguno` le
+        responde la energía a quien pidió un resumen.
+
+        Se agrega como pasada aparte y NO como campo del schema grande a
+        propósito. El presupuesto del schema es real (ADR-0006) y este
+        prompt ya demostró ser sensible al orden de sus ejemplos —el
+        fixture del barrido de ENCUT pasó de 3/3 a 0/3 por moverlos—; la
+        evidencia que hay es de la llamada corta y aislada, así que es esa
+        la que se implementa.
+
+        Fail-open, igual que `extract_structure`: si el modelo no contesta,
+        el plan que `route()` ya devolvió sigue sirviendo y el handler
+        contesta lo general. Cambiar una respuesta parcial por ninguna
+        sería peor.
+        """
+        try:
+            raw = self._chat(_DATO_PROMPT, user_text, _DATO_SCHEMA)
+        except RouterUnavailableError as exc:
+            logger.warning(
+                "Sin extracción del dato (%s): sigo con el plan de route()",
+                exc.reason.value,
+            )
+            return NINGUNO
+        try:
+            dato = str(json.loads(raw or "{}").get("dato") or NINGUNO).strip()
+        except ValueError:
+            logger.warning("Extracción del dato fuera de schema: %r", (raw or "")[:200])
+            return NINGUNO
+        return dato
+
+    def _backfill_dato(self, user_text: str, plan: Plan) -> Plan:
+        """Completa `dato` en un plan que consulta resultados.
+
+        Se aplica cuando el plan tiene EXACTAMENTE UN paso de
+        `consultar_resultados` y ese paso no trae `dato`: ahí la pregunta
+        del texto es inequívoca. Con dos o más pasos de consulta deja de
+        serlo, y el costo de equivocarse es contestar el dato de una sobre
+        la otra — que es justo lo que se vino a arreglar.
+
+        Cuesta una llamada corta, y solo sobre planes de consulta: los
+        pedidos de cálculo, listado y archivos no pagan nada.
+        """
+        objetivos = [s for s in plan.steps if s.action is Intent.QUERY_RESULTS]
+        if len(objetivos) != 1 or objetivos[0].parametros.get("dato"):
+            return plan
+        dato = self.extract_dato(user_text)
+        objetivo = objetivos[0]
+        return Plan(steps=[
+            PlanStep(action=s.action, parametros={**s.parametros, "dato": dato})
+            if s is objetivo else s
+            for s in plan.steps
+        ])
 
     def _backfill_structure(self, user_text: str, plan: Plan) -> Plan:
         """Recupera formula/red_cristalina vía la segunda pasada de
