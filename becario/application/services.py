@@ -27,6 +27,7 @@ from typing import Callable, Optional
 from pydantic import ValidationError
 
 from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
+from ..domain.fuera_de_alcance import fuera_de_alcance
 from ..domain.models import (
     _MATERIAL_INTENTS,
     _MAX_AUTOMATERIALIZE_STEPS,
@@ -269,6 +270,14 @@ class BecarioService:
         edit, expired = self._pop_pending_edit(user_id)
         if edit is not None:
             return self._apply_edit(ctx, edit, text)
+
+        # ¿Pide algo que directamente no se sabe hacer? Va ANTES del router
+        # y no se registra como decisión: el router nunca se pronunció, y
+        # meter esto en el dataset lo ensuciaría con mensajes que no ruteó
+        # —misma razón por la que tampoco se registra un router caído—.
+        if (limite := fuera_de_alcance(text)) is not None:
+            logger.info("pedido fuera de alcance de user=%s: %.120s", user_id, text)
+            return Reply(text=limite, ok=False)
 
         started = time.monotonic()
         try:

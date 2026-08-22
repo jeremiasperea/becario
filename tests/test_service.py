@@ -2281,6 +2281,68 @@ class TestMissingLatticeIsAsked:
         assert not reply.awaiting_params
 
 
+class TestOutOfScopeRequestsBounceEarly:
+    """Un pedido que el bot no sabe hacer se planta antes de rutear.
+
+    El mensaje real —«Arma una supercelda de Zr sobre W 2x2/3x3, no olvides
+    agregas 15 ang de vacío en z»— volvió como un batch de ocho pasos listo
+    para aprobar. Mirando ESE plan no había nada que objetar paso por paso:
+    el modelo emitió `formula=Zr` y `formula=W` por separado, cada uno
+    válido. Lo que no se puede es lo que el usuario pidió con los dos
+    juntos, y eso solo se ve en el texto.
+    """
+
+    def _pedir(self, service, texto):
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text=texto,
+        )
+
+    def test_the_router_is_never_asked(self, env):
+        service, router, *_ = env
+        reply = self._pedir(
+            service,
+            "Arma una supercelda de Zr sobre W 2x2/3x3 respectivamente, "
+            "no olvides agregas 15 ang de vacío en z",
+        )
+        assert not reply.ok
+        # Ni `route` ni `decompose`: el pedido largo ni siquiera pagó la
+        # descomposición, que son decenas de segundos de CPU.
+        assert router.route_calls == [] and router.decompose_calls == []
+
+    def test_it_says_what_it_can_do_instead(self, env):
+        service, *_ = env
+        reply = self._pedir(service, "armá Zr sobre W")
+        assert "POSCAR" in reply.text and "slab" in reply.text
+        assert not reply.needs_confirmation and reply.confirmation_token is None
+
+    def test_nothing_is_left_waiting(self, env):
+        # No falta un dato: no se puede. Dejarlo esperando haría que el
+        # próximo mensaje se interprete como respuesta a una pregunta que
+        # nadie hizo.
+        service, *_ = env
+        reply = self._pedir(service, "armá una bicapa de Zr y W")
+        assert not reply.awaiting_params
+
+    def test_an_answer_to_a_pending_question_is_never_intercepted(self, env):
+        # El chequeo va DESPUÉS de la repregunta pendiente: si el usuario
+        # está contestando algo que le preguntamos, esa respuesta manda.
+        service, router, _f, _h, _c, structures, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"formula": "ZrO2", "tipo_estructura": "slab"},
+        )
+        primera = self._pedir(service, "armá un slab de ZrO2")
+        assert primera.awaiting_params
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"miller": [0, 0, 1], "red_cristalina": "fluorita",
+                    "parametro_red": 5.07},
+        )
+        # La palabra "sustrato" aparece en la respuesta y no la secuestra.
+        reply = self._pedir(service, "la (001), fluorita a=5.07, sobre sustrato no")
+        assert not reply.awaiting_params and structures.requests
+
+
 class TestAnImpossibleStructureIsRefused:
     """Apilar dos materiales no está en `StructureKind`, así que el pedido
     tiene que rebotar — no producir la interpretación más parecida.
@@ -2292,11 +2354,13 @@ class TestAnImpossibleStructureIsRefused:
     hecho a mano y dejaba pasar todo lo demás.
     """
 
+    # El texto NO nombra la heterostructura: acá se prueba la defensa del
+    # schema, que es la de más adentro. Que el pedido rebote antes, por lo
+    # que dice el mensaje, se prueba en `TestOutOfScopeRequestsBounceEarly`.
     def _pedir(self, service, router, params):
         router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params=params)
         return service.handle_text(
-            chat_id=1, user_id=ALICE.telegram_user_id,
-            text="armá una supercelda de Zr sobre W",
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá esa estructura",
         )
 
     def test_a_stacked_formula_is_refused_and_nothing_is_built(self, env):
@@ -2336,7 +2400,7 @@ class TestAnImpossibleStructureIsRefused:
             PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
         ])
         reply = service.handle_text(
-            chat_id=1, user_id=ALICE.telegram_user_id, text="armá Zr sobre W y relajalo",
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá eso y relajalo",
         )
         assert not reply.needs_confirmation and reply.confirmation_token is None
         assert "Zr_on_W" in reply.text
