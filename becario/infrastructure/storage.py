@@ -168,6 +168,18 @@ class SQLiteCalcRunRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_by_job_id(self, owner_id: int, job_id: str) -> Optional[dict]:
+        # `owner_id` va en el WHERE: el número de job lo dice el usuario y
+        # es adivinable, así que el aislamiento tiene que estar en la
+        # consulta y no en un `if` después.
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM corridas_vasp WHERE owner_id = ? AND job_id = ? "
+                "ORDER BY fecha DESC, id DESC LIMIT 1",
+                (owner_id, str(job_id)),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
 
 class SQLiteChatLogRepository:
     """Bitácora de conversación por chat (implementa ChatLogRepository).

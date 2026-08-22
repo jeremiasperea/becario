@@ -267,6 +267,16 @@ class CalcRunRepository(Protocol):
         'Zr_' = cualquier cálculo de Zr), más recientes primero."""
         ...
 
+    def find_by_job_id(self, owner_id: int, job_id: str) -> Optional[dict]:
+        """La corrida de ESE trabajo, o `None` si no hay.
+
+        El dueño va DENTRO de la consulta y no en un chequeo posterior: un
+        número de job es adivinable, y pedir el directorio del trabajo de
+        otra persona tiene que devolver nada, no devolver algo y confiar en
+        que el llamador lo filtre (ADR-0004).
+        """
+        ...
+
 
 class ChatLogRepository(Protocol):
     """Bitácora de la conversación de cada chat (mensajes del usuario y
