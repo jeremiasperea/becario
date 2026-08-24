@@ -67,6 +67,7 @@ from .handlers.remote_files import (  # noqa: F401
     _truncate_listing,
 )
 from .plan_executor import PlanExecutor
+from .rechazos import registrar_rechazo, PRE_ROUTER, ROUTER
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ class BecarioService:
         # meter esto en el dataset lo ensuciaría con mensajes que no ruteó
         # —misma razón por la que tampoco se registra un router caído—.
         if (limite := fuera_de_alcance(text)) is not None:
-            logger.info("pedido fuera de alcance de user=%s: %.120s", user_id, text)
+            registrar_rechazo(PRE_ROUTER, user_id=user_id, detalle=text)
             return Reply(text=limite, ok=False)
 
         started = time.monotonic()
@@ -461,6 +462,13 @@ class BecarioService:
             step = plan.single_step
             handler = self._intent_handlers().get(step.action)
             if handler is None:
+                # El router se pronunció y no hay handler para lo que dijo
+                # (`UNKNOWN`, o una acción sin handler). Es un rechazo, no un
+                # fallo: el texto es el mismo de siempre, pero ahora deja
+                # rastro de CUÁL de los tres portones se cerró.
+                registrar_rechazo(
+                    ROUTER, user_id=ctx.user_id, detalle=step.action.value
+                )
                 return Reply(text=HELP_TEXT)
             reply = handler(ctx, step.parametros)
             if reply.awaiting_params:
