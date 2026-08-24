@@ -23,6 +23,7 @@ from ...domain.datos_de_corrida import (
 from ...domain.models import CalcKind, HistoryFilter
 from ..context import Reply, _Ctx
 from ..job_monitor import _parse_last_e0
+from ..rechazos import registrar_rechazo, VOCABULARIO
 # Los MISMOS topes de lectura que usa `relaxed_source` para el mismo par
 # de archivos: si divergieran, dos caminos contestarían distinto sobre
 # la convergencia de la misma corrida.
@@ -142,6 +143,7 @@ def query_results(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         # El modelo miró la pregunta y dijo que no está en el vocabulario.
         # Contestar los parámetros de red igual sería responder otra cosa
         # con cara de respuesta — el defecto que este camino vino a cerrar.
+        registrar_rechazo(VOCABULARIO, user_id=ctx.user_id, detalle=run_dir)
         return _no_se_ese_dato()
 
     cell_text = ctx.cluster.read_file(f"{run_dir}/CONTCAR")
