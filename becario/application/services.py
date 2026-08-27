@@ -27,6 +27,7 @@ from typing import Callable, Optional
 from pydantic import ValidationError
 
 from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
+from ..domain.fuera_de_alcance import fuera_de_alcance
 from ..domain.models import (
     _MATERIAL_INTENTS,
     _MAX_AUTOMATERIALIZE_STEPS,
@@ -66,6 +67,7 @@ from .handlers.remote_files import (  # noqa: F401
     _truncate_listing,
 )
 from .plan_executor import PlanExecutor
+from .rechazos import registrar_rechazo, PRE_ROUTER, ROUTER
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +272,14 @@ class BecarioService:
         if edit is not None:
             return self._apply_edit(ctx, edit, text)
 
+        # ¿Pide algo que directamente no se sabe hacer? Va ANTES del router
+        # y no se registra como decisión: el router nunca se pronunció, y
+        # meter esto en el dataset lo ensuciaría con mensajes que no ruteó
+        # —misma razón por la que tampoco se registra un router caído—.
+        if (limite := fuera_de_alcance(text)) is not None:
+            registrar_rechazo(PRE_ROUTER, user_id=user_id, detalle=text)
+            return Reply(text=limite, ok=False)
+
         started = time.monotonic()
         try:
             plan = self._route_message(text)
@@ -452,6 +462,13 @@ class BecarioService:
             step = plan.single_step
             handler = self._intent_handlers().get(step.action)
             if handler is None:
+                # El router se pronunció y no hay handler para lo que dijo
+                # (`UNKNOWN`, o una acción sin handler). Es un rechazo, no un
+                # fallo: el texto es el mismo de siempre, pero ahora deja
+                # rastro de CUÁL de los tres portones se cerró.
+                registrar_rechazo(
+                    ROUTER, user_id=ctx.user_id, detalle=step.action.value
+                )
                 return Reply(text=HELP_TEXT)
             reply = handler(ctx, step.parametros)
             if reply.awaiting_params:
@@ -581,6 +598,13 @@ class BecarioService:
             actions.append(PendingAction(
                 chat_id=ctx.chat_id, requester_id=ctx.user_id,
                 intent=step.action, description=line, payload=dict(step.parametros),
+                # El pedido original viaja con cada paso, igual que en el
+                # camino de un solo cálculo: es lo que habilita el ✏️. Sin
+                # esto, frente al batch MÁS equivocado de la sesión —ocho
+                # pasos, con el material y la red mal— las únicas salidas
+                # eran ✅ y ❌: aprobar algo que no es lo pedido, o tirar el
+                # plan entero y volver a escribirlo.
+                request_intent=step.action, request_params=dict(step.parametros),
             ))
         pending = PendingPlan(
             chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=actions,
@@ -599,6 +623,7 @@ class BecarioService:
             ),
             needs_confirmation=True,
             confirmation_token=token,
+            allow_modify=pending.allow_modify,
         )
 
     def _intent_handlers(self) -> dict:

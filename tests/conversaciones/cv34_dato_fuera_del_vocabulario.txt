@@ -1,0 +1,12 @@
+# El otro lado de la misma moneda: una pregunta sobre una corrida que el
+# bot NO sabe contestar. Antes caía en `consultar_resultados` y recibía los
+# parámetros de red — otra respuesta, con cara de correcta. Tiene que decir
+# que no sabe y qué SÍ puede, como con las heterostructuras.
+id: CV34
+titulo: un dato que no está en el vocabulario se rebota, no se contesta otro
+origen: derivado de la medición de E6 (docs/medicion_contenido.json)
+sintoma: preguntas fuera del vocabulario recibían los parámetros de red igual
+
+> resumime qué dice el OUTCAR del último cálculo
+no_contiene: No pude interpretar
+no_regex: a = \d

@@ -1,0 +1,15 @@
+# Pedido imposible: apilar dos materiales. El bot no sabe armar una
+# heterostructura, y en vez de decirlo devolvió un batch de OCHO pasos
+# listo para aprobar de un botón — con W declarado fcc (es bcc), Zr
+# declarado bcc (es hcp), las superceldas cambiadas y los 15 Å de vacío
+# perdidos. Lo que tiene que pasar es que se plante.
+id: CV29
+titulo: apilar Zr sobre W tiene que rebotar, no producir un plan
+origen: chat_messages 2026-08-20
+sintoma: batch de 8 pasos con formula=Zr_on_W y red_cristalina=bcc_fcc
+
+> Arma una supercelda de Zr sobre W 2x2/3x3 respectivamente, no olvides agregas 15 ang de vacío en z
+espera: error
+contiene: no sé armar dos materiales juntos
+no_contiene: Zr_on_W
+no_regex: \bbcc_fcc\b

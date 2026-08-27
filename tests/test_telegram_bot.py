@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from telegram.error import BadRequest
+
 from becario.application.job_monitor import JobAck, Notification
 from becario.application.services import FOREIGN_CONFIRMATION_TEXT, Reply
 from becario.presentation.telegram_bot import TelegramBot
@@ -24,9 +26,15 @@ class FakeChat:
         self.id = chat_id
         self.sent: list[str] = []
         self.actions: list[str] = []
+        # Se arma para UN solo envío fallido: el aviso que viene después
+        # tiene que poder salir, que es justo lo que se quiere probar.
+        self.send_error: Exception | None = None
 
     async def send_message(self, text, reply_markup=None, parse_mode=None):
         self.sent.append(text)
+        if self.send_error is not None:
+            self.send_error, fallo = None, self.send_error
+            raise fallo
 
     async def send_chat_action(self, action):
         self.actions.append(str(action))
@@ -115,8 +123,13 @@ class FakeCallbackQuery:
         self.answers: list[tuple] = []
         self.markup_edits = 0
         self._fallar_al_editar = fallar_al_editar
+        # Telegram caduca los callbacks; `answer()` sobre uno vencido
+        # levanta. El doble lo sabe hacer porque pasó en producción.
+        self.answer_error: Exception | None = None
 
     async def answer(self, text=None, show_alert=False):
+        if self.answer_error is not None:
+            raise self.answer_error
         self.answers.append((text, show_alert))
 
     async def edit_message_reply_markup(self, reply_markup=None):
@@ -314,6 +327,90 @@ class TestCallbackChatLogging:
 
         assert chat_log.entries[0] == (555, "user", "modificar")
         assert ("modify", "tok1", 7, 555) in service.calls
+
+
+class TestAnExpiredCallbackIsNotACrash:
+    """Telegram caduca los callbacks: `answer()` sobre uno viejo levanta
+    `BadRequest("Query is too old…")`.
+
+    Pasó dos veces en una sola sesión, sobre una tarjeta de quince minutos.
+    El usuario recibió «se me rompió algo y no ejecuté nada» con un código
+    de incidente —que suena a bot roto— cuando lo único que había pasado es
+    que se tardó: la confirmación ya había vencido por su propio TTL y
+    `reject` tenía listo un «⌛ Esta confirmación expiró», que explica qué
+    pasó y nunca llegó a mandarse.
+    """
+
+    def _vencido(self, reply_text: str, data: str = "cancel:tok1"):
+        chat_log = FakeChatLog()
+        bot, service = _make_bot(Reply(text=reply_text), chat_log)
+        chat = FakeChat(chat_id=555)
+        query = FakeCallbackQuery(chat, user_id=7, data=data)
+        query.answer_error = BadRequest("Query is too old and response timeout expired")
+        asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+        return chat, service
+
+    def test_the_useful_message_still_arrives(self):
+        chat, service = self._vencido("⌛ Esta confirmación expiró o ya fue usada.")
+
+        # Lo que importa: el acuse fallido no se llevó puesta la respuesta.
+        assert chat.sent == ["⌛ Esta confirmación expiró o ya fue usada."]
+        assert ("reject", "tok1", 7) in service.calls
+
+    def test_a_stale_ack_never_becomes_an_incident(self):
+        chat, _ = self._vencido("⌛ Esta confirmación expiró o ya fue usada.")
+
+        assert not any("incidente" in t.lower() for t in chat.sent)
+
+    def test_a_foreign_touch_that_cannot_be_answered_stays_quiet(self):
+        # El aviso de toque ajeno va SOLO al alert de quien tocó. Si el
+        # callback venció no hay dónde ponerlo: no se ensucia el chat de
+        # quien sí puede decidir, y tampoco se cae nada.
+        chat, _ = self._vencido(FOREIGN_CONFIRMATION_TEXT, data="confirm:tok1")
+
+        assert chat.sent == []
+
+
+class TestADeliveryFailureAfterConfirmingNeverSaysNothingRan:
+    """El riesgo latente de la misma línea, y el peor de los seis.
+
+    `confirm` ejecuta la acción real —el `sbatch` sale por SSH— y recién
+    después la presentación entrega el resultado. Si esa entrega revienta,
+    el handler global contesta «no ejecuté nada, podés volver a intentarlo».
+    Sobre un trabajo ya encolado, esa frase son dos trabajos en la cola y
+    dos veces las horas de cómputo por un error que el usuario nunca vio.
+    """
+
+    def _entrega_rota(self, data: str):
+        chat_log = FakeChatLog()
+        bot, service = _make_bot(Reply(text="🚀 Enviado. Job 4321."), chat_log)
+        chat = FakeChat(chat_id=555)
+        chat.send_error = RuntimeError("red caída")
+        query = FakeCallbackQuery(chat, user_id=7, data=data)
+        try:
+            asyncio.run(bot._on_callback(SimpleNamespace(callback_query=query), None))
+        except RuntimeError as exc:
+            return chat, service, exc
+        return chat, service, None
+
+    def test_it_says_it_cannot_be_sure_instead_of_saying_nothing_ran(self):
+        chat, service, exc = self._entrega_rota("confirm:tok1")
+
+        assert exc is None, "no puede subir al handler global, que diría otra cosa"
+        assert ("confirm", "tok1", 7) in service.calls
+        # El primer envío es el que falló; el segundo es el aviso.
+        aviso = chat.sent[-1]
+        assert "no puedo asegurarte si llegó a hacerse" in aviso
+        assert "No la repitas a ciegas" in aviso
+        assert "incidente" in aviso.lower()
+
+    def test_a_cancel_that_cannot_be_delivered_goes_to_the_global_handler(self):
+        # ✖️ no toca el cluster: ahí «no ejecuté nada» es cierto, y el
+        # handler global es quien corresponde. Fallar hacia el lado
+        # ambiguo cuando no hay ambigüedad también es mentir.
+        _, _, exc = self._entrega_rota("cancel:tok1")
+
+        assert isinstance(exc, RuntimeError)
 
 
 class TestCallbackPasaTiposDeclarados:

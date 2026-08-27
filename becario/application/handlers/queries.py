@@ -12,10 +12,25 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
 
+from ...domain.datos_de_corrida import (
+    DESCRIPCIONES,
+    NINGUNO,
+    DatoDeCorrida,
+    contar_atomos,
+    contar_pasos_ionicos,
+    dato_valido,
+    nsw_de,
+    ultima_energia,
+)
 from ...domain.models import CalcKind, HistoryFilter
 from ...domain.sugerencias import CorridaPrevia, render
 from ..context import Reply, _Ctx
 from ..job_monitor import _parse_last_e0
+from ..rechazos import registrar_rechazo, VOCABULARIO
+# Los MISMOS topes de lectura que usa `relaxed_source` para el mismo par
+# de archivos: si divergieran, dos caminos contestarían distinto sobre
+# la convergencia de la misma corrida.
+from ..relaxed_source import _INCAR_MAX_BYTES, _OSZICAR_MAX_BYTES
 
 if TYPE_CHECKING:
     from ..services import BecarioService
@@ -121,6 +136,20 @@ def query_results(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     run_dir = str(row.get("run_dir", "")).rstrip("/")
     if not run_dir:
         return Reply(text="⚠️ La corrida registrada no tiene directorio asociado.", ok=False)
+
+    # ¿Preguntaron por UN dato puntual? `dato` lo completa la segunda
+    # pasada del router (`_backfill_dato`). Si no vino —plan viejo, router
+    # caído, o pregunta general— se cae a la respuesta de siempre, que es
+    # justo lo que `parametros_red` contesta.
+    pedido = dato_valido(params.get("dato"))
+    if pedido is not None and pedido is not DatoDeCorrida.PARAMETROS_RED:
+        return _contestar_dato(ctx, pedido, row, run_dir)
+    if str(params.get("dato") or "").strip().lower() == NINGUNO:
+        # El modelo miró la pregunta y dijo que no está en el vocabulario.
+        # Contestar los parámetros de red igual sería responder otra cosa
+        # con cara de respuesta — el defecto que este camino vino a cerrar.
+        registrar_rechazo(VOCABULARIO, user_id=ctx.user_id, detalle=run_dir)
+        return _no_se_ese_dato()
 
     cell_text = ctx.cluster.read_file(f"{run_dir}/CONTCAR")
     source = "CONTCAR (celda relajada)"
@@ -236,6 +265,119 @@ def suggest(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     return Reply(text=render(formula, corridas), ok=bool(corridas))
 
 
+def _no_se_ese_dato() -> Reply:
+    """La pregunta cayó fuera del vocabulario: se dice, no se contesta otra.
+
+    Es la misma decisión que el rebote de las heterostructuras: un «no sé»
+    que además dice qué SÍ se puede es una respuesta útil; el dato de al
+    lado con cara de correcto no lo es.
+    """
+    puedo = "\n".join(f"• {texto}" for texto in DESCRIPCIONES.values())
+    return Reply(
+        text=(
+            "🤔 De una corrida terminada puedo sacarte estos datos, y ese no "
+            f"está entre ellos:\n{puedo}\n\nSi el dato está en un archivo, "
+            "pedímelo por nombre («mostrame el OSZICAR») y te lo muestro."
+        ),
+        ok=False,
+    )
+
+
+def _encabezado(row: dict) -> str:
+    """De qué corrida se está hablando. Va en toda respuesta de dato: sin
+    esto, un número suelto no dice sobre qué material salió."""
+    return (
+        f"{row.get('job_name', '?')} (job {row.get('job_id', '?')}, "
+        f"{row.get('fecha', '?')})"
+    )
+
+
+def _contestar_dato(
+    ctx: _Ctx, pedido: DatoDeCorrida, row: dict, run_dir: str
+) -> Reply:
+    """El dato puntual que se pidió, leído de los archivos de la corrida.
+
+    Cada rama lee SOLO lo que necesita: preguntar cuántos átomos tiene la
+    celda no tiene por qué bajar el OSZICAR entero.
+    """
+    cabeza = _encabezado(row)
+
+    if pedido is DatoDeCorrida.PASOS_IONICOS:
+        pasos = contar_pasos_ionicos(
+            ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
+        )
+        if pasos is None:
+            return _sin_archivo("OSZICAR", run_dir)
+        return Reply(text=f"🔄 {cabeza}: {pasos} paso(s) iónico(s).\n📂 {run_dir}")
+
+    if pedido is DatoDeCorrida.ENERGIA:
+        energia = ultima_energia(
+            ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
+        )
+        if energia is None:
+            return _sin_archivo("OSZICAR", run_dir)
+        return Reply(text=f"⚡ {cabeza}: E0 = {energia:.6f} eV\n📂 {run_dir}")
+
+    if pedido is DatoDeCorrida.ATOMOS:
+        texto = ctx.cluster.read_file(f"{run_dir}/CONTCAR") or ctx.cluster.read_file(
+            f"{run_dir}/POSCAR"
+        )
+        atomos = contar_atomos(texto)
+        if atomos is None:
+            return _sin_archivo("CONTCAR/POSCAR", run_dir)
+        return Reply(text=f"⚛️ {cabeza}: {atomos} átomo(s) en la celda.\n📂 {run_dir}")
+
+    return _contestar_convergencia(ctx, cabeza, run_dir)
+
+
+def _contestar_convergencia(ctx: _Ctx, cabeza: str, run_dir: str) -> Reply:
+    """¿La relajación llegó al criterio, o se quedó sin pasos?
+
+    Se compara el conteo del OSZICAR contra el NSW del INCAR, igual que
+    `relaxed_source._check_convergence` — es el mismo criterio, y por la
+    misma razón: la marca «reached required accuracy» está al FINAL del
+    OUTCAR y `read_file` solo baja un prefijo.
+
+    Un OSZICAR que llega al tope de lectura se declara NO VERIFICABLE en
+    vez de contarse: sobre un prefijo faltan justo los pasos del final, así
+    que el conteo daría de menos y diría «convergió». El error caro es ese.
+    """
+    oszicar = ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
+    incar = ctx.cluster.read_file(f"{run_dir}/INCAR", max_bytes=_INCAR_MAX_BYTES)
+    pasos, nsw = contar_pasos_ionicos(oszicar), nsw_de(incar)
+    if pasos is None or nsw is None:
+        return Reply(
+            text=f"⚠️ No pude verificar la convergencia de {cabeza}: falta el "
+            f"OSZICAR o el NSW del INCAR.\n📂 {run_dir}",
+            ok=False,
+        )
+    if oszicar is not None and len(oszicar) >= _OSZICAR_MAX_BYTES:
+        return Reply(
+            text=f"⚠️ El OSZICAR de {cabeza} es demasiado grande para "
+            f"verificarlo desde acá; revisalo a mano.\n📂 {run_dir}",
+            ok=False,
+        )
+    if nsw > 0 and pasos >= nsw:
+        return Reply(
+            text=f"⚠️ {cabeza} usó los {pasos} pasos iónicos que tenía "
+            f"asignados (NSW={nsw}) sin alcanzar el criterio de fuerzas: esa "
+            f"estructura NO está relajada del todo.\n📂 {run_dir}",
+            ok=False,
+        )
+    return Reply(
+        text=f"✅ {cabeza} convergió: {pasos} de {nsw} pasos iónicos "
+        f"disponibles.\n📂 {run_dir}"
+    )
+
+
+def _sin_archivo(nombre: str, run_dir: str) -> Reply:
+    return Reply(
+        text=f"⚠️ No pude leer el {nombre} de esa corrida.\n📂 {run_dir}\n"
+        "¿Sigue existiendo en el cluster?",
+        ok=False,
+    )
+
+
 def explain(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
     """Contesta una pregunta sobre el bot mismo, SIN tocar el cluster.
 
@@ -279,5 +421,15 @@ def explain(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
 
     lines.append(f"• Corridas: las dejo en {svc._remote_base} de tu cuenta del cluster.")
     lines.append(f"• Cuenta: entro como {ctx.identity.ssh_user}.")
+    # Los botones también son «cómo estoy hecho», y son la parte que el
+    # usuario mira cuando pregunta por la interfaz. Frente a un batch de
+    # ocho pasos equivocado, alguien escribió «acá debería haber una opción
+    # de modificar» y recibió los tres bullets de arriba: ciertos, y sobre
+    # otra cosa. El ✏️ estaba a un campo de distancia de existir.
+    lines.append(
+        "• Botones: cuando te muestro un plan, nada se ejecuta hasta que "
+        "toques ✅. Con ✏️ lo corregís sin reescribirlo entero (podés "
+        "apuntar el paso: «paso 2: 4 nodos») y con ❌ lo descartás."
+    )
 
     return Reply(text="\n".join(lines))

@@ -294,6 +294,18 @@ class FakeCalcRuns:
         ]
         return found[:limit]
 
+    def find_by_job_id(self, owner_id, job_id):
+        # El dueño filtra acá igual que en el WHERE del repositorio real:
+        # un doble que devolviera la corrida de cualquiera dejaría pasar
+        # un llamador que se olvidó de acotar.
+        return next(
+            (
+                r for r in reversed(self.rows)
+                if r["owner_id"] == owner_id and str(r["job_id"]) == str(job_id)
+            ),
+            None,
+        )
+
 
 class FakeJobTracker:
     def __init__(self):
@@ -761,6 +773,114 @@ class TestListFiles:
         )
         assert "No pude resolver el home remoto" in reply.text
         assert gateway.listed_dirs == []
+
+
+class TestTheLastRunIsExpressable:
+    """«El último cálculo» es un ancla que el bot TIENE y que el router no
+    podía nombrar.
+
+    Cuatro intentos de pedir el listado de una corrida, ninguno funcionó.
+    Lo que emitió, textual:
+
+        listar_archivos(base=corridas, destino_remoto=<nombre_del_ultimo_calculo>)
+        listar_archivos(base=corridas, destino_remoto=run_14)
+
+    Un placeholder con corchetes y un directorio inventado. No es que el
+    modelo no entendiera: entendió y no tuvo con qué decirlo, porque `base`
+    conocía 'home', 'corridas' y 'absoluta' y nada más. Es la misma forma
+    del bug que arregló el enum `base` en su momento, y la prueba de que es
+    del schema y no del modelo es que «mostrame el CONTCAR» SÍ andaba: la
+    capacidad estaba en el handler de al lado.
+    """
+
+    RUN_DIR = "/data/runs/Zr_relajacion_20260819_225757"
+    OTRO_RUN = "/data/runs/W_relajacion_20260819_231020"
+
+    def _seed(self, service):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "14", "Zr_relajacion", "{}", self.RUN_DIR
+        )
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "15", "W_relajacion", "{}", self.OTRO_RUN
+        )
+
+    def _listar(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.LIST_FILES, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="mostrame los archivos del último cálculo",
+        )
+
+    def test_it_lists_the_most_recent_run(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida"})
+        assert factory.gateways["alice"].listed_dirs == [self.OTRO_RUN]
+
+    def test_a_formula_narrows_it_to_that_material(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida", "formula": "Zr"})
+        assert factory.gateways["alice"].listed_dirs == [self.RUN_DIR]
+
+    def test_a_job_number_picks_that_run(self, env):
+        # «qué archivos dejó el job 14»: el dato existe, ahora se puede decir.
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(service, router, {"base": "ultima_corrida", "job_id": "14"})
+        assert factory.gateways["alice"].listed_dirs == [self.RUN_DIR]
+
+    def test_a_subpath_hangs_off_the_run(self, env):
+        service, router, factory, *_ = env
+        self._seed(service)
+        self._listar(
+            service, router,
+            {"base": "ultima_corrida", "destino_remoto": "encut_400"},
+        )
+        assert factory.gateways["alice"].listed_dirs == [f"{self.OTRO_RUN}/encut_400"]
+
+    def test_another_persons_job_is_not_reachable_by_guessing_the_number(self, env):
+        # El número de job es adivinable. El dueño va en la consulta, no en
+        # un filtro posterior (ADR-0004).
+        service, router, factory, *_ = env
+        service._calc_runs.add(
+            BOB.telegram_user_id, "99", "Zr_relajacion", "{}", "/data/runs/de_bob"
+        )
+        reply = self._listar(service, router, {"base": "ultima_corrida", "job_id": "99"})
+        assert not reply.ok
+        assert "99" in reply.text
+        assert factory.gateways.get("alice") is None or (
+            factory.gateways["alice"].listed_dirs == []
+        )
+
+    def test_without_any_run_it_says_so_instead_of_inventing_a_path(self, env):
+        service, router, factory, *_ = env
+        reply = self._listar(service, router, {"base": "ultima_corrida"})
+        assert not reply.ok
+        assert "No encontré corridas tuyas" in reply.text
+        assert factory.gateways.get("alice") is None or (
+            factory.gateways["alice"].listed_dirs == []
+        )
+
+    def test_the_anchor_is_the_same_one_view_file_already_used(self, env):
+        # Las dos formas de nombrar la última corrida tienen que dar el
+        # MISMO directorio: que fueran dos códigos distintos es exactamente
+        # por qué una andaba y la otra no.
+        service, router, factory, *_ = env
+        self._seed(service)
+        cluster = factory.for_identity(ALICE)
+        cluster.remote_files[f"{self.OTRO_RUN}/CONTCAR"] = "celda\n"
+
+        router.next = RoutedRequest(
+            intent=Intent.VIEW_FILE, params={"nombre_archivo": "CONTCAR"}
+        )
+        vista = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="mostrame el CONTCAR"
+        )
+        self._listar(service, router, {"base": "ultima_corrida"})
+
+        assert self.OTRO_RUN in vista.text
+        assert cluster.listed_dirs == [self.OTRO_RUN]
 
 
 class TestViewFile:
@@ -1484,6 +1604,30 @@ class TestExplainRespondePreguntas:
 
         assert service._remote_base in reply.text
 
+    def test_contesta_por_los_botones_cuando_preguntan_por_la_interfaz(self, env):
+        """El otro caso real, un escalón más arriba.
+
+        Frente a un batch de ocho pasos equivocado, el usuario escribió
+        «Aquí debería haber una opción de modificar» y recibió el volcado de
+        configuración: cierto, y sobre otra cosa. `explicar` sabía contestar
+        «¿dónde buscaste?» y no reconocía un comentario sobre su PROPIA
+        interfaz — que es lo único que el usuario podía preguntar mirando
+        una tarjeta con botones.
+        """
+        service, router, *_ = env
+        router.next = RoutedRequest(intent=Intent.EXPLAIN, params={})
+
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id,
+            text="acá debería haber una opción de modificar",
+        )
+
+        assert "✏️" in reply.text
+        # Y lo que hace falta saber para usarlo: que nada se ejecutó todavía
+        # y que se puede apuntar el paso sin reescribir el plan.
+        assert "paso 2" in reply.text
+        assert "✅" in reply.text and "❌" in reply.text
+
     def test_con_un_pendiente_vivo_la_pregunta_no_llega(self, env):
         """LIMITACIÓN conocida, fijada para que se vea.
 
@@ -1512,6 +1656,120 @@ class TestExplainRespondePreguntas:
         assert service._pending_edits.has(ALICE.telegram_user_id), (
             "el pendiente no se pierde por preguntar"
         )
+
+
+class TestPreguntasPorUnDatoDeLaCorrida:
+    """«¿Cuántas vueltas iónicas hizo?» sobre un OSZICAR que el bot acababa
+    de mostrar, y que terminó en el texto de ayuda.
+
+    Medido antes de diseñarlo: la pregunta no pedía interpretar el archivo
+    —el conteo ya existía en `relaxed_source`— sino poder DECIR qué dato se
+    pedía. El ruteo emitía el mismo plan byte a byte para siete preguntas
+    distintas, así que el handler contestaba lo mismo a todas.
+    """
+
+    RUN_DIR = "/data/runs/zr_relax"
+
+    def _setup(self, service, factory, oszicar=None, incar=None):
+        service._calc_runs.add(
+            ALICE.telegram_user_id, "14", "Zr_relajacion", "{}", self.RUN_DIR
+        )
+        cluster = factory.for_identity(ALICE)
+        cluster.remote_files[f"{self.RUN_DIR}/CONTCAR"] = _CONTCAR_ZR
+        cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"] = oszicar or (
+            "   1 F= -.17096101E+02 E0= -.17098019E+02  d E =-.17E+02\n"
+            "   2 F= -.17095638E+02 E0= -.17097775E+02  d E =0.46E-03\n"
+        )
+        if incar is not None:
+            cluster.remote_files[f"{self.RUN_DIR}/INCAR"] = incar
+        return cluster
+
+    def _preguntar(self, service, router, dato):
+        router.next = RoutedRequest(
+            intent=Intent.QUERY_RESULTS, params={"formula": "Zr", "dato": dato}
+        )
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="x"
+        )
+
+    def test_cuenta_las_vueltas_ionicas(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "pasos_ionicos")
+        assert reply.ok
+        assert "2 paso(s) iónico(s)" in reply.text
+        # Y dice de qué corrida salió: un número suelto no sirve.
+        assert "Zr_relajacion" in reply.text and "14" in reply.text
+
+    def test_la_energia_es_el_ultimo_e0(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "energia")
+        assert "-17.097775" in reply.text
+
+    def test_cuenta_los_atomos_de_la_celda(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "atomos")
+        assert "2 átomo(s)" in reply.text
+
+    def test_convergio_compara_los_pasos_contra_el_nsw(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory, incar="IBRION = 2\nNSW = 180\n")
+        reply = self._preguntar(service, router, "convergencia")
+        assert reply.ok
+        assert "convergió" in reply.text and "2 de 180" in reply.text
+
+    def test_quedarse_sin_nsw_no_es_haber_convergido(self, env):
+        # El caso peligroso: termina sin error y la estructura NO está
+        # relajada. Mismo criterio que `relaxed_source`, misma advertencia.
+        service, router, factory, *_ = env
+        self._setup(service, factory, incar="IBRION = 2\nNSW = 2\n")
+        reply = self._preguntar(service, router, "convergencia")
+        assert not reply.ok
+        assert "NO está relajada" in reply.text
+
+    def test_sin_incar_no_se_afirma_nada_sobre_la_convergencia(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)  # sin INCAR
+        reply = self._preguntar(service, router, "convergencia")
+        assert not reply.ok
+        assert "No pude verificar" in reply.text
+
+    def test_un_dato_fuera_del_vocabulario_se_dice_no_se_contesta_otro(self, env):
+        # Lo que hacía antes: la pregunta caía en `consultar_resultados` y
+        # recibía los parámetros de red — otra respuesta, con cara de
+        # correcta. Ahora rebota diciendo qué SÍ se puede.
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "ninguno")
+        assert not reply.ok
+        assert "no está entre ellos" in reply.text
+        assert "pasos iónicos" in reply.text or "vueltas" in reply.text
+        assert "a = " not in reply.text  # NO contestó los parámetros de red
+
+    def test_sin_dato_contesta_lo_general_como_siempre(self, env):
+        # Plan viejo, router caído o pregunta general: el camino de antes
+        # sigue intacto. La segunda pasada es una mejora, no un requisito.
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, None)
+        assert reply.ok
+        assert "a = 3.2300" in reply.text
+
+    def test_un_dato_inventado_tampoco_rompe(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory)
+        reply = self._preguntar(service, router, "cantidad_de_vueltas")
+        assert reply.ok and "a = 3.2300" in reply.text
+
+    def test_un_oszicar_ilegible_no_inventa_un_numero(self, env):
+        service, router, factory, *_ = env
+        cluster = self._setup(service, factory)
+        del cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"]
+        reply = self._preguntar(service, router, "pasos_ionicos")
+        assert not reply.ok
+        assert "OSZICAR" in reply.text
 
 
 class TestQueryResults:
@@ -2044,6 +2302,91 @@ class TestBatchConfirmation:
         assert gw.made_dirs == [] and gw.submitted == []
 
 
+class TestTheBatchCanBeCorrected:
+    """Frente al batch MÁS equivocado de la sesión, las únicas salidas eran
+    ✅ y ❌.
+
+    Ocho pasos con el material mal, la red mal, las superceldas cambiadas y
+    el vacío perdido — y el usuario escribió «Aquí debería haber una opción
+    de modificar». Tenía razón: `allow_modify` existe y se usa en el camino
+    de un solo cálculo, y el preview del batch no lo ofrecía. Aprobar algo
+    que no es lo pedido o tirar el plan entero y reescribirlo no son dos
+    opciones, son la misma.
+    """
+
+    def _batch(self, service, router):
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W", "red_cristalina": "bcc"}),
+        ])
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+
+    def test_the_preview_offers_the_modify_button(self, env):
+        service, router, *_ = env
+        reply = self._batch(service, router)
+        assert reply.needs_confirmation and reply.allow_modify
+
+    def test_pressing_it_lists_the_plan_so_the_step_can_be_pointed_at(self, env):
+        service, router, *_ = env
+        prep = self._batch(service, router)
+        ask = service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        # Con tres pasos hace falta saber a cuál apuntar: el plan se
+        # muestra, igual que en un plan compuesto.
+        assert "paso" in ask.text.lower()
+        assert "Zr" in ask.text and "W" in ask.text
+
+    def test_a_correction_rebuilds_the_whole_batch(self, env):
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (3, {"red_cristalina": "fcc"})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 3: el W es fcc",
+        )
+        # Vuelve a ser un batch (no se degradó a otro camino) y sigue
+        # esperando confirmación: corregir no ejecuta.
+        assert reply.needs_confirmation and reply.allow_modify
+        assert "fcc" in reply.text
+        gw = factory.gateways.get("alice")
+        assert gw is None or gw.submitted == []
+
+    def test_the_corrected_batch_is_what_gets_executed(self, env):
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (2, {"nodos": 3})
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 2: 3 nodos",
+        )
+        service.confirm(reply.confirmation_token, requester_id=ALICE.telegram_user_id)
+        # Lo que salió al cluster es el plan CORREGIDO, no el original.
+        enviados = factory.gateways["alice"].submitted
+        assert len(enviados) == 2
+        assert enviados[0].nodes == 3
+
+    def test_nothing_touched_the_cluster_while_correcting(self, env):
+        # Un batch no materializa nada hasta confirmar (ADR-0007). Pasar por
+        # ✏️ no puede romper esa promesa a mitad de camino.
+        service, router, factory, *_ = env
+        prep = self._batch(service, router)
+        service.start_modification(
+            prep.confirmation_token, requester_id=ALICE.telegram_user_id, chat_id=1
+        )
+        router.next_edit = (3, {"red_cristalina": "fcc"})
+        service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="paso 3: el W es fcc",
+        )
+        gw = factory.gateways.get("alice")
+        assert gw is None or (gw.made_dirs == [] and gw.submitted == [])
+
+
 class TestAnswerPropagationDoesNotOverreach:
     """`_propagate_answer` completa los pasos que comparten el hueco, pero
     pisar un pedido legítimo sería peor que preguntar dos veces."""
@@ -2279,6 +2622,134 @@ class TestMissingLatticeIsAsked:
             text="creá una molécula de H2O con 12 Å de vacío",
         )
         assert not reply.awaiting_params
+
+
+class TestOutOfScopeRequestsBounceEarly:
+    """Un pedido que el bot no sabe hacer se planta antes de rutear.
+
+    El mensaje real —«Arma una supercelda de Zr sobre W 2x2/3x3, no olvides
+    agregas 15 ang de vacío en z»— volvió como un batch de ocho pasos listo
+    para aprobar. Mirando ESE plan no había nada que objetar paso por paso:
+    el modelo emitió `formula=Zr` y `formula=W` por separado, cada uno
+    válido. Lo que no se puede es lo que el usuario pidió con los dos
+    juntos, y eso solo se ve en el texto.
+    """
+
+    def _pedir(self, service, texto):
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text=texto,
+        )
+
+    def test_the_router_is_never_asked(self, env):
+        service, router, *_ = env
+        reply = self._pedir(
+            service,
+            "Arma una supercelda de Zr sobre W 2x2/3x3 respectivamente, "
+            "no olvides agregas 15 ang de vacío en z",
+        )
+        assert not reply.ok
+        # Ni `route` ni `decompose`: el pedido largo ni siquiera pagó la
+        # descomposición, que son decenas de segundos de CPU.
+        assert router.route_calls == [] and router.decompose_calls == []
+
+    def test_it_says_what_it_can_do_instead(self, env):
+        service, *_ = env
+        reply = self._pedir(service, "armá Zr sobre W")
+        assert "POSCAR" in reply.text and "slab" in reply.text
+        assert not reply.needs_confirmation and reply.confirmation_token is None
+
+    def test_nothing_is_left_waiting(self, env):
+        # No falta un dato: no se puede. Dejarlo esperando haría que el
+        # próximo mensaje se interprete como respuesta a una pregunta que
+        # nadie hizo.
+        service, *_ = env
+        reply = self._pedir(service, "armá una bicapa de Zr y W")
+        assert not reply.awaiting_params
+
+    def test_an_answer_to_a_pending_question_is_never_intercepted(self, env):
+        # El chequeo va DESPUÉS de la repregunta pendiente: si el usuario
+        # está contestando algo que le preguntamos, esa respuesta manda.
+        service, router, _f, _h, _c, structures, *_ = env
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"formula": "ZrO2", "tipo_estructura": "slab"},
+        )
+        primera = self._pedir(service, "armá un slab de ZrO2")
+        assert primera.awaiting_params
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"miller": [0, 0, 1], "red_cristalina": "fluorita",
+                    "parametro_red": 5.07},
+        )
+        # La palabra "sustrato" aparece en la respuesta y no la secuestra.
+        reply = self._pedir(service, "la (001), fluorita a=5.07, sobre sustrato no")
+        assert not reply.awaiting_params and structures.requests
+
+
+class TestAnImpossibleStructureIsRefused:
+    """Apilar dos materiales no está en `StructureKind`, así que el pedido
+    tiene que rebotar — no producir la interpretación más parecida.
+
+    El caso real: «armá una supercelda de Zr sobre W 2x2/3x3, con 15 Å de
+    vacío» devolvió un batch de ocho pasos listo para aprobar de un botón,
+    con `formula='Zr_on_W'`, `red_cristalina='bcc_fcc'` y el vacío perdido.
+    Ninguno de esos dos valores existe: el preview validaba un subconjunto
+    hecho a mano y dejaba pasar todo lo demás.
+    """
+
+    # El texto NO nombra la heterostructura: acá se prueba la defensa del
+    # schema, que es la de más adentro. Que el pedido rebote antes, por lo
+    # que dice el mensaje, se prueba en `TestOutOfScopeRequestsBounceEarly`.
+    def _pedir(self, service, router, params):
+        router.next = RoutedRequest(intent=Intent.MODIFY_STRUCTURE, params=params)
+        return service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá esa estructura",
+        )
+
+    def test_a_stacked_formula_is_refused_and_nothing_is_built(self, env):
+        service, router, _f, _h, _c, structures, *_ = env
+        reply = self._pedir(service, router, {
+            "formula": "Zr_on_W", "red_cristalina": "bcc_fcc",
+            "supercelda": [2, 2, 2],
+        })
+        assert not reply.ok
+        assert "Zr_on_W" in reply.text
+        assert structures.requests == []
+        # Rebota diciendo qué SÍ sabe hacer, no con un volcado de pydantic.
+        assert "validation error" not in reply.text.lower()
+        # Y no se queda esperando un dato: no falta nada, no se puede.
+        assert not reply.awaiting_params
+
+    def test_an_invalid_lattice_is_refused_before_anything_is_offered(self, env):
+        # La fórmula es real, la red no. Antes esto no se miraba en el
+        # preview: `validate_structure_params` no construía el pedido.
+        service, router, _f, _h, _c, structures, *_ = env
+        reply = self._pedir(service, router, {
+            "formula": "Zr", "red_cristalina": "bcc_fcc",
+        })
+        assert not reply.ok
+        assert structures.requests == []
+
+    def test_the_batch_preview_refuses_instead_of_offering_a_button(self, env):
+        # Lo que más duele: ocho pasos prolijos con un ✅ debajo, y el paso
+        # 8 garantizado a fallar. Si un paso no se puede armar, no hay batch.
+        service, router, factory, *_ = env
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(
+                action=Intent.MODIFY_STRUCTURE,
+                parametros={"formula": "Zr_on_W", "red_cristalina": "bcc_fcc"},
+            ),
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "Zr", "red_cristalina": "hcp"}),
+        ])
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá eso y relajalo",
+        )
+        assert not reply.needs_confirmation and reply.confirmation_token is None
+        assert "Zr_on_W" in reply.text
+        # Ni el preview ni nada: el batch no llegó a stagearse.
+        gw = factory.gateways.get("alice")
+        assert gw is None or (gw.made_dirs == [] and gw.submitted == [])
 
 
 class TestMissingMillerIsAsked:

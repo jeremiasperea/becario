@@ -3,8 +3,17 @@ import json
 
 import httpx
 
-from becario.domain.models import Intent, Plan, PlanStep
+from becario.domain.datos_de_corrida import DatoDeCorrida
+from becario.domain.models import (
+    Intent,
+    Plan,
+    PlanStep,
+    RouterFailureReason,
+    RouterUnavailableError,
+)
 from becario.infrastructure.ollama_router import (
+    _DATO_PROMPT,
+    _DATO_SCHEMA,
     OllamaRouter,
     RouterDecision,
     RouterParams,
@@ -375,6 +384,118 @@ class TestParseEditOutput:
     def test_empty_and_none_fail_closed(self):
         assert self.parse_edit("").target_index is None
         assert self.parse_edit(None).target_index is None
+
+
+class TestBackfillDato:
+    """Segunda pasada del DATO: qué se preguntó sobre una corrida.
+
+    El schema grande clasifica bien —«cuántas vueltas iónicas hizo» va a
+    `consultar_resultados`, unánime— y no tiene dónde poner CUÁL dato se
+    pidió. Medido: 3 planes distintos para 9 hechos distintos, o sea que
+    siete preguntas salían idénticas byte a byte.
+
+    Va como pasada aparte y no como campo del schema grande porque la
+    evidencia que hay es de la llamada corta y aislada (15/15 dentro del
+    vocabulario, 12/12 abstenciones), y el prompt grande ya demostró ser
+    sensible a lo que se le agrega.
+    """
+
+    @staticmethod
+    def _router(chat_stub):
+        router = OllamaRouter()
+        router._chat = chat_stub
+        return router
+
+    def test_completa_el_dato_en_una_consulta_de_resultados(self):
+        llamadas = []
+
+        def chat(system_prompt, user_text, schema):
+            llamadas.append(user_text)
+            return '{"dato": "pasos_ionicos"}'
+
+        router = self._router(chat)
+        plan = Plan(steps=[
+            PlanStep(action=Intent.QUERY_RESULTS, parametros={"formula": "Zr"})
+        ])
+        result = router._backfill_dato("Cuantas vueltas iónicas hizo?", plan)
+        assert result.steps[0].parametros["dato"] == "pasos_ionicos"
+        assert result.steps[0].parametros["formula"] == "Zr"  # no pisa nada
+        assert llamadas == ["Cuantas vueltas iónicas hizo?"]
+
+    def test_no_gasta_una_llamada_en_planes_que_no_consultan(self):
+        # Los pedidos de cálculo, listado y archivos no pagan la pasada.
+        def chat(system_prompt, user_text, schema):
+            raise AssertionError("no tenía que llamar al modelo")
+
+        router = self._router(chat)
+        plan = Plan(steps=[
+            PlanStep(action=Intent.PREPARE_CALC, parametros={"formula": "W"})
+        ])
+        assert router._backfill_dato("relajá el bulk de W", plan) is plan
+
+    def test_con_dos_consultas_no_se_adivina(self):
+        # Con dos pasos de consulta la pregunta deja de ser inequívoca, y
+        # equivocarse acá es contestar el dato de una sobre la otra — que
+        # es exactamente lo que se vino a arreglar.
+        def chat(system_prompt, user_text, schema):
+            raise AssertionError("no tenía que llamar al modelo")
+
+        router = self._router(chat)
+        plan = Plan(steps=[
+            PlanStep(action=Intent.QUERY_RESULTS, parametros={"formula": "Zr"}),
+            PlanStep(action=Intent.QUERY_RESULTS, parametros={"formula": "W"}),
+        ])
+        assert router._backfill_dato("x", plan) is plan
+
+    def test_un_dato_que_ya_vino_no_se_vuelve_a_pedir(self):
+        def chat(system_prompt, user_text, schema):
+            raise AssertionError("no tenía que llamar al modelo")
+
+        router = self._router(chat)
+        plan = Plan(steps=[
+            PlanStep(
+                action=Intent.QUERY_RESULTS,
+                parametros={"formula": "Zr", "dato": "energia"},
+            )
+        ])
+        assert router._backfill_dato("x", plan) is plan
+
+    def test_la_abstencion_del_modelo_viaja_tal_cual(self):
+        # `ninguno` NO es lo mismo que no haber preguntado: el handler lo
+        # usa para decir «ese dato no lo sé calcular» en vez de contestar
+        # los parámetros de red como si nada.
+        router = self._router(lambda *_: '{"dato": "ninguno"}')
+        plan = Plan(steps=[PlanStep(action=Intent.QUERY_RESULTS, parametros={})])
+        result = router._backfill_dato("resumime el OUTCAR", plan)
+        assert result.steps[0].parametros["dato"] == "ninguno"
+
+    def test_si_el_modelo_no_contesta_el_plan_sigue_sirviendo(self):
+        # Fail-open, igual que la pasada de estructura: `route()` YA
+        # devolvió un plan usable. Hacerlo fallar entero por la pasada
+        # opcional cambiaría una respuesta parcial por ninguna.
+        def chat(system_prompt, user_text, schema):
+            raise RouterUnavailableError(RouterFailureReason.UNREACHABLE, "caído")
+
+        router = self._router(chat)
+        plan = Plan(steps=[
+            PlanStep(action=Intent.QUERY_RESULTS, parametros={"formula": "Zr"})
+        ])
+        result = router._backfill_dato("x", plan)
+        assert result.steps[0].parametros["dato"] == "ninguno"
+        assert result.steps[0].parametros["formula"] == "Zr"
+
+    def test_una_respuesta_ilegible_no_rompe_el_plan(self):
+        router = self._router(lambda *_: "esto no es json")
+        plan = Plan(steps=[PlanStep(action=Intent.QUERY_RESULTS, parametros={})])
+        result = router._backfill_dato("x", plan)
+        assert result.steps[0].parametros["dato"] == "ninguno"
+
+    def test_el_prompt_nombra_todo_el_vocabulario(self):
+        # El prompt se arma con el enum del dominio: un valor nuevo sin
+        # descripción llegaría al modelo como una palabra suelta.
+        for dato in DatoDeCorrida:
+            assert dato.value in _DATO_PROMPT
+        assert _DATO_SCHEMA["properties"]["dato"]["enum"][-1] == "ninguno"
 
 
 class TestBackfillStructure:

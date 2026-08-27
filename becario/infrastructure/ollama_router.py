@@ -8,12 +8,14 @@ fuente de verdad para el contrato con el LLM.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from ..domain.datos_de_corrida import DESCRIPCIONES, NINGUNO, DatoDeCorrida
 from ..domain.models import (
     Intent,
     Plan,
@@ -125,8 +127,9 @@ class RouterParams(BaseModel):
         description=(
             "dónde ancla destino_remoto: 'home' (el home del usuario), "
             "'corridas' (el directorio de trabajo del bot, y también "
-            "cuando no dice dónde) o 'absoluta' (el usuario escribió una "
-            "ruta que empieza con /)"
+            "cuando no dice dónde), 'ultima_corrida' (el usuario habla de "
+            "SU último cálculo, o del de un job) o 'absoluta' (el usuario "
+            "escribió una ruta que empieza con /)"
         ),
     )
     destino_remoto: Optional[str] = Field(
@@ -242,9 +245,11 @@ _SYSTEM_PROMPT = (
     # es sensible a cuánto pesa cada sección, no solo a lo que dice.
     "Toda ruta lleva 'base', que dice DÓNDE ancla: 'home' (el usuario "
     "habla de SU home), 'corridas' (el directorio de trabajo del bot, y "
-    "también cuando no dice dónde) o 'absoluta' (el usuario escribió una "
-    "ruta que empieza con /). 'destino_remoto' es lo que va DESPUÉS de la "
-    "base, sin barra inicial, y va vacío si no nombró subcarpeta.\n"
+    "también cuando no dice dónde), 'ultima_corrida' (habla de SU último "
+    "cálculo o corrida, o de la de un job: ahí va 'job_id') o 'absoluta' "
+    "(el usuario escribió una ruta que empieza con /). 'destino_remoto' es "
+    "lo que va DESPUÉS de la base, sin barra inicial, y va vacío si no "
+    "nombró subcarpeta.\n"
     "Ejemplos:\n"
     "'dame los parámetros de red del cálculo del zirconio bulk' -> "
     "consultar_resultados, formula=Zr\n"
@@ -305,6 +310,14 @@ _SYSTEM_PROMPT = (
     "'mostrame la estructura de archivos del cluster' -> listar_archivos, "
     "base=corridas\n"
     "'listá mi home' -> listar_archivos, base=home\n"
+    # «cálculo» tira fuerte hacia consultar_db: en la sesión real, tres de
+    # cuatro intentos de listar los archivos de una corrida terminaron
+    # mostrando el historial. Estos dos ejemplos existen para desarmar esa
+    # atracción, y van acá —entre los de listar_archivos— y no arriba.
+    "'mostrame los archivos del último cálculo' / 'qué hay en la última "
+    "corrida' -> listar_archivos, base=ultima_corrida\n"
+    "'qué archivos dejó el job 14' -> listar_archivos, "
+    "base=ultima_corrida, job_id=14\n"
     "'mostramelo en forma de tree' / 'mostrame todo' -> listar_archivos, "
     "base=corridas (si el pedido refiere a lo anterior o solo pide un "
     "formato, el sistema muestra el árbol del workspace)\n"
@@ -385,6 +398,32 @@ _STRUCT_PROMPT = (
     "'convergencia de ENCUT para Zr hcp' -> formula=Zr, red_cristalina=hcp\n"
     "'armá un slab de ZrO2 (001) de 5 capas' -> formula=ZrO2"
 )
+
+
+# El prompt del dato se ARMA con el vocabulario del dominio en vez de
+# repetirlo: si mañana entra un valor nuevo al enum y nadie lo explica acá,
+# el modelo tendría que adivinar qué significa. Así no puede pasar.
+_DATO_PROMPT = (
+    "Sos el extractor de B.E.C.A.R.I.O., un asistente de cluster HPC. El "
+    "mensaje pregunta por UN dato de un cálculo VASP que ya corrió. Decí "
+    "cuál de estos datos pide:\n"
+    + "".join(f"- {d.value}: {DESCRIPCIONES[d]}\n" for d in DatoDeCorrida)
+    + "Si el mensaje pide cualquier otra cosa —otro dato, el archivo entero, "
+    f"un resumen libre— poné '{NINGUNO}'. NO elijas el más parecido: solo "
+    "esos se pueden calcular, y contestar otro con cara de correcto es peor "
+    "que decir que no se sabe."
+)
+
+_DATO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "dato": {
+            "type": "string",
+            "enum": [*(d.value for d in DatoDeCorrida), NINGUNO],
+        },
+    },
+    "required": ["dato"],
+}
 
 
 # Intents cuyo handler necesita el material para poder hacer algo. Los dos
@@ -662,7 +701,8 @@ class OllamaRouter:
 
     def route(self, user_text: str) -> Plan:
         raw = self._chat(_SYSTEM_PROMPT, user_text, self._schema)
-        return self._backfill_structure(user_text, self.parse_llm_output(raw))
+        plan = self._backfill_structure(user_text, self.parse_llm_output(raw))
+        return self._backfill_dato(user_text, plan)
 
     def extract_structure(self, user_text: str) -> dict:
         """Segunda pasada enfocada: extrae SOLO la estructura (formula/
@@ -707,6 +747,73 @@ class OllamaRouter:
             k: v for k in _STRUCTURE_KEYS
             if (v := extracted.get(k)) not in (None, "", [], {})
         }
+
+    def extract_dato(self, user_text: str) -> str:
+        """Segunda pasada enfocada: QUÉ dato de la corrida pide el mensaje.
+
+        Existe por lo mismo que `extract_structure`, en otro eje. El schema
+        grande clasifica bien —«cuántas vueltas iónicas hizo» va a
+        `consultar_resultados`, unánime— y ahí se detiene: no tiene dónde
+        poner CUÁL dato se pidió. Medido sobre nueve preguntas: 3 planes
+        distintos para 9 hechos distintos, o sea que «cuántas vueltas
+        iónicas hizo» y «qué energía dio» salían idénticos byte a byte y el
+        handler contestaba lo mismo a las dos.
+
+        Con el vocabulario que efectivamente corre —cinco valores— la
+        pasada corta acierta 15/15 dentro y se abstiene 12/12 fuera, en
+        2,5 s contra los ~10 s del schema grande. Lo segundo importa tanto
+        como lo primero: un extractor que nunca contesta `ninguno` le
+        responde la energía a quien pidió un resumen.
+
+        Se agrega como pasada aparte y NO como campo del schema grande a
+        propósito. El presupuesto del schema es real (ADR-0006) y este
+        prompt ya demostró ser sensible al orden de sus ejemplos —el
+        fixture del barrido de ENCUT pasó de 3/3 a 0/3 por moverlos—; la
+        evidencia que hay es de la llamada corta y aislada, así que es esa
+        la que se implementa.
+
+        Fail-open, igual que `extract_structure`: si el modelo no contesta,
+        el plan que `route()` ya devolvió sigue sirviendo y el handler
+        contesta lo general. Cambiar una respuesta parcial por ninguna
+        sería peor.
+        """
+        try:
+            raw = self._chat(_DATO_PROMPT, user_text, _DATO_SCHEMA)
+        except RouterUnavailableError as exc:
+            logger.warning(
+                "Sin extracción del dato (%s): sigo con el plan de route()",
+                exc.reason.value,
+            )
+            return NINGUNO
+        try:
+            dato = str(json.loads(raw or "{}").get("dato") or NINGUNO).strip()
+        except ValueError:
+            logger.warning("Extracción del dato fuera de schema: %r", (raw or "")[:200])
+            return NINGUNO
+        return dato
+
+    def _backfill_dato(self, user_text: str, plan: Plan) -> Plan:
+        """Completa `dato` en un plan que consulta resultados.
+
+        Se aplica cuando el plan tiene EXACTAMENTE UN paso de
+        `consultar_resultados` y ese paso no trae `dato`: ahí la pregunta
+        del texto es inequívoca. Con dos o más pasos de consulta deja de
+        serlo, y el costo de equivocarse es contestar el dato de una sobre
+        la otra — que es justo lo que se vino a arreglar.
+
+        Cuesta una llamada corta, y solo sobre planes de consulta: los
+        pedidos de cálculo, listado y archivos no pagan nada.
+        """
+        objetivos = [s for s in plan.steps if s.action is Intent.QUERY_RESULTS]
+        if len(objetivos) != 1 or objetivos[0].parametros.get("dato"):
+            return plan
+        dato = self.extract_dato(user_text)
+        objetivo = objetivos[0]
+        return Plan(steps=[
+            PlanStep(action=s.action, parametros={**s.parametros, "dato": dato})
+            if s is objetivo else s
+            for s in plan.steps
+        ])
 
     def _backfill_structure(self, user_text: str, plan: Plan) -> Plan:
         """Recupera formula/red_cristalina vía la segunda pasada de

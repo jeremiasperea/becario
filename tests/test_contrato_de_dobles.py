@@ -26,9 +26,12 @@ from typing import Optional
 import pytest
 
 from becario.domain.models import JobId, JobStateReading
+from becario.domain.ports import CalcRunRepository
 
 from .test_job_monitor import FakeCluster as ClusterDelMonitor
+from .test_relaxed_source import FakeCalcRuns as CorridasDeRelajadas
 from .test_relaxed_source import FakeCluster as ClusterDeRelajadas
+from .test_service import FakeCalcRuns as CorridasDelServicio
 from .test_service import FakeCluster as ClusterDelServicio
 
 
@@ -68,3 +71,38 @@ class TestLosDoblesRespetanElPuerto:
 
         lectura = doble.job_state(JobId(value="42"))
         assert isinstance(JobStatus.from_slurm(lectura.state), JobStatus)
+
+
+def _dobles_de_corridas() -> list:
+    """Un ejemplar de cada doble de `CalcRunRepository` de la suite.
+
+    Se suma acá porque el puerto acaba de crecer —`find_by_job_id`, para
+    poder anclar en «la corrida del job N»— y esa es exactamente la
+    situación que este módulo existe para vigilar: un método nuevo en el
+    puerto y dos dobles que siguen sin tenerlo pasan todos sus tests, y
+    revientan con `AttributeError` en el primer llamador real.
+    """
+    return [CorridasDelServicio(), CorridasDeRelajadas()]
+
+
+@pytest.mark.parametrize(
+    "doble", _dobles_de_corridas(), ids=lambda d: type(d).__module__.split(".")[-1]
+)
+class TestLosDoblesDeCorridasRespetanElPuerto:
+    def test_tienen_todos_los_metodos_del_puerto(self, doble):
+        faltan = [
+            nombre for nombre in vars(CalcRunRepository)
+            if not nombre.startswith("_") and not callable(getattr(doble, nombre, None))
+        ]
+
+        assert faltan == [], (
+            f"{type(doble).__module__}.{type(doble).__name__} no implementa "
+            f"{faltan}; el puerto CalcRunRepository sí"
+        )
+
+    def test_buscar_por_job_devuelve_un_registro_o_nada(self, doble):
+        """El puerto promete `Optional[dict]`, no una lista. Un doble que
+        devolviera `[]` pasa un `if row is None` y se rompe en el `.get`."""
+        encontrado = doble.find_by_job_id(0, "no-existe")
+
+        assert encontrado is None or isinstance(encontrado, dict)

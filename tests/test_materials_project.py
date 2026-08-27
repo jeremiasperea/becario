@@ -8,10 +8,12 @@ R4 (mp-id), R9 (conversión) y R6/R7 (mapeo de errores).
 from __future__ import annotations
 
 import pytest
+import requests
 from ase import Atoms
 from mp_api.client import MPRestError
 from pymatgen.core import Lattice, Structure
 from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from becario.domain.models import (
     StructureQuery,
@@ -19,7 +21,15 @@ from becario.domain.models import (
     StructureResolutionError,
     StructureResolutionReason,
 )
-from becario.infrastructure.materials_project import MaterialsProjectProvider
+import becario.infrastructure.materials_project as mp_mod
+from mp_api.client.core.client import BaseRester
+
+from becario.infrastructure.materials_project import (
+    _TIMEOUT_CONEXION,
+    _TIMEOUT_LECTURA,
+    MaterialsProjectProvider,
+    _poner_tope,
+)
 
 
 # --- estructuras reales mínimas -------------------------------------------
@@ -269,3 +279,87 @@ class TestPoliticaDeReintentoDeMaterialsProject:
 
         assert exc.value.reason is StructureResolutionReason.API
         assert factory.intentos == 1, "reintentó un error que MP ya había contestado"
+
+
+class TestLaEsperaTieneTope:
+    """`requests` sin `timeout` espera para siempre, y eso pasó de verdad.
+
+    La batería de conversaciones quedó trabada 7 h 22 min con 2 minutos de
+    CPU, bloqueada leyendo un socket a `api.materialsproject.org` que estaba
+    ESTABLECIDO y no devolvía nada. No falló: se quedó callada.
+    """
+
+    _TOPE = (3.0, 7.0)
+
+    def test_le_pone_tope_a_lo_que_no_lo_trae(self):
+        vistos: dict = {}
+        sesion = requests.Session()
+        sesion.request = lambda method, url, **kw: vistos.update(kw)
+
+        _poner_tope(sesion, self._TOPE).request("GET", "https://ejemplo")
+
+        assert vistos["timeout"] == self._TOPE
+
+    def test_un_tope_explicito_del_llamador_gana(self):
+        # `setdefault`, no asignación: si alguien pide el suyo, manda el suyo.
+        vistos: dict = {}
+        sesion = requests.Session()
+        sesion.request = lambda method, url, **kw: vistos.update(kw)
+
+        _poner_tope(sesion, self._TOPE).request("GET", "https://ejemplo", timeout=1.0)
+
+        assert vistos["timeout"] == 1.0
+
+    def test_no_le_saca_nada_a_la_sesion_que_armo_la_biblioteca(self):
+        """El test que faltaba, y que se pagó caro.
+
+        La primera versión de este arreglo le pasaba una sesión propia a
+        `MPRester(session=...)`. Ese constructor hace
+        `self.session = session or BaseRester._create_session(...)`: la
+        sesión propia REEMPLAZA la de la biblioteca, y con ella se fue la
+        cabecera `x-api-key`. MP quedó sin autenticar, ZrO2 dejó de traer
+        polimorfos y la repregunta por la fase desapareció — CV16 a CV20 de
+        la batería en rojo, todos verdes en los tests unitarios.
+
+        Se usa la sesión REAL de `mp_api`, no una armada a mano: el
+        invariante que se rompió es «lo que la biblioteca puso sigue ahí».
+        """
+        original = BaseRester._create_session(
+            api_key="x" * 32, include_user_agent=True, headers={}
+        )
+        adaptadores_antes = dict(original.adapters)
+
+        sesion = _poner_tope(original, self._TOPE)
+
+        assert sesion.headers["x-api-key"] == "x" * 32
+        assert "user-agent" in sesion.headers
+        # Los adaptadores traen el `Retry` con backoff y 429/502/504.
+        assert dict(sesion.adapters) == adaptadores_antes
+
+    def test_el_rester_de_produccion_sale_con_tope(self, monkeypatch):
+        # Se intercepta la CLASE en vez de construir un `MPRester` de verdad:
+        # su constructor sale a la red, y una versión anterior de este test
+        # colgó la suite entera — el mismo defecto que se está arreglando,
+        # cometido dentro de su propio test.
+        vistos: dict = {}
+
+        class FalsoRester:
+            def __init__(self, **kwargs):
+                self.session = requests.Session()
+                self.session.request = lambda method, url, **kw: vistos.update(kw)
+
+        monkeypatch.setattr(mp_mod, "MPRester", FalsoRester)
+        rester = MaterialsProjectProvider(api_key="x" * 32)._default_rester()
+        rester.session.request("GET", "https://ejemplo")
+
+        assert vistos["timeout"] == (_TIMEOUT_CONEXION, _TIMEOUT_LECTURA)
+
+    def test_un_vencimiento_se_trata_como_fallo_de_red(self):
+        # O sea: reintentable. El mapeo ya existía; lo que no existía era la
+        # posibilidad de que el vencimiento ocurriera.
+        fake = _FakeRester(search_error=RequestsTimeout("se acabó la espera"))
+
+        with pytest.raises(StructureResolutionError) as exc:
+            _provider(fake).resolve(StructureQuery(formula="Fe2O3"))
+
+        assert exc.value.reason is StructureResolutionReason.NETWORK

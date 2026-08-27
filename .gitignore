@@ -1,6 +1,12 @@
 # === Secretos y datos locales (NUNCA subir a un repositorio) ===
 # Config generada por el asistente de primer arranque (token del bot, etc.)
 .env
+# Cualquier copia del .env lleva el token del bot adentro. `.env` solo no
+# cubre `.env.bak`, `.env.old` ni el respaldo con fecha que uno hace antes
+# de tocarlo — y esos son justo los que aparecen cuando alguien está
+# trasteando la config.
+.env.*
+!.env.example
 # Roster con tu cuenta del cluster (usuario + ruta de clave)
 users.json
 # Base SQLite (historial, jobs)

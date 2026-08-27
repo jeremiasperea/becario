@@ -1,0 +1,15 @@
+# Una pregunta sobre el CONTENIDO de un archivo que el bot acababa de
+# mostrar. Terminó en el texto de ayuda, y el número estaba a un
+# `len(re.findall(...))` de distancia: el bot ya cuenta los pasos iónicos
+# en `_check_convergence` para avisar si una relajación se quedó sin NSW.
+# Lo que faltaba era poder DECIR qué dato se pedía — medido: el ruteo
+# emitía el mismo plan byte a byte para siete preguntas distintas.
+id: CV33
+titulo: cuántas vueltas iónicas hizo el último cálculo
+origen: chat_messages 2026-08-20 02:02
+sintoma: respondió "❓ No pude interpretar tu pedido" sobre el OSZICAR que acababa de mostrar
+
+> Cuantas vueltas iónicas hizo?
+espera: ok
+no_contiene: No pude interpretar
+regex: \d+ paso\(s\) iónico\(s\)
