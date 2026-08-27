@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-21T03:25:07+00:00",
+  "generated_at": "2026-08-27T00:42:41+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,21 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
-  "router_fingerprint": "6e1b0e342027dd89",
+  "router_fingerprint": "27df6c47b7ace08d",
   "models": [
     {
-      "model": "qwen2.5-coder:14b",
+      "model": "gemma3:4b",
       "skipped": false,
-      "hits": 8,
+      "hits": 6,
       "total": 8,
-      "median_latency_seconds": 20.126,
+      "median_latency_seconds": 7.651,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.466,
+          "latency_seconds": 2.887,
           "error": null
         },
         {
@@ -34,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.185,
+          "latency_seconds": 2.661,
           "error": null
         },
         {
@@ -42,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 23.641,
+          "latency_seconds": 9.224,
           "error": null
         },
         {
@@ -50,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 27.03,
+          "latency_seconds": 9.238,
           "error": null
         },
         {
@@ -58,7 +58,80 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 13.965,
+          "latency_seconds": 6.226,
+          "error": null
+        },
+        {
+          "name": "single_prepare_encut.txt",
+          "ok": false,
+          "passes": 0,
+          "attempts": 3,
+          "latency_seconds": 12.852,
+          "error": "faltan params {'encut_min': 250, 'encut_max': 450}, obtuve {'formula': 'Zr', 'red_cristalina': 'hcp', 'tipo_calculo': 'convergencia_encut', 'tags_incar': {}, 'magnetico': False}"
+        },
+        {
+          "name": "single_prepare_relax.txt",
+          "ok": false,
+          "passes": 0,
+          "attempts": 3,
+          "latency_seconds": 12.112,
+          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'modificar_estructura']"
+        },
+        {
+          "name": "single_submit_job.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 5.049,
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5:7b",
+      "skipped": false,
+      "hits": 8,
+      "total": 8,
+      "median_latency_seconds": 9.016,
+      "fixtures": [
+        {
+          "name": "edit_explicit_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 3.79,
+          "error": null
+        },
+        {
+          "name": "edit_semantic_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 3.546,
+          "error": null
+        },
+        {
+          "name": "multi_destructive_tail.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 10.681,
+          "error": null
+        },
+        {
+          "name": "multi_two_safe_steps.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 12.69,
+          "error": null
+        },
+        {
+          "name": "single_create_dir.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 6.815,
           "error": null
         },
         {
@@ -66,7 +139,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 27.162,
+          "latency_seconds": 12.16,
           "error": null
         },
         {
@@ -74,7 +147,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 25.12,
+          "latency_seconds": 9.201,
           "error": null
         },
         {
@@ -82,7 +155,153 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.273,
+          "latency_seconds": 6.305,
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5-coder:14b",
+      "skipped": false,
+      "hits": 8,
+      "total": 8,
+      "median_latency_seconds": 20.447,
+      "fixtures": [
+        {
+          "name": "edit_explicit_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 8.092,
+          "error": null
+        },
+        {
+          "name": "edit_semantic_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 6.025,
+          "error": null
+        },
+        {
+          "name": "multi_destructive_tail.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 23.082,
+          "error": null
+        },
+        {
+          "name": "multi_two_safe_steps.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 26.543,
+          "error": null
+        },
+        {
+          "name": "single_create_dir.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 14.386,
+          "error": null
+        },
+        {
+          "name": "single_prepare_encut.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 26.227,
+          "error": null
+        },
+        {
+          "name": "single_prepare_relax.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 24.412,
+          "error": null
+        },
+        {
+          "name": "single_submit_job.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 11.76,
+          "error": null
+        }
+      ]
+    },
+    {
+      "model": "gemma4:12b",
+      "skipped": false,
+      "hits": 8,
+      "total": 8,
+      "median_latency_seconds": 22.911,
+      "fixtures": [
+        {
+          "name": "edit_explicit_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 6.83,
+          "error": null
+        },
+        {
+          "name": "edit_semantic_step.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 6.663,
+          "error": null
+        },
+        {
+          "name": "multi_destructive_tail.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 22.938,
+          "error": null
+        },
+        {
+          "name": "multi_two_safe_steps.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 24.666,
+          "error": null
+        },
+        {
+          "name": "single_create_dir.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 13.982,
+          "error": null
+        },
+        {
+          "name": "single_prepare_encut.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 41.947,
+          "error": null
+        },
+        {
+          "name": "single_prepare_relax.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 35.992,
+          "error": null
+        },
+        {
+          "name": "single_submit_job.txt",
+          "ok": true,
+          "passes": 3,
+          "attempts": 3,
+          "latency_seconds": 12.281,
           "error": null
         }
       ]
