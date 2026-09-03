@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from becario.domain.datos_de_corrida import DatoDeCorrida
+from becario.domain.datos_de_corrida import DESCRIPCIONES, DatoDeCorrida
 from becario.domain.models import (
     Intent,
     Plan,
@@ -13,6 +13,7 @@ from becario.domain.models import (
 )
 from becario.infrastructure.ollama_router import (
     _DATO_PROMPT,
+    _SYSTEM_PROMPT,
     _DATO_SCHEMA,
     OllamaRouter,
     RouterDecision,
@@ -384,6 +385,46 @@ class TestParseEditOutput:
     def test_empty_and_none_fail_closed(self):
         assert self.parse_edit("").target_index is None
         assert self.parse_edit(None).target_index is None
+
+
+class TestVocabularioEnLosDosPrompts:
+    """Los dos prompts tienen que conocer el mismo vocabulario de datos.
+
+    Existe por CV33. El schema grande describía `consultar_resultados`
+    como "parámetros de red, celda relajada, energía" —tres de los cinco
+    datos— mientras la pasada corta ya sabía contestar cinco. Un dato que
+    la pasada corta conoce y el schema grande no menciona es un dato
+    inalcanzable: el mensaje se rutea a otra intención y la segunda
+    pasada, que solo corre sobre `consultar_resultados`, nunca llega a
+    preguntarse nada.
+
+    Costó una batería entera descubrirlo porque los tests unitarios de
+    `TestBackfillDato` le dictan el ruteo al sistema en vez de
+    preguntárselo: `router.next` trae `QUERY_RESULTS` ya decidido, que es
+    justo lo que el router real no producía.
+
+    Este test no llama al modelo: compara dos strings. Es barato, es
+    determinista, y falla en el commit que desincroniza, no seis semanas
+    después contra el cluster.
+    """
+
+    def test_el_prompt_grande_menciona_los_cinco_datos(self):
+        faltantes = [
+            d.value
+            for d in DatoDeCorrida
+            if DESCRIPCIONES[d] not in _SYSTEM_PROMPT
+        ]
+        assert not faltantes, (
+            "el schema grande no describe estos datos, así que las preguntas "
+            f"por ellos no van a rutear a consultar_resultados: {faltantes}"
+        )
+
+    def test_los_dos_prompts_leen_el_mismo_vocabulario(self):
+        # No alcanza con que el texto esté: tiene que venir de
+        # `DESCRIPCIONES`, o vuelve a poder desincronizarse a mano.
+        for d in DatoDeCorrida:
+            assert DESCRIPCIONES[d] in _SYSTEM_PROMPT
+            assert DESCRIPCIONES[d] in _DATO_PROMPT
 
 
 class TestBackfillDato:
