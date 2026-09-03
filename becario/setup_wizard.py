@@ -76,7 +76,7 @@ def run_setup_wizard(env_path: Path = ENV_PATH) -> None:
     print("\n3) Ollama (el modelo de lenguaje local que interpreta los mensajes)")
     print("   Si no sabés qué poner, dejá los valores por defecto.")
     ollama_url = _ask("   URL de Ollama", "http://localhost:11434")
-    ollama_model = _ask("   Modelo de Ollama", "gemma4:12b")
+    ollama_model = _ask("   Modelo de Ollama", "qwen2.5-coder:14b")
 
     values = {
         "BECARIO_BOT_TOKEN": token,

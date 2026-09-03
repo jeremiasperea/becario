@@ -212,6 +212,42 @@ escritorio, donde no hay nadie ordenando el arranque.
 > El síntoma que confunde es `ollama list` mostrándote los modelos: te los
 > muestra los **tuyos**, y el bot está preguntándole a otro servidor.
 
+## Sugerir el siguiente paso
+
+```
+vos> ¿qué me falta para el Zr?
+
+bot> 🧭 Sobre tu Zr — 2 corrida(s): relajacion, estatico.
+
+     📐 Corriste Zr con ENCUT=520 pero no veo un barrido de
+        convergencia (§6.9). El corte fija el tamaño de la base de
+        ondas planas: energías obtenidas con cortes distintos no son
+        comparables…
+
+     ¿Arranco por alguno? Pedímelo así:
+       • «hacé la curva de convergencia de ENCUT para Zr»
+```
+
+Mira las corridas que ya hiciste de ese material y dice qué paso falta.
+Cuatro reglas: una corrida que terminó mal no sirve de base (y se avisa
+**antes** que nada, porque encadenar sobre ella es peor que callarse), un
+ENCUT sin barrido previo, una relajación sin su estático de cierre, y una
+DOS sobre una geometría que nunca se relajó.
+
+Tres cosas que definen el diseño (`domain/sugerencias.py`):
+
+- **El LLM no decide qué sugerir.** Decide que estás *pidiendo* una
+  sugerencia; el contenido sale de reglas. Un modelo de 7B opinando sobre
+  metodología DFT es la clase de respuesta creíble y equivocada que el
+  resto del proyecto evita — y que además no se puede testear.
+- **Solo sugiere lo que el bot sabe preparar.** `CalcKind` tiene cuatro
+  valores y hay un test que verifica que ningún pedido se salga de ahí.
+  Recomendar un barrido de k-points sería un consejo correcto y una
+  promesa incumplible.
+- **Cita solo lo verificable.** La sección sale del vocabulario del manual
+  (`vasp_tags.json`) y viaja con el tag del que habla la regla. Las reglas
+  que expresan una práctica y no la definición de un tag van **sin §**.
+
 ## ¿Está sano? (`scripts/salud.py`)
 
 ```bash
@@ -287,20 +323,23 @@ los runners no tienen ni GPU ni los modelos instalados.
 
 Lo que CI sí hace es **negarse a creerle a una medición vencida**.
 `tests/test_scoreboard_router.py` falla si `docs/scoreboard_router.json` dejó
-de describir el router de hoy, por cualquiera de estas tres vías:
+de describir el router de hoy, por cualquiera de estas cuatro vías:
 
 | se venció porque… | lo detecta |
 |---|---|
 | apareció o desapareció un fixture | la lista de fixtures |
-| cambió el schema, un prompt o el texto de un fixture | `router_fingerprint`, un hash del contrato con el modelo |
+| cambió el schema, un prompt, una opción del pedido o el texto de un fixture | `router_fingerprint`, un hash del contrato con el modelo |
 | pasaron más de 30 días | `generated_at` |
+| el modelo que se sirve por default no está entre los medidos | `default_model`, resuelto desde `Settings` |
 
 Los dos primeros cubren el código; el tercero es el único remedio contra que
 el modelo cambie de comportamiento **sin que se mueva una línea**. Eso pasó: un
 fixture pasó de fallar de una forma a fallar de otra entre dos días, y el
-tablero commiteado siguió pareciendo válido. Cuando el gate falla, la
-respuesta es siempre la misma —volver a correr el harness, ~11 minutos con los
-dos modelos— y el mensaje del test dice cuál de las tres cosas se venció.
+tablero commiteado siguió pareciendo válido. El cuarto también pasó: el
+default de `Settings` fue `gemma4:12b` sin una sola medición commiteada,
+mientras el tablero medía otro modelo y daba verde. Cuando el gate falla, la
+respuesta es siempre la misma —volver a correr el harness— y el mensaje del
+test dice cuál de las cuatro cosas se venció.
 
 Para ampliar el set con casos reales, las decisiones que un humano confirmó en
 producción se vuelven fixtures:
@@ -635,7 +674,8 @@ de "esperando turno".
   deriva de `RouterDecision` (Pydantic) y el modelo queda obligado a
   responder conforme al schema. Es la alternativa correcta al tool calling
   para modelos Gemma, que no exponen esa capacidad en Ollama.
-- El "modo consultar y sugerir" (el LLM propone un plan sin ejecutar nada,
-  usando historial + estado como contexto) todavía no está implementado —
-  es el siguiente paso natural ahora que hay datos de historial reales
-  para que el LLM pueda razonar sobre ellos.
+- El "modo consultar y sugerir" se implementó como **sugerir el siguiente
+  paso** (ver arriba): reglas sobre las corridas previas, no un LLM
+  razonando libre. De las otras dos lecturas posibles quedan sin hacer
+  responder preguntas comparando VARIAS corridas entre sí ("¿cuál dio menor
+  energía?") y el ensayo sin efectos ("¿qué harías si te pido X?").

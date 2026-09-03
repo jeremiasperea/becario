@@ -178,6 +178,109 @@ class TestErrorMapping:
         assert exc.value.reason is StructureResolutionReason.NETWORK
 
 
+class _ResterPorIntento:
+    """`rester_factory` que entrega un `_FakeRester` distinto por intento y
+    cuenta cuántos hubo.
+
+    `_FakeRester` solo, configurado una vez, no puede fallar la primera vez y
+    andar la segunda — que es justo el caso que hay que probar. Se lo usa
+    como pieza: una lista de resters, uno por intento, y el último se repite
+    si el proveedor insiste más veces de las previstas. El contador es la
+    forma de ver la política: cuántas veces se llamó de verdad a MP.
+    """
+
+    def __init__(self, *resters: _FakeRester):
+        self._resters = list(resters)
+        self.intentos = 0
+
+    def __call__(self) -> _FakeRester:
+        self.intentos += 1
+        return self._resters[min(self.intentos, len(self._resters)) - 1]
+
+
+class TestPoliticaDeReintentoDeMaterialsProject:
+    """Consultar Materials Project es seguro de repetir, y por eso se repite.
+
+    La tercera política de reintento del proyecto, y la más permisiva de las
+    tres a propósito. Un `sbatch` no se reintenta nunca porque encolar dos
+    veces le cuesta horas de cómputo al usuario; una consulta a MP no deja
+    nada atrás, así que insistir no puede hacer daño. Esa asimetría es una
+    decisión, no un descuido, y estos tests son los que la sostienen.
+
+    Lo que no se reintenta es lo que no va a cambiar por insistir: un
+    `NO_MATCH` (el material no está) y un error de la API (MP contestó, y
+    contestó mal). Solo se repite `NETWORK`, que es no haber podido hablar.
+    """
+
+    def test_un_corte_de_red_pasajero_se_recupera_solo(self):
+        """El caso que justifica todo el reintento.
+
+        Con el wifi que se cae un segundo, sin reintento el usuario ve un
+        error por algo que ya se arregló para cuando terminó de leerlo. Acá
+        el segundo intento contesta y `resolve()` devuelve la estructura sin
+        que el fallo llegue nunca a salir del adaptador.
+        """
+        docs = [_Doc("mp-19770", _iron_oxide(5.0), 0.0, "Fe2O3")]
+        factory = _ResterPorIntento(
+            _FakeRester(search_error=RequestsConnectionError("se cayó la red")),
+            _FakeRester(docs=docs),
+        )
+        provider = MaterialsProjectProvider(api_key="dummy", rester_factory=factory)
+
+        res = provider.resolve(StructureQuery(formula="Fe2O3"))
+
+        assert isinstance(res, StructureResolution)
+        assert res.mp_id == "mp-19770"
+        assert factory.intentos == 2, "no reintentó un fallo de red que ya se había ido"
+
+    def test_una_red_que_no_vuelve_se_rinde_a_los_tres_intentos(self):
+        """Reintentar es seguro, pero no es gratis: el usuario está esperando.
+
+        Tres intentos y se propaga el error como vino, con reason NETWORK,
+        para que la capa de arriba pueda decir 'no pude hablar con MP' en vez
+        de 'ese material no existe'.
+        """
+        factory = _ResterPorIntento(
+            _FakeRester(search_error=RequestsConnectionError("sin red"))
+        )
+        provider = MaterialsProjectProvider(api_key="dummy", rester_factory=factory)
+
+        with pytest.raises(StructureResolutionError) as exc:
+            provider.resolve(StructureQuery(formula="Fe2O3"))
+
+        assert exc.value.reason is StructureResolutionReason.NETWORK
+        assert factory.intentos == 3
+
+    def test_un_material_que_no_existe_NO_se_reintenta(self):
+        """MP contestó, y contestó que no hay nada. Preguntar lo mismo dos
+        veces más da la misma respuesta y solo hace esperar al usuario.
+
+        La fórmula es válida a propósito (`Og2O3`: elementos reales, sintaxis
+        buena) para que el `NO_MATCH` venga de MP y no del validador de
+        `StructureQuery`. Con una fórmula impronunciable el pedido moría antes
+        de llegar al adaptador y el test no medía la política de reintento."""
+        factory = _ResterPorIntento(_FakeRester(docs=[]))
+        provider = MaterialsProjectProvider(api_key="dummy", rester_factory=factory)
+
+        with pytest.raises(StructureResolutionError) as exc:
+            provider.resolve(StructureQuery(formula="Og2O3"))
+
+        assert exc.value.reason is StructureResolutionReason.NO_MATCH
+        assert factory.intentos == 1, "reintentó una búsqueda sin resultados"
+
+    def test_un_error_de_la_api_NO_se_reintenta(self):
+        """Una API key vencida o una consulta mal formada no se arreglan
+        insistiendo: el servidor está vivo y ya dijo que no."""
+        factory = _ResterPorIntento(_FakeRester(search_error=MPRestError("boom")))
+        provider = MaterialsProjectProvider(api_key="dummy", rester_factory=factory)
+
+        with pytest.raises(StructureResolutionError) as exc:
+            provider.resolve(StructureQuery(formula="Fe2O3"))
+
+        assert exc.value.reason is StructureResolutionReason.API
+        assert factory.intentos == 1, "reintentó un error que MP ya había contestado"
+
+
 class TestLaEsperaTieneTope:
     """`requests` sin `timeout` espera para siempre, y eso pasó de verdad.
 

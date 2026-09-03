@@ -91,7 +91,7 @@ class TestSettingsFromEnv:
         assert settings.telegram_token == "123:abc"
         assert settings.ssh_host == "cluster.test"
         assert settings.ssh_port == 2222
-        assert settings.ollama_model == "gemma4:12b"  # default
+        assert settings.ollama_model == "qwen2.5-coder:14b"  # default
 
     def test_falta_token_lanza_config_error(self, tmp_path, monkeypatch):
         self._clear(monkeypatch)

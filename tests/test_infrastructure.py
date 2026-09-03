@@ -104,93 +104,79 @@ def _action(requester_id: int = 1) -> PendingAction:
     )
 
 
-class TestConfirmationStore:
-    def test_put_pop(self):
-        store = InMemoryConfirmationStore(ttl_seconds=600)
-        token = store.put(_action())
-        assert store.pop(token) is not None
-        assert store.pop(token) is None  # segundo pop: consumido
+def _plan(requester_id: int = 1, created_at: float | None = None) -> PendingPlan:
+    """`created_at` explícito para los tests de vencimiento.
 
-    def test_peek_does_not_consume(self):
-        store = InMemoryConfirmationStore(ttl_seconds=600)
-        token = store.put(_action())
-        assert store.peek(token) is not None
-        assert store.peek(token) is not None  # sigue ahí
-        assert store.pop(token) is not None
-        assert store.peek(token) is None  # ahora sí, consumido
-
-    def test_ttl_expiry(self):
-        store = InMemoryConfirmationStore(ttl_seconds=0.01)
-        token = store.put(_action())
-        time.sleep(0.05)
-        assert store.pop(token) is None
-
-    def test_peek_respects_ttl(self):
-        store = InMemoryConfirmationStore(ttl_seconds=0.01)
-        token = store.put(_action())
-        time.sleep(0.05)
-        assert store.peek(token) is None
-
-    def test_purge(self):
-        store = InMemoryConfirmationStore(ttl_seconds=0.01)
-        store.put(_action())
-        store.put(_action())
-        time.sleep(0.05)
-        assert store.purge_expired() == 2
-
-    def test_pop_de_un_vencido_no_lo_marca_consumido(self):
-        # Un plan vencido no se ejecutó. Si el pop dejara lápida, el
-        # siguiente status diría "consumido" y el usuario leería «ya se usó
-        # — la acción se hizo con el primer toque» sobre algo que nunca
-        # pasó. "vencido" manda a rehacer el pedido, que es lo correcto.
-        store = InMemoryConfirmationStore(ttl_seconds=0.01)
-        token = store.put(_action())
-        time.sleep(0.05)
-
-        assert store.pop(token) is None
-        assert store.status(token) == "vencido"
+    Sin esto, un test que necesita que algo venza DESPUES de otra cosa
+    termina corriéndole una carrera al reloj; ver la nota de
+    `test_purge_borra_los_vencidos_y_deja_las_lapidas`.
+    """
+    plan = PendingPlan(chat_id=1, requester_id=requester_id,
+                       steps=[_action(requester_id)])
+    if created_at is not None:
+        plan.created_at = created_at
+    return plan
 
 
-def _plan(requester_id: int = 1) -> PendingPlan:
-    return PendingPlan(chat_id=1, requester_id=requester_id, steps=[_action(requester_id)])
+def _nacido_vencido(requester_id: int = 1) -> PendingPlan:
+    """Un plan que ya nace con el TTL cumplido.
+
+    Reemplaza al par `ttl_seconds=0.01` + `time.sleep(0.05)` que tenían
+    todos los tests de vencimiento de este módulo: el TTL se decide en el
+    `created_at`, no en el reloj de pared, así que el test no puede
+    perderle la carrera a su propio setup (el modo de fallo está contado en
+    `test_purge_borra_los_vencidos_y_deja_las_lapidas`) y no cuesta 40 ms.
+
+    Sirve igual para las dos implementaciones: `SQLiteConfirmationStore`
+    persiste el `created_at` del plan tal cual —viaja dentro del `plan_json`
+    y también en su propia columna— y recalcula el vencimiento al leerlo,
+    así que la costura es la misma en memoria y en disco.
+    """
+    return _plan(requester_id, created_at=time.time() - 3600.0)
 
 
-class TestConfirmationStoreWithPendingPlan:
-    """El store es duck-typed (solo usa `.token`/`.expired()`): el puerto
-    ahora declara `PendingPlan` como su unidad, pero la implementación no
-    necesita cambiar de comportamiento — mismo round-trip que con
-    `PendingAction`."""
-
-    def test_put_pop_round_trip(self):
-        store = InMemoryConfirmationStore(ttl_seconds=600)
-        plan = _plan()
-        token = store.put(plan)
-        popped = store.pop(token)
-        assert popped is plan
-        assert popped.steps[0].payload == {"job_id": "1"}
-        assert store.pop(token) is None  # segundo pop: consumido
-
-    def test_peek_does_not_consume(self):
-        store = InMemoryConfirmationStore(ttl_seconds=600)
-        token = store.put(_plan())
-        assert store.peek(token) is not None
-        assert store.pop(token) is not None
-        assert store.peek(token) is None
+def _en_memoria(tmp_path, ttl: float) -> InMemoryConfirmationStore:
+    return InMemoryConfirmationStore(ttl_seconds=ttl)
 
 
-class TestSQLiteConfirmationStore:
-    """Mismo contrato que el store en memoria, pero en disco.
+def _en_disco(tmp_path, ttl: float) -> SQLiteConfirmationStore:
+    return SQLiteConfirmationStore(str(tmp_path / "becario.db"), ttl_seconds=ttl)
 
-    La diferencia que importa no es de API sino de vida útil: acá el plan
-    sobrevive al proceso. Era lo único volátil del sistema y lo que hacía
-    que un reinicio se comiera la conversación en silencio.
+
+@pytest.mark.parametrize("crear_store", [_en_memoria, _en_disco],
+                         ids=["en_memoria", "en_disco"])
+class TestContratoConfirmationStore:
+    """El contrato del puerto `ConfirmationStore`, contra sus DOS
+    implementaciones a la vez.
+
+    Antes estaba escrito tres veces —dos clases sobre el store en memoria,
+    una sobre el de disco, con los mismos escenarios repetidos— y esa forma
+    no verifica lo único que acá importa: que las dos contesten igual.
+
+    Por qué importa: `main.py` cablea el de SQLite, así que
+    `InMemoryConfirmationStore` ya no lo usa nadie en producción. Sobrevive
+    como DOBLE de media suite (`test_service`, `test_tolerancia_router`,
+    `test_tolerancia_incidentes`), y un doble que se parece lo suficiente
+    para pasar y no lo suficiente para servir es una familia de bugs que ya
+    mordió tres veces a este proyecto (ver `test_contrato_de_dobles.py`).
+    Probarlo contra el mismo contrato que el real es lo que le da valor: si
+    divergen, la divergencia se ve acá y no en producción.
+
+    La unidad del contrato es `PendingPlan`, que es lo que declara el
+    puerto. La vieja variante sobre `PendingAction` no sobrevive a la
+    parametrización, y tampoco debería: el store en memoria es duck-typed
+    (solo mira `.token`/`.expired()`), pero el de disco serializa `steps`,
+    así que `PendingPlan` es lo único que las dos pueden prometer.
     """
 
-    def _store(self, tmp_path, ttl=600.0) -> SQLiteConfirmationStore:
-        return SQLiteConfirmationStore(str(tmp_path / "becario.db"), ttl_seconds=ttl)
+    def test_put_pop_round_trip(self, crear_store, tmp_path):
+        """Ida y vuelta, y la lápida del segundo toque.
 
-    def test_put_pop_round_trip(self, tmp_path):
-        store = self._store(tmp_path)
+        El `status` final no es decorativo: es la diferencia entre decirle a
+        quien apretó ✅ dos veces «ya se hizo» y mandarlo a repetir un
+        sbatch.
+        """
+        store = crear_store(tmp_path, 600.0)
         token = store.put(_plan())
 
         recuperado = store.pop(token)
@@ -198,12 +184,134 @@ class TestSQLiteConfirmationStore:
         assert recuperado is not None
         assert recuperado.steps[0].payload == {"job_id": "1"}
         assert recuperado.steps[0].intent is Intent.CANCEL_JOB
-        assert store.pop(token) is None  # segundo pop: consumido
+        assert store.pop(token) is None  # segundo pop: ya consumido
+        assert store.status(token) == "consumido"
+
+    def test_peek_no_consume(self, crear_store, tmp_path):
+        """`peek` existe para validar QUIÉN puede confirmar antes de
+        descartar el plan pendiente: si consumiera, la validación se
+        comería la acción."""
+        store = crear_store(tmp_path, 600.0)
+        token = store.put(_plan())
+
+        assert store.peek(token) is not None
+        assert store.peek(token) is not None  # sigue ahí
+        assert store.status(token) == "vigente"
+        assert store.pop(token) is not None
+        assert store.peek(token) is None  # ahora sí, consumido
+
+    def test_token_nunca_visto_es_desconocido(self, crear_store, tmp_path):
+        """La cuarta respuesta de `status`, la que justifica que sean cuatro
+        y no tres: de un token que nunca vimos NO se puede afirmar que se
+        usó."""
+        assert crear_store(tmp_path, 600.0).status("no-existe") == "desconocido"
+
+    def test_pop_de_un_vencido_no_lo_marca_consumido(self, crear_store, tmp_path):
+        """El TTL corta `peek`, `pop` y `status`; y el `pop` de un vencido
+        NO deja lápida.
+
+        Un plan vencido no se ejecutó. Si el pop lo marcara consumido, el
+        siguiente `status` diría "consumido" y el usuario leería «ya se usó
+        — la acción se hizo con el primer toque» sobre algo que nunca pasó.
+        "vencido" lo manda a rehacer el pedido, que es lo correcto.
+        """
+        store = crear_store(tmp_path, 60.0)
+        token = store.put(_nacido_vencido())
+
+        assert store.peek(token) is None
+        assert store.pop(token) is None
+        assert store.status(token) == "vencido"
+
+    def test_purge_borra_los_vencidos_y_deja_las_lapidas(self, crear_store, tmp_path):
+        """TTL holgado y vencidos que nacen vencidos, en vez de TTL de 10 ms
+        más un sleep.
+
+        La versión anterior era intermitente y el modo de fallo enseña algo:
+        entre el `put` y el `pop` del consumido hay dos transacciones SQLite
+        contra un archivo real, y con la máquina cargada eso pasaba los
+        10 ms de TTL. El `pop` encontraba el plan YA vencido y devolvía None
+        SIN dejar lápida —a propósito, ver el docstring de `pop`—, así que
+        esa fila seguía contando como vencida-sin-consumir: la purga daba 3
+        y el `status` decía "vencido". El test le corría una carrera a su
+        propio setup.
+        """
+        store = crear_store(tmp_path, 60.0)
+        consumido = store.put(_plan())
+        store.pop(consumido)
+        store.put(_nacido_vencido())
+        store.put(_nacido_vencido())
+
+        assert store.purge_expired() == 2  # solo los vencidos sin consumir
+        assert store.status(consumido) == "consumido"
+
+    def test_lo_que_devuelve_es_tuyo_y_no_toca_lo_guardado(self, crear_store, tmp_path):
+        """La divergencia que apareció al poner las dos bajo el mismo techo.
+
+        El de disco serializa a JSON, así que lo que devuelve es siempre un
+        objeto nuevo; el de memoria entregaba la referencia viva y mutarla
+        mutaba el store. Un test que mutara un plan peekeado habría pasado
+        con el doble y fallado contra el real: la cuarta de la familia de
+        `test_contrato_de_dobles.py`, y la única razón de que no explotara
+        es que ningún call site muta TODAVÍA (`services.py` copia con
+        `dict(...)` en los tres).
+
+        Se fija la semántica del de disco, no la del otro, porque es la que
+        corre en producción y la única de las dos que se puede sostener: un
+        store persistente no puede devolver una referencia a algo que vive
+        en un archivo.
+        """
+        store = crear_store(tmp_path, 600.0)
+        token = store.put(_plan())
+
+        prestado = store.peek(token)
+        prestado.steps[0].payload["job_id"] = "INTRUSO"
+        prestado.chat_id = 99999
+
+        de_nuevo = store.peek(token)
+        assert de_nuevo.steps[0].payload == {"job_id": "1"}
+        assert de_nuevo.chat_id != 99999
+        # Y lo que finalmente se ejecuta tampoco quedó contaminado.
+        assert store.pop(token).steps[0].payload == {"job_id": "1"}
+
+    def test_mutar_el_plan_despues_de_guardarlo_no_cambia_lo_que_se_ejecuta(
+        self, crear_store, tmp_path
+    ):
+        """La otra punta: `put` también tiene que sacar una foto.
+
+        Quien llama se queda con su `plan` en la mano para armar el texto de
+        la confirmación —el mensaje que la persona lee antes de apretar ✅—.
+        Si lo que se guarda siguiera atado a ese objeto, el plan mostrado y
+        el plan ejecutado podrían separarse, que es la peor forma de este
+        bug: el usuario aprueba una cosa y corre otra.
+        """
+        store = crear_store(tmp_path, 600.0)
+        plan = _plan()
+        token = store.put(plan)
+
+        plan.steps[0].payload["job_id"] = "OTRO"
+
+        assert store.pop(token).steps[0].payload == {"job_id": "1"}
+
+
+class TestSQLiteConfirmationStore:
+    """Lo que es propio del store en disco y no puede ir al contrato
+    compartido.
+
+    La diferencia que importa contra el store en memoria no es de API sino
+    de vida útil: acá el plan sobrevive al proceso. Era lo único volátil
+    del sistema y lo que hacía que un reinicio se comiera la conversación
+    en silencio. Todo lo que sí comparte con el de memoria vive en
+    `TestContratoConfirmationStore`.
+    """
+
+    def _store(self, tmp_path, ttl=600.0) -> SQLiteConfirmationStore:
+        return SQLiteConfirmationStore(str(tmp_path / "becario.db"), ttl_seconds=ttl)
 
     def test_conserva_el_pedido_original_para_modificar(self, tmp_path):
         # `request_intent`/`request_params` son lo que hace editable un plan
         # (`allow_modify`); si no sobreviven al round-trip, el botón ✏️
-        # desaparece después de un reinicio.
+        # desaparece después de un reinicio. En memoria esto no se puede
+        # romper —el objeto guardado es el mismo—; acá pasa por serialización.
         store = self._store(tmp_path)
         accion = PendingAction(
             chat_id=1, requester_id=1, intent=Intent.SUBMIT_SLURM,
@@ -245,49 +353,6 @@ class TestSQLiteConfirmationStore:
         store.pop(token)
 
         assert self._store(tmp_path).status(token) == "consumido"
-
-    def test_token_nunca_visto_es_desconocido(self, tmp_path):
-        assert self._store(tmp_path).status("no-existe") == "desconocido"
-
-    def test_peek_no_consume(self, tmp_path):
-        store = self._store(tmp_path)
-        token = store.put(_plan())
-
-        assert store.peek(token) is not None
-        assert store.peek(token) is not None
-        assert store.status(token) == "vigente"
-        assert store.pop(token) is not None
-        assert store.peek(token) is None
-
-    def test_ttl_vence_peek_pop_y_status(self, tmp_path):
-        store = self._store(tmp_path, ttl=0.01)
-        token = store.put(_plan())
-        time.sleep(0.05)
-
-        assert store.peek(token) is None
-        assert store.pop(token) is None
-        assert store.status(token) == "vencido"
-
-    def test_purge_borra_los_vencidos_y_deja_las_lapidas(self, tmp_path):
-        store = self._store(tmp_path, ttl=0.01)
-        consumido = store.put(_plan())
-        store.pop(consumido)
-        store.put(_plan())
-        store.put(_plan())
-        time.sleep(0.05)
-
-        assert store.purge_expired() == 2  # solo los vencidos sin consumir
-        assert store.status(consumido) == "consumido"
-
-    def test_pop_de_un_vencido_no_deja_lapida(self, tmp_path):
-        # Mismo criterio que el store en memoria: un plan vencido no se
-        # ejecutó, así que no puede quedar como "consumido".
-        store = self._store(tmp_path, ttl=0.01)
-        token = store.put(_plan())
-        time.sleep(0.05)
-
-        assert store.pop(token) is None
-        assert store.status(token) == "vencido"
 
     def test_dos_pop_simultaneos_ejecutan_una_sola_vez(self, tmp_path):
         # El lock de proceso del store en memoria no sirve si mañana corren

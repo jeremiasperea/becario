@@ -42,7 +42,9 @@ from becario.infrastructure.ollama_router import (
 LOCAL_HOSTS = frozenset({"", "localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "gemma4:12b"
+# Tiene que coincidir con el default de `Settings.ollama_model` (becario/config.py):
+# es el único modelo con medición commiteada en docs/scoreboard_router.json.
+DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b"
 
 # Log del `ollama serve` que arranca este script (gitignoreado). Sin esto, si
 # el servidor muere al arrancar no queda rastro de por qué.

@@ -176,6 +176,75 @@ Con eso, `coder:14b` pasa de 7/8 a **8/8** — su primera corrida limpia.
 Sobre la otra mitad de la pregunta abierta: el 14b **sigue en producción**.
 Lo que lo descalificaba en este documento era este fixture, y ya pasa.
 
+## Tercera corrida (2026-08-16): qwen3:8b deja de ser inusable, pero no gana
+
+El benchmark del 2026-08-01 descartó `qwen3:8b` sin llegar a medirlo: es un
+modelo de razonamiento y gastaba el presupuesto en su bloque de *thinking*
+antes de emitir el JSON — no completó un mensaje en 10 minutos. Aquella nota
+decía que evaluarlo en serio requería exponer primero la opción de apagarlo.
+Se expuso (`think: False` en `OllamaRouter._chat_once`) y se midió.
+
+**El flag no era opcional, era la diferencia entre medir y no medir.** Mismo
+pedido, mismo schema, 3 corridas de cada lado con el modelo ya cargado:
+
+| `qwen3:8b` | sin el flag | con `think: False` |
+|---|---|---|
+| latencia | 44,0 / 43,9 / 40,7 s | **3,3 / 3,2 / 3,2 s** |
+| bloque de thinking | ~1250 caracteres | vacío |
+
+Cuidado al reproducirlo: en Ollama 0.31.2 `eval_count` y `eval_duration` **no
+cuentan los tokens de thinking**, así que dan casi idénticos con y sin el
+flag. El costo real solo aparece en `total_duration`.
+
+### El tablero, contra el modelo de producción
+
+Las dos corridas comparten `router_fingerprint` (`edf703710f55e7b3`), así que
+el gate del propio tablero las declara comparables.
+
+| | qwen2.5-coder:14b | qwen3:8b (`think: False`) |
+|---|---|---|
+| **Aciertos** | **8/8** | **7/8** |
+| **Mediana por llamada** | 19,6 s | **13,0 s** |
+
+34% más rápido y un fixture peor. El fallo, unánime `[0/3]`, es
+`single_prepare_relax` — el mismo fixture que le costó al coder:14b su
+primera corrida limpia. **Pero no es el mismo fallo**, y esa distinción es
+todo el punto:
+
+```
+paso 1: preparar_calculo     {tipo_calculo: relajacion, magnetico: true}
+paso 2: modificar_estructura {tipo_estructura: bulk, tipo_calculo: relajacion,
+                              magnetico: true}
+```
+
+El `coder:14b` partía el pedido en **acción + material**. `qwen3:8b` lo parte
+en **acción + nada**: `W` y `bcc` no están en ningún paso, y aparece un
+`magnetico: true` que nadie pidió. Las dos redes existentes están cosidas
+para la otra forma del error y las dos se abstienen, correctamente:
+
+- `Plan._v_merge_split_calc` (PR #36) exige que el `modificar_estructura`
+  **sí** traiga material. Acá no trae, así que no fusiona.
+- `OllamaRouter._backfill_structure` exige **exactamente un** paso de
+  `_STRUCTURE_INTENTS` sin material. Acá hay dos, y con dos el material deja
+  de ser inequívoco. Se abstiene por diseño.
+
+No es que el backfill no sepa: llamado solo, `extract_structure` sobre este
+mismo pedido devuelve `{formula: W, red_cristalina: bcc}` con los dos
+modelos. Lo que falla es que el plan partido en dos mitades vacías lo deja
+fuera de su condición de disparo.
+
+**Veredicto: `qwen2.5-coder:14b` sigue en producción.** El eje que decidió el
+benchmark del 2026-08-01 no fue el acierto sino la **invención** —un campo
+faltante da una repregunta visible, uno inventado da un archivo que parece
+correcto y no lo es— y ese `magnetico: true` cae justo de ese lado. Los 6,6 s
+de mediana que qwen3 ahorra no pagan un parámetro físico inventado.
+
+Lo que sí cambió: qwen3 pasó de **inmedible** a **candidato**, y el `think:
+False` beneficia a cualquier modelo de razonamiento que se pruebe después.
+
+Queda abierto: si aparece un tercer modelo que parta el pedido en dos mitades
+vacías, la forma del error ya tiene nombre pero no tiene red.
+
 ## Reproducir
 
 ```bash
@@ -187,4 +256,8 @@ BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
 BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
     --models qwen2.5:7b,qwen2.5-coder:14b --timeout 300 \
     --json docs/scoreboard_router.json
+
+# La tercera: qwen3 con el thinking ya apagado en el adaptador
+BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    --models qwen3:8b --timeout 300
 ```

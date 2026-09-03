@@ -235,6 +235,9 @@ _SYSTEM_PROMPT = (
     "- 'explicar': el usuario PREGUNTA por vos —cómo estás configurado, "
     "dónde buscaste algo, qué quedó pendiente— en vez de pedirte que hagas "
     "algo en el cluster. Preguntas sobre TU último mensaje van acá\n"
+    "- 'sugerir': el usuario pregunta QUÉ LE FALTA o qué le conviene hacer "
+    "con un material que ya viene trabajando, sin pedir un cálculo concreto. "
+    "Poné el material en formula\n"
     "- 'error': si el pedido no encaja en ninguna\n"
     # La semántica de rutas vive acá arriba, con las definiciones, y NO en
     # el bloque de ejemplos: metida ahí abajo rompió dos veces el fixture
@@ -337,6 +340,11 @@ _SYSTEM_PROMPT = (
     # solo al contenido — medido con `live_router_check.py`.
     "'donde buscaste?' -> explicar\n"
     "'en qué carpeta dejás las corridas?' -> explicar\n"
+    # Van DESPUÉS de los de 'explicar', al final del bloque, por el mismo
+    # motivo que ellos: el prompt pesa por posición y meter ejemplos arriba
+    # ya rompió dos veces el fixture del barrido de ENCUT.
+    "'qué me falta para el Zr?' -> sugerir (formula=Zr)\n"
+    "'qué me conviene hacer ahora con el ZrO2?' -> sugerir (formula=ZrO2)\n"
     "Extraé en 'parametros' solo los datos presentes en el mensaje. "
     "No inventes valores. Nunca inventes una ruta: 'base' ya dice de dónde "
     "cuelga, así que 'destino_remoto' solo lleva lo que el usuario nombró. "
@@ -517,13 +525,42 @@ def compact_json_schema(model: type[BaseModel]) -> dict:
     return _strip_schema_titles(model.model_json_schema())
 
 
+def build_chat_payload(
+    *, model: str, system_prompt: str, user_text: str, schema: dict
+) -> dict:
+    """El cuerpo exacto del POST a `/api/chat`, armado aparte del envío.
+
+    Vive fuera de `_chat_once` para que se pueda inspeccionar SIN red. El
+    tablero del router (`scripts/live_router_check.py`) hashea todo lo que
+    decide qué se está midiendo, y estas opciones —`think`, `options`,
+    `stream`, `format`— cambian lo que el modelo recibe tanto como el
+    prompt o el schema. Mientras el dict vivía adentro del `try` del POST
+    no había forma de leerlo sin hacer la llamada, y por ahí se coló el
+    `think: False` (commit 476922b, 13× de diferencia de latencia en
+    modelos de razonamiento) con la huella del tablero intacta.
+    """
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "stream": False,
+        "format": schema,  # <- structured output
+        "think": False,  # <- ver `OllamaRouter._chat_once`: no queremos razonamiento
+        "options": {"temperature": 0.0},
+    }
+
+
 class OllamaRouter:
     """Router basado en structured outputs de Ollama (Gemma-compatible)."""
 
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "gemma4:12b",
+        # Mismo default que `Settings.ollama_model` (becario/config.py): el
+        # único modelo con medición commiteada en docs/scoreboard_router.json.
+        model: str = "qwen2.5-coder:14b",
         timeout: float = 180.0,  # ver el porqué del número en `config.Settings`
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -603,19 +640,46 @@ class OllamaRouter:
         )
 
     def _chat_once(self, system_prompt: str, user_text: str, schema: dict) -> str:
+        """El POST crudo a `/api/chat`.
+
+        Sobre `think: False`: este router clasifica y extrae, nunca redacta.
+        Un modelo de razonamiento que gasta el presupuesto en su bloque de
+        *thinking* antes de emitir el JSON no está pensando mejor la
+        respuesta: está haciendo esperar al usuario de Telegram por prosa
+        que nadie lee. Por eso se apaga siempre, no por modelo.
+
+        Va hardcodeado y no como variable de entorno a propósito. ADR-0002
+        se ganó que cambiar de modelo sea cambiar `BECARIO_OLLAMA_MODEL` y
+        nada más; un segundo flag que hubiera que mantener en sincronía con
+        el primero devuelve el acople que ese ADR sacó.
+
+        Medido contra Ollama 0.31.2, mismo pedido y mismo schema, 3
+        corridas de cada lado y las dos con el modelo ya cargado:
+
+        - `qwen3:8b` (razonamiento) SIN el flag: 44,0 / 43,9 / 40,7 s, con
+          ~1250 caracteres de bloque de thinking cada vez. CON el flag:
+          3,3 / 3,2 / 3,2 s y thinking vacío. **~13× más rápido.**
+        - `qwen2.5-coder:14b` (el de producción, sin soporte de thinking):
+          Ollama acepta el campo y lo ignora. No hay regresión — era el
+          riesgo que podía tumbar el cambio, y se descartó antes de
+          escribirlo.
+
+        Ojo con `eval_count`/`eval_duration` para medir esto: en 0.31.2 NO
+        cuentan los tokens de thinking, así que dan casi idénticos con y
+        sin el flag. El costo real solo se ve en `total_duration`.
+
+        El cuerpo del pedido lo arma `build_chat_payload` (arriba), no esta
+        función: así el harness del tablero puede hashearlo sin red.
+        """
         try:
             response = httpx.post(
                 f"{self._base_url}/api/chat",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_text},
-                    ],
-                    "stream": False,
-                    "format": schema,  # <- structured output
-                    "options": {"temperature": 0.0},
-                },
+                json=build_chat_payload(
+                    model=self._model,
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    schema=schema,
+                ),
                 timeout=self._timeout,
             )
             response.raise_for_status()

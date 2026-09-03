@@ -5,6 +5,8 @@ primer argumento `svc` y conservan el comportamiento original sin cambios.
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
 from typing import TYPE_CHECKING, Optional
 
@@ -21,6 +23,7 @@ from ...domain.datos_de_corrida import (
     ultima_energia,
 )
 from ...domain.models import CalcKind, HistoryFilter
+from ...domain.sugerencias import CorridaPrevia, render
 from ..context import Reply, _Ctx
 from ..job_monitor import _parse_last_e0
 from ..rechazos import registrar_rechazo, VOCABULARIO
@@ -31,6 +34,8 @@ from ..relaxed_source import _INCAR_MAX_BYTES, _OSZICAR_MAX_BYTES
 
 if TYPE_CHECKING:
     from ..services import BecarioService
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_poscar_cell(
@@ -181,6 +186,83 @@ def query_results(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         lines.append(f"E0 = {energy:.6f} eV")
     lines.append(f"📂 {run_dir}")
     return Reply(text="\n".join(lines))
+
+
+def _corridas_previas(
+    svc: "BecarioService", owner_id: int, formula: str
+) -> list[CorridaPrevia]:
+    """Traduce lo que hay en la base a lo que las reglas necesitan.
+
+    La huella de cada corrida guarda los parámetros con los que se pidió
+    (`calc_kind`, `encut`, …) y el historial guarda cómo terminó. Ninguna
+    de las dos alcanza sola: la huella no sabe si el trabajo falló, y el
+    historial no sabe con qué ENCUT se corrió.
+    """
+    filas = svc._calc_runs.find_recent(owner_id, f"{formula}_", limit=20)
+    estados = {}
+    if svc._history is not None:
+        # El historial tiene una fila por transición ('enviado', y después
+        # el desenlace), así que la ÚLTIMA de cada job es la que vale.
+        try:
+            # `limit` está topeado en 50 por el dominio, y el nombre importa:
+            # un `limite=` mal escrito lo ignora pydantic en silencio y deja
+            # el default de 5 — cinco filas de historial no alcanzan para
+            # cubrir las corridas de un material trabajado.
+            for h in svc._history.search(HistoryFilter(owner_id=owner_id, limit=50)):
+                # `search` devuelve `ORDER BY fecha DESC`, así que la PRIMERA
+                # fila de cada trabajo es su estado más reciente y las
+                # siguientes son su pasado. Con un `=` en vez de
+                # `setdefault` ganaba la más vieja: un trabajo que quedó en
+                # 'falló' volvía como 'enviado' y la regla más importante
+                # —no encadenar sobre una corrida rota— no disparaba nunca,
+                # sin que nada avisara.
+                estados.setdefault(str(h.get("job_id")), str(h.get("estado") or ""))
+        except Exception:  # el historial es contexto, no puede tirar la consulta
+            logger.warning("no pude leer el historial para las sugerencias", exc_info=True)
+
+    corridas = []
+    for f in filas:
+        try:
+            huella = json.loads(f.get("fingerprint") or "{}")
+            kind = CalcKind(huella.get("calc_kind"))
+        except (ValueError, TypeError):
+            continue  # una huella vieja o rota no vale una excepción
+        corridas.append(CorridaPrevia(
+            formula=str(huella.get("formula") or formula),
+            calc_kind=kind,
+            fecha=str(f.get("fecha") or ""),
+            estado=estados.get(str(f.get("job_id")), ""),
+            encut=huella.get("encut"),
+            job_name=str(f.get("job_name") or ""),
+        ))
+    return corridas
+
+
+def suggest(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
+    """Qué le falta a un material, mirando lo que ya se corrió.
+
+    El LLM decide que esto es un pedido de sugerencia; QUÉ sugerir lo
+    decide el dominio (`sugerencias.py`), con reglas y citando el manual.
+    Un modelo de 7B opinando sobre metodología DFT es exactamente la clase
+    de respuesta creíble y equivocada que el resto del proyecto evita.
+
+    No toca el cluster: se contesta con lo que ya está registrado.
+    """
+    if svc._calc_runs is None:
+        return Reply(
+            text="⚠️ El registro de corridas no está configurado en este bot, "
+            "así que no puedo mirar qué corriste antes.", ok=False,
+        )
+
+    formula = str(params.get("formula") or "").strip()
+    if not formula:
+        return Reply(
+            text="🧭 Decime de qué material, p. ej.: «¿qué me falta para el Zr?».",
+            ok=False, awaiting_params=True,
+        )
+
+    corridas = _corridas_previas(svc, ctx.user_id, formula)
+    return Reply(text=render(formula, corridas), ok=bool(corridas))
 
 
 def _no_se_ese_dato() -> Reply:

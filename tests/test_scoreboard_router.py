@@ -146,6 +146,66 @@ class TestTheContractTheBoardWasMeasuredAgainst:
         )
         assert router_fingerprint(_FIXTURES_DIR) != antes
 
+    def test_the_fingerprint_moves_when_a_payload_option_moves(self, monkeypatch):
+        # El punto ciego que dejó pasar el `think: False` del commit 476922b:
+        # la huella miraba schema y prompts, pero no las opciones del pedido.
+        # Un `temperature` distinto es otro router —el modelo recibe otra
+        # cosa— aunque el prompt no se haya tocado.
+        from becario.infrastructure import ollama_router as router_mod
+
+        antes = router_fingerprint(_FIXTURES_DIR)
+        original = router_mod.build_chat_payload
+
+        def con_otra_temperatura(**kwargs):
+            payload = original(**kwargs)
+            payload["options"] = {**payload["options"], "temperature": 0.7}
+            return payload
+
+        monkeypatch.setattr(router_mod, "build_chat_payload", con_otra_temperatura)
+        assert router_fingerprint(_FIXTURES_DIR) != antes, (
+            "cambiar una opción del payload no movió la huella: el tablero "
+            "va a seguir diciendo que describe el router de hoy. Revisá que "
+            "`chat_payload_shape()` (scripts/live_router_check.py) siga "
+            "entrando en `router_fingerprint`."
+        )
+
+    def test_the_fingerprint_moves_when_a_payload_key_disappears(self, monkeypatch):
+        # El caso exacto de 476922b, al revés: sacar `think` del payload
+        # devuelve el bloque de razonamiento (13× de latencia medido en
+        # qwen3:8b) sin tocar una línea de prompt.
+        from becario.infrastructure import ollama_router as router_mod
+
+        antes = router_fingerprint(_FIXTURES_DIR)
+        original = router_mod.build_chat_payload
+
+        def sin_think(**kwargs):
+            payload = original(**kwargs)
+            payload.pop("think", None)
+            return payload
+
+        monkeypatch.setattr(router_mod, "build_chat_payload", sin_think)
+        assert router_fingerprint(_FIXTURES_DIR) != antes, (
+            "sacar una clave del payload no movió la huella: el gate no "
+            "está mirando el pedido que viaja a Ollama. Revisá "
+            "`chat_payload_shape()` en scripts/live_router_check.py."
+        )
+
+    def test_the_payload_shape_keeps_the_options_and_hides_the_volatile_parts(self):
+        # Qué entra y qué no en la huella. El modelo es una FILA del tablero,
+        # no el contrato: si entrara, medir otro modelo invalidaría la
+        # medición anterior y dos corridas dejarían de ser comparables. Las
+        # opciones sí entran: son lo que el modelo recibe.
+        from scripts.live_router_check import chat_payload_shape
+
+        forma = chat_payload_shape()
+        assert '"think": false' in forma
+        assert '"temperature": 0.0' in forma
+        assert "<modelo>" in forma and "<user_text>" in forma, (
+            "el payload hasheado tiene que usar centinelas en las partes "
+            "volátiles (modelo, texto del usuario, schema); si no, la huella "
+            "cambia por cosas que no son el contrato del router."
+        )
+
     def test_the_fingerprint_moves_when_a_fixture_is_edited(self, tmp_path):
         (tmp_path / "uno.txt").write_text("prompt: a\nsteps: consultar_db\n")
         antes = router_fingerprint(tmp_path)
@@ -154,6 +214,51 @@ class TestTheContractTheBoardWasMeasuredAgainst:
 
     def test_the_fingerprint_is_stable_across_calls(self):
         assert router_fingerprint(_FIXTURES_DIR) == router_fingerprint(_FIXTURES_DIR)
+
+
+class TestTheDefaultModelHasToBeMeasured:
+    """El tablero puede estar impecable y medir modelos que el proyecto no
+    usa. Pasó: `gemma4:12b` fue el default de `Settings` sin una sola
+    medición commiteada, mientras el tablero medía `qwen2.5-coder:14b` y
+    daba verde. Un tablero que no incluye el modelo que se sirve no es
+    evidencia de nada sobre producción.
+    """
+
+    def test_the_default_model_measured_passes(self):
+        board = _board()  # mide qwen2.5-coder:14b
+        assert check_scoreboard(
+            board, {"a.txt", "b.txt"}, default_model="qwen2.5-coder:14b"
+        ) == []
+
+    def test_a_default_model_nobody_measured_is_caught(self):
+        problems = check_scoreboard(
+            _board(), {"a.txt", "b.txt"}, default_model="gemma4:12b"
+        )
+        assert any("gemma4:12b" in p and "por default" in p for p in problems)
+
+    def test_a_default_model_that_was_skipped_does_not_count(self):
+        # ⏭️ no es una medición: el modelo no estaba instalado o Ollama no
+        # contestó. Que figure en el tablero no dice nada de cómo se porta.
+        board = _board(
+            models=[
+                {
+                    "model": "qwen2.5-coder:14b", "skipped": True, "hits": 0,
+                    "total": 0, "median_latency_seconds": None, "fixtures": [],
+                },
+                {
+                    "model": "gemma3:4b", "skipped": False, "hits": 2,
+                    "total": 2, "median_latency_seconds": 1.1, "fixtures": [],
+                },
+            ]
+        )
+        problems = check_scoreboard(
+            board, {"a.txt", "b.txt"}, default_model="qwen2.5-coder:14b"
+        )
+        assert any("no está medido" in p for p in problems)
+
+    def test_without_the_parameter_nothing_changes(self):
+        # El chequeo es opt-in: los llamadores viejos siguen andando igual.
+        assert check_scoreboard(_board(), {"a.txt", "b.txt"}) == []
 
 
 class TestTheBoardGoesStaleOnItsOwn:
@@ -191,9 +296,17 @@ class TestCommittedScoreboard:
         json.loads(_SCOREBOARD.read_text(encoding="utf-8"))
 
     def test_describes_the_router_that_exists_today(self):
-        # El gate completo: fixtures, contrato del router y antigüedad. Si
-        # falla, la respuesta es SIEMPRE la misma —volver a medir— y el
-        # mensaje del problema dice cuál de las tres cosas se venció.
+        # El gate completo: fixtures, contrato del router, antigüedad y que
+        # el modelo que el proyecto sirve por default esté entre los
+        # medidos. Si falla, la respuesta es SIEMPRE la misma —volver a
+        # medir— y el mensaje del problema dice cuál de las cuatro cosas se
+        # venció.
+        #
+        # El default se lee de `Settings` (la clase, no `from_env()`: no
+        # queremos token ni .env para correr un test de forma) y se pasa por
+        # parámetro, porque `check_scoreboard` es pura a propósito.
+        from becario.config import Settings
+
         board = json.loads(_SCOREBOARD.read_text(encoding="utf-8"))
         names = {fx.name for fx in load_fixtures(_FIXTURES_DIR)}
         problems = check_scoreboard(
@@ -201,6 +314,7 @@ class TestCommittedScoreboard:
             names,
             fingerprint=router_fingerprint(_FIXTURES_DIR),
             max_age_days=_MAX_SCOREBOARD_AGE_DAYS,
+            default_model=Settings.ollama_model,
         )
         assert problems == [], (
             "el tablero del router está vencido:\n  - "
@@ -209,3 +323,42 @@ class TestCommittedScoreboard:
             "  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
             "scripts/live_router_check.py --json docs/scoreboard_router.json"
         )
+
+
+class TestNoSeEscribeUnTableroInvalido:
+    """Un tablero medido contra un Ollama que no contestaba no es una
+    medición: es un archivo que dice 0/8 y que se commitea como si el router
+    hubiera empeorado.
+
+    Pasó de verdad al agregar la intención `sugerir`: Ollama devolvió 403 en
+    `/api/chat` —rechaza el Host `localhost`, hay que pegarle a 127.0.0.1— y
+    el harness escribió los 0/8 tan tranquilo. Se puede distinguir porque el
+    router ya separa «no contestó» de «contestó mal»; antes los dos llegaban
+    como el mismo fixture en rojo.
+    """
+
+    def _score(self, *errores):
+        from scripts.live_router_check import FixtureResult, ModelScore
+
+        resultados = tuple(
+            FixtureResult(name=f"f{i}.txt", passes=0, attempts=3,
+                          latencies=(0.1,), error=e)
+            for i, e in enumerate(errores)
+        )
+        return [ModelScore(model="m", results=resultados)]
+
+    def test_los_fallos_de_infraestructura_se_cuentan(self):
+        from scripts.live_router_check import _fallos_de_infraestructura
+
+        scores = self._score(
+            "router no disponible (api)",
+            "router no disponible (timeout)",
+            "esperaba steps=[...], obtuve [...]",   # este SÍ es del router
+            None,
+        )
+        assert _fallos_de_infraestructura(scores) == 2
+
+    def test_una_corrida_sana_no_cuenta_ninguno(self):
+        from scripts.live_router_check import _fallos_de_infraestructura
+
+        assert _fallos_de_infraestructura(self._score(None, "faltan params {...}")) == 0

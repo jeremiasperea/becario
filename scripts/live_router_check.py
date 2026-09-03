@@ -11,10 +11,10 @@ sus ayudantes) SÍ son puras y SÍ se testean en
 `tests/test_live_router_fixtures.py`, sin red.
 
 `gemma3:4b` es el peor caso (HC4 del diseño: banco de pruebas, modelo
-más chico); `gemma4:12b` es el default de producción y no debe
-regresar. Si un modelo falla un fixture, el harness lo reporta y termina
-con exit code 1 — pensado para correrlo a mano antes de tocar el prompt
-o el schema del router.
+más chico); `qwen2.5-coder:14b` es el default de producción (`config.py`)
+y no debe regresar. Si un modelo falla un fixture, el harness lo reporta
+y termina con exit code 1 — pensado para correrlo a mano antes de tocar
+el prompt o el schema del router.
 
 Cada fixture se evalúa por MAYORÍA sobre `--attempts` intentos (default
 3, impar). Motivo (AR-2 / ADR-0006): `gemma4:12b` sobre CPU es
@@ -74,12 +74,13 @@ from becario.infrastructure.ollama_router import (  # noqa: E402
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "router"
 # gemma3:4b primero: es el peor caso (HC4) y el que gatea el presupuesto
-# de schema/prompt; gemma4:12b sigue siendo el default de `config.py` y no
-# debe regresar, aunque esté medido en 4/6 a 77.9s.
-# qwen2.5:7b es la línea base rápida (6/6 a 5.4s) y qwen2.5-coder:14b es el
-# que sirve producción hoy: ganó el benchmark de 13 casos del 2026-08-01 por
-# inventar menos. gemma4:e4b salió de la lista (6/6 pero 27s, superado por
-# los dos qwen).
+# de schema/prompt. qwen2.5:7b es la línea base rápida (6/6 a 5.4s) y
+# qwen2.5-coder:14b es el default de `config.py` y el que sirve producción
+# hoy: ganó el benchmark de 13 casos del 2026-08-01 por inventar menos, y es
+# el único con medición commiteada en docs/scoreboard_router.json.
+# gemma4:12b queda en la lista como comparación histórica (4/6 a 77.9s: fue
+# default sin que nadie lo midiera nunca). gemma4:e4b salió (6/6 pero 27s,
+# superado por los dos qwen).
 _DEFAULT_MODELS = ("gemma3:4b", "qwen2.5:7b", "qwen2.5-coder:14b", "gemma4:12b")
 
 
@@ -196,9 +197,25 @@ class ModelScore:
         }
 
 
+def _fallos_de_infraestructura(scores) -> int:
+    """Cuántos fixtures fallaron porque el modelo NO contestó.
+
+    Distinto de fallar porque contestó mal, que es lo que el tablero mide.
+    La marca la pone `_majority_check` cuando atrapa un
+    `RouterUnavailableError`.
+    """
+    return sum(
+        1
+        for s in scores
+        for r in s.results
+        if r.error and r.error.startswith("router no disponible")
+    )
+
+
 def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     """Huella de TODO lo que decide qué mide el tablero: el schema que viaja
-    a Ollama, los cuatro prompts del router y el contenido de los fixtures.
+    a Ollama, las opciones del pedido, los cuatro prompts del router y el
+    contenido de los fixtures.
 
     Es la pieza que faltaba para cerrar el agujero. `check_scoreboard` ya
     detectaba que apareciera o desapareciera un fixture, pero no que
@@ -211,16 +228,54 @@ def router_fingerprint(fixtures_dir: Path = _FIXTURES_DIR) -> str:
     Se hashea el CONTENIDO de los fixtures, no solo sus nombres: editarle
     el `prompt` a un fixture cambia lo que se está midiendo tanto como
     agregarlo.
+
+    Las OPCIONES del pedido entraron después, por el mismo agujero visto de
+    nuevo: el commit 476922b agregó `think: False` al POST —13× de
+    diferencia de latencia en modelos de razonamiento, o sea otro router— y
+    la huella no se movió, porque solo miraba schema y prompts. El autor lo
+    notó a mano; el gate no. Mañana alguien toca `temperature` o `num_ctx`
+    y el tablero sigue jurando que describe el router de hoy.
+
+    Se hashea `build_chat_payload` (el cuerpo real del POST) armado con
+    CENTINELAS en las partes volátiles: el modelo configurado es una
+    dimensión aparte del tablero —una fila por modelo—, y el texto del
+    usuario y el schema ya se hashean por su cuenta. Lo que queda en el
+    hash es lo estructural: qué claves viajan, los roles de los mensajes y
+    el valor de cada opción. Así la huella no depende de cómo se llamen las
+    variables locales de `_chat_once`, solo de lo que el modelo recibe.
     """
     from becario.infrastructure import ollama_router as router_mod
 
-    partes = [compact_json_schema_json(router_mod.RouterDecision)]
+    partes = [
+        compact_json_schema_json(router_mod.RouterDecision),
+        f"payload={chat_payload_shape()}",
+    ]
     for nombre in sorted(n for n in dir(router_mod) if n.endswith("_PROMPT")):
         partes.append(f"{nombre}={getattr(router_mod, nombre)}")
     for path in sorted(fixtures_dir.glob("*.txt")):
         partes.append(f"{path.name}={path.read_text(encoding='utf-8')}")
     crudo = "\n\x00".join(partes).encode("utf-8")
     return hashlib.sha256(crudo).hexdigest()[:16]
+
+
+def chat_payload_shape() -> str:
+    """El cuerpo del POST a `/api/chat` serializado de forma estable, con
+    centinelas donde el contenido es volátil.
+
+    Los centinelas son a propósito: si el modelo, el mensaje del usuario o
+    el schema entraran con su valor real, la huella cambiaría al cambiar de
+    modelo (que es una fila del tablero, no un cambio de router) y no se
+    podría comparar una corrida con otra.
+    """
+    from becario.infrastructure import ollama_router as router_mod
+
+    payload = router_mod.build_chat_payload(
+        model="<modelo>",
+        system_prompt="<system_prompt>",
+        user_text="<user_text>",
+        schema={"<schema>": True},
+    )
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
 
 def compact_json_schema_json(model) -> str:
@@ -267,6 +322,7 @@ def check_scoreboard(
     *,
     fingerprint: Optional[str] = None,
     max_age_days: Optional[float] = None,
+    default_model: Optional[str] = None,
 ) -> list[str]:
     """Los problemas de un scoreboard commiteado; lista vacía = está al día.
 
@@ -276,7 +332,7 @@ def check_scoreboard(
     por 3 intentos son ~117 minutos, y los runners no tienen ni GPU ni el
     modelo instalado.
 
-    Tres formas de quedar vencido, y las tres se chequean acá:
+    Cuatro formas de quedar vencido, y las cuatro se chequean acá:
 
     1. **Cambió el set de fixtures.** Alguien agrega uno y no vuelve a
        correr el harness: el tablero deja de describir lo que hay en
@@ -288,6 +344,16 @@ def check_scoreboard(
     3. **Pasó el tiempo** (`max_age_days`): el código puede no haberse
        movido y el modelo comportarse distinto igual. Contra eso no hay
        hash que valga, solo volver a medir.
+    4. **El modelo que se sirve no es ninguno de los medidos**
+       (`default_model`): el tablero puede estar impecable y describir
+       modelos que el proyecto no usa. Pasó: `gemma4:12b` fue el default de
+       `Settings` sin una sola medición commiteada, mientras el tablero
+       medía otro modelo y daba verde.
+
+    `default_model` llega por parámetro y no se lee de `Settings` acá
+    adentro a propósito: esta función es pura —recibe los datos, no sale a
+    buscarlos— y así se puede testear sin entorno ni .env. Lo resuelve
+    quien la llama.
     """
     problems: list[str] = []
     if not isinstance(board, dict):
@@ -362,6 +428,23 @@ def check_scoreboard(
             "todos los modelos salteados: el scoreboard no mide nada "
             "(¿estaba Ollama abajo?)"
         )
+
+    if default_model is not None:
+        medidos = sorted(
+            str(entry.get("model"))
+            for entry in models
+            if isinstance(entry, dict) and not entry.get("skipped")
+        )
+        if default_model not in medidos:
+            problems.append(
+                f"el modelo que el proyecto usa por default ({default_model}) "
+                f"no está medido en el tablero (medidos: {medidos or 'ninguno'}): "
+                f"B.E.C.A.R.I.O. estaría sirviendo producción con un modelo "
+                f"del que no hay evidencia. Medilo con:\n"
+                f"  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
+                f"scripts/live_router_check.py --json docs/scoreboard_router.json "
+                f"--models {default_model}"
+            )
     return problems
 
 
@@ -652,6 +735,26 @@ def main() -> int:
         attempts=args.attempts,
         timeout=args.timeout,
     )
+    infra = _fallos_de_infraestructura(scores)
+    if args.json and infra:
+        # Un tablero medido contra un Ollama que no contestaba NO es una
+        # medición: es un archivo que dice 0/8 y que se commitearía como si
+        # el router hubiera empeorado. Pasó de verdad — 403 en `/api/chat`
+        # porque el servidor rechaza el Host `localhost`, y el harness
+        # escribió el 0/8 tan contento.
+        #
+        # Se puede detectar porque el router ya distingue «no contestó» de
+        # «contestó mal» (`RouterUnavailableError`); antes los dos llegaban
+        # acá como el mismo fixture en rojo y no había con qué separarlos.
+        print(
+            f"\n❌ No escribo el tablero: {infra} de {sum(len(s.results) for s in scores)} "
+            "fixtures fallaron porque el modelo no contestó, no porque contestara "
+            "mal.\n   Revisá que Ollama esté arriba y que `--url` sea la que "
+            "atiende (ojo con localhost vs 127.0.0.1).",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.json:
         scoreboard = build_scoreboard(
             scores, attempts=args.attempts, fixtures_dir=fixtures_dir
