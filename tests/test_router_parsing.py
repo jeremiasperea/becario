@@ -408,23 +408,26 @@ class TestVocabularioEnLosDosPrompts:
     después contra el cluster.
     """
 
-    def test_el_prompt_grande_menciona_los_cinco_datos(self):
-        faltantes = [
-            d.value
-            for d in DatoDeCorrida
-            if DESCRIPCIONES[d] not in _SYSTEM_PROMPT
-        ]
-        assert not faltantes, (
-            "el schema grande no describe estos datos, así que las preguntas "
-            f"por ellos no van a rutear a consultar_resultados: {faltantes}"
-        )
-
-    def test_los_dos_prompts_leen_el_mismo_vocabulario(self):
-        # No alcanza con que el texto esté: tiene que venir de
-        # `DESCRIPCIONES`, o vuelve a poder desincronizarse a mano.
-        for d in DatoDeCorrida:
-            assert DESCRIPCIONES[d] in _SYSTEM_PROMPT
-            assert DESCRIPCIONES[d] in _DATO_PROMPT
+    def test_los_dos_prompts_describen_cada_dato(self):
+        # Compara texto, no procedencia: una copia a mano de
+        # `DESCRIPCIONES` también pasaría. Lo que garantiza es que ningún
+        # dato quede descrito en una pasada y ausente en la otra.
+        for prompt, consecuencia in (
+            (
+                _SYSTEM_PROMPT,
+                "el schema grande no describe estos datos, así que las "
+                "preguntas por ellos no van a rutear a consultar_resultados",
+            ),
+            (
+                _DATO_PROMPT,
+                "la pasada corta no describe estos datos, así que no va a "
+                "poder asignarlos aunque el ruteo sea correcto",
+            ),
+        ):
+            faltantes = [
+                d.value for d in DatoDeCorrida if DESCRIPCIONES[d] not in prompt
+            ]
+            assert not faltantes, f"{consecuencia}: {faltantes}"
 
 
 class TestBackfillDato:
