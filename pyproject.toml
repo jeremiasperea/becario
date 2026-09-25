@@ -17,6 +17,9 @@ dependencies = [
     "pymatgen>=2025.10.7",
     "mp-api>=0.45",
     "emmet-core<0.86",
+    # Import directo en materials_project.py; hasta ahora llegaba solo
+    # transitivamente vía mp-api/pymatgen, sin garantía de versión propia.
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

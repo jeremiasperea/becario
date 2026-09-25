@@ -283,7 +283,7 @@ los pedidos ya empezaron a expirar.
 ## Tests
 
 ```bash
-python3 -m pytest            # ~934 tests al 2026-08-05
+python3 -m pytest            # ~1376 tests al 2026-09-25
 python3 -m pytest --cov=becario --cov-report=term-missing
 ```
 
