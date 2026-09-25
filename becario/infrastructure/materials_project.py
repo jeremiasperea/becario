@@ -7,9 +7,10 @@ pymatgen: este módulo consulta MP, elige el polimorfo más estable (menor
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
 import logging
+import threading
 
 import requests
 from mp_api.client import MPRester, MPRestError
@@ -26,6 +27,8 @@ from ..domain.models import (
     StructureResolutionReason,
 )
 from ..reintentos import reintentar
+
+T = TypeVar("T")
 
 # Campos que pedimos a MP: lo mínimo para elegir y describir el material.
 _SUMMARY_FIELDS = [
@@ -56,6 +59,11 @@ _MAX_ALTERNATIVES = 5
 # ~4,5 minutos en vez de infinito.
 _TIMEOUT_CONEXION = 10.0
 _TIMEOUT_LECTURA = 90.0
+# Tope de reloj por intento completo (ver `_con_deadline`). Más largo que
+# conectar + leer una vez, porque un intento son varias requests (heartbeats
+# de los resters + las páginas de la búsqueda). Con 3 intentos, el peor caso
+# es ~6 minutos: largo, pero finito.
+_DEADLINE_POR_INTENTO = 120.0
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,47 @@ def _poner_tope(sesion: requests.Session, timeout: tuple[float, float]) -> reque
     return sesion
 
 
+def _con_deadline(operacion: Callable[[], T], segundos: float) -> T:
+    """Corre `operacion` con un tope de RELOJ: si no termina en `segundos`,
+    levanta un fallo de red (reintentable) y la abandona.
+
+    Es el paracaídas, igual que el deadline de `_run` en el gateway SSH. El
+    tope de la sesión (`_poner_tope`) no alcanza: el constructor de cada
+    rester de `mp_api` —`MPRester` y los que `mpr.materials.summary` carga
+    en el acto— consulta `/heartbeat` con un `requests.get` a nivel módulo y
+    SIN timeout, antes de que exista una sesión a la que ponerle tope.
+    Medido: la batería quedó 12 horas trabada en el handshake SSL de esa
+    llamada (stack de faulthandler, 2026-09-25). Un tope por intento cubre
+    ese camino y cualquier otro que la biblioteca agregue sin avisar.
+
+    Hilo `daemon` y no `ThreadPoolExecutor`: los hilos del executor se
+    esperan al cerrar el intérprete, y un hilo colgado para siempre
+    colgaría también la salida del proceso. Un hilo abandonado queda
+    bloqueado hasta que el socket muera; es el costo de no quedarse
+    esperando con él.
+    """
+    resultado: dict = {}
+
+    def objetivo() -> None:
+        try:
+            resultado["valor"] = operacion()
+        except BaseException as exc:  # noqa: BLE001 - se re-levanta abajo
+            resultado["error"] = exc
+
+    hilo = threading.Thread(target=objetivo, name="materials-project", daemon=True)
+    hilo.start()
+    hilo.join(segundos)
+    if hilo.is_alive():
+        logger.error("Materials Project no respondió en %.0f s; se abandona el intento", segundos)
+        raise StructureResolutionError(
+            StructureResolutionReason.NETWORK,
+            f"Materials Project no respondió en {segundos:.0f} s",
+        )
+    if "error" in resultado:
+        raise resultado["error"]
+    return resultado["valor"]
+
+
 class MaterialsProjectProvider:
     """`StructureProvider` real. `rester_factory` se inyecta en tests para no
     tocar la red; en producción abre un `MPRester` con la API key."""
@@ -98,9 +147,11 @@ class MaterialsProjectProvider:
         self,
         api_key: str,
         rester_factory: Optional[Callable[[], object]] = None,
+        deadline: float = _DEADLINE_POR_INTENTO,
     ) -> None:
         self._api_key = api_key
         self._rester_factory = rester_factory or self._default_rester
+        self._deadline = deadline
 
     def _default_rester(self) -> object:
         # La sesión la arma `mp_api` (con su key, su user-agent y sus
@@ -118,7 +169,7 @@ class MaterialsProjectProvider:
         cambia por insistir, y un error de la API tampoco suele hacerlo.
         """
         return reintentar(
-            lambda: self._resolve_once(query),
+            lambda: _con_deadline(lambda: self._resolve_once(query), self._deadline),
             intentos=3,
             excepcion_transitoria=lambda exc: (
                 isinstance(exc, StructureResolutionError)
