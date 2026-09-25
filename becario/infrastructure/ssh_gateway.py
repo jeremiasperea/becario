@@ -684,6 +684,7 @@ class SSHClusterGatewayFactory:
             return gateway
 
     def close_all(self) -> None:
-        for gateway in self._cache.values():
-            gateway.close()
-        self._cache.clear()
+        with self._lock:
+            for gateway in self._cache.values():
+                gateway.close()
+            self._cache.clear()

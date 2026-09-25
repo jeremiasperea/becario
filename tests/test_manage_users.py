@@ -911,6 +911,18 @@ class TestGuardadoAtomico:
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
+    def test_un_roster_existente_conserva_sus_permisos(self, tmp_path):
+        # El reemplazo atómico crea un archivo nuevo: sin copiar el modo, un
+        # roster que el bot lee por grupo (0640) quedaría en 0600 y el bot,
+        # si corre con otra cuenta, dejaría de poder leerlo.
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"))
+        os.chmod(path, 0o640)
+
+        _save(path, {"users": [_entrada(111, "alice"), _entrada(222, "bob")]})
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
     def test_una_falla_en_el_reemplazo_no_toca_el_roster_ni_deja_temporales(
         self, tmp_path, monkeypatch
     ):

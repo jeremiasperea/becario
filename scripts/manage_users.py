@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -62,7 +63,7 @@ def _load(path: Path) -> dict:
 
 
 def _save(path: Path, data: dict) -> None:
-    """Escribe el roster de forma atómica y con permisos restrictivos.
+    """Escribe el roster de forma atómica, sin cambiarle dueño ni permisos.
 
     `write_text` directo sobre `path` deja una ventana en la que, si el
     proceso muere a mitad de escritura (disco lleno, `kill -9`, corte de
@@ -82,9 +83,23 @@ def _save(path: Path, data: dict) -> None:
             f.write(contenido)
             f.flush()
             os.fsync(f.fileno())
-        # El roster tiene rutas de claves SSH e IDs de Telegram: no es para
-        # que lo lea cualquier otra cuenta del mismo host.
-        os.chmod(tmp_path, 0o600)
+        # `os.replace` deja un archivo NUEVO, con el dueño y el modo del
+        # temporal. Si el roster ya existía se le copian los suyos: el bot
+        # puede correr con una cuenta de servicio distinta de la que edita
+        # el roster (p. ej. con sudo), y un `root:0600` recién creado le
+        # impediría leerlo al arrancar. Un roster nuevo nace en 0600: tiene
+        # rutas de claves SSH e IDs de Telegram, no es para cualquier cuenta
+        # del host.
+        try:
+            previo = path.stat()
+        except FileNotFoundError:
+            os.chmod(tmp_path, 0o600)
+        else:
+            os.chmod(tmp_path, stat.S_IMODE(previo.st_mode))
+            try:
+                os.chown(tmp_path, previo.st_uid, previo.st_gid)
+            except PermissionError:
+                pass  # sin privilegios para cambiar dueño: queda el de quien edita
         os.replace(tmp_path, path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
