@@ -13,6 +13,7 @@ from becario.application.handlers.calc import (
     _build_calc_request,
     _mp_note,
     _resolve_structure,
+    phase_question,
 )
 from becario.domain.models import (
     StructureAlternative,
@@ -144,6 +145,72 @@ class TestPhaseIsAsked:
             VaspCalcRequest(formula="ZrO2", crystal="fluorita", lattice_a=5.07),
         )
         assert fake.calls[0].crystal_system is None
+
+
+class TestPhaseQuestion:
+    """`phase_question` (T6): la misma pregunta de `_resolve_structure`,
+    pero pensada para el PREVIEW del batch — antes de stagear, no al
+    ejecutar. No debe tocar el cluster ni construir la estructura."""
+
+    def test_asks_when_there_are_other_phases(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution())
+        out = phase_question(_svc(fake), VaspCalcRequest(formula="ZrO2"))
+        assert isinstance(out, Reply)
+        assert out.awaiting_params
+        assert "tetragonal" in out.text and "cúbica" in out.text
+
+    def test_returns_none_when_the_phase_is_already_given(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution("Tetragonal", ()))
+        out = phase_question(
+            _svc(fake), VaspCalcRequest(formula="ZrO2", crystal="tetragonal")
+        )
+        assert out is None
+
+    def test_returns_none_for_a_single_phase(self):
+        fake = FakeStructureProvider(resolution=_zro2_resolution("Monoclinic", ()))
+        out = phase_question(_svc(fake), VaspCalcRequest(formula="ZrO2"))
+        assert out is None
+
+    def test_returns_none_when_mp_id_was_given_explicitly_and_never_queries(self):
+        # Pedir un polimorfo por su id ya ES elegir la fase: ni hace falta
+        # preguntarle a MP en el preview.
+        fake = FakeStructureProvider(resolution=_zro2_resolution())
+        out = phase_question(
+            _svc(fake), VaspCalcRequest(formula="ZrO2", mp_id="mp-1565")
+        )
+        assert out is None
+        assert fake.calls == []
+
+    def test_returns_none_for_a_simple_element_and_never_queries_mp(self):
+        fake = FakeStructureProvider()
+        out = phase_question(_svc(fake), VaspCalcRequest(formula="Zr"))
+        assert out is None
+        assert fake.calls == []
+
+    def test_returns_none_for_the_relaxed_source_and_never_touches_the_cluster(self):
+        # `source=relajado` lee el CONTCAR de una corrida propia: eso es
+        # I/O al cluster, y el preview no puede tocarlo.
+        fake = FakeStructureProvider(resolution=_zro2_resolution())
+        out = phase_question(
+            _svc(fake), VaspCalcRequest(formula="ZrO2", source=StructureSource.RELAXED)
+        )
+        assert out is None
+        assert fake.calls == []
+
+    def test_returns_none_when_mp_is_not_configured(self):
+        # Sin key/provider, la ejecución falla-cerrado con su propio
+        # mensaje; el preview no duplica ese error, lo deja pasar.
+        out = phase_question(_svc(None, key=""), VaspCalcRequest(formula="ZrO2"))
+        assert out is None
+
+    def test_returns_none_when_mp_itself_fails(self):
+        # Un error de MP en el preview no es la pregunta de fase: se deja
+        # para la ejecución, que ya sabe reportarlo con detalle.
+        fake = FakeStructureProvider(
+            error=StructureResolutionError(StructureResolutionReason.NETWORK, "MP no responde")
+        )
+        out = phase_question(_svc(fake), VaspCalcRequest(formula="ZrO2"))
+        assert out is None
 
 
 def _svc(provider=None, key="secret", calc_runs=None):

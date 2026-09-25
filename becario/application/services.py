@@ -587,6 +587,17 @@ class BecarioService:
                     # obligar a rearmar los N pasos.
                     self._arm_if_awaiting(ctx, plan, i, req)
                     return req
+                # La ambigüedad de fase de Materials Project (¿tetragonal o
+                # monoclínica?) es el mismo caso que la cara de la losa: si
+                # se descubre recién al EJECUTAR el batch ya confirmado, la
+                # repregunta pierde el `awaiting_params` en el camino
+                # (`execute_calc`) y no queda nada esperando la respuesta.
+                # Se adelanta acá, antes de stagear — la consulta a MP es
+                # de solo lectura, no toca el cluster.
+                pregunta_fase = calc.phase_question(self, req)
+                if pregunta_fase is not None:
+                    self._arm_if_awaiting(ctx, plan, i, pregunta_fase)
+                    return pregunta_fase
                 n_calc += 1
                 line = calc.describe_calc_request(req)
             else:

@@ -34,12 +34,16 @@ from becario.domain.models import (
     PlanStep,
     RoutedRequest,
     SlurmJobRequest,
+    StructureAlternative,
     StructureRequest,
+    StructureResolution,
     StructureResult,
     TrackedJob,
     VaspCalcRequest,
 )
 from becario.infrastructure.storage import InMemoryConfirmationStore
+
+from .fakes import FakeStructureProvider
 
 # ---------------------------------------------------------------------------
 # Identidades de prueba
@@ -2566,6 +2570,100 @@ class TestBatchPreviewDescribesEveryStep:
         assert "• modificar_estructura" not in reply.text
         assert "• listar_archivos" not in reply.text
         assert "Si" in reply.text and "tus corridas" in reply.text
+
+
+def _zro2_resolution(chosen="Monoclinic", others=("Tetragonal", "Cubic")):
+    """Resolución de un compuesto con polimorfos, como la devuelve MP: gana
+    el del hull y los demás viajan en `phases`. Copia de la de
+    `test_calc_routing.py` (no se comparte entre módulos a propósito, cada
+    uno arma la suya con lo mínimo que necesita)."""
+    return StructureResolution(
+        atoms=None,
+        mp_id="mp-2858",
+        formula="ZrO2",
+        spacegroup="P2_1/c",
+        crystal_system=chosen,
+        energy_above_hull=0.0,
+        alternatives=tuple(
+            StructureAlternative(
+                mp_id=f"mp-{i}", formula="ZrO2",
+                energy_above_hull=0.04 * (i + 1), crystal_system=s,
+            )
+            for i, s in enumerate(others)
+        ),
+        phases=(chosen,) + tuple(others),
+    )
+
+
+class TestBatchAsksForThePhaseBeforeStaging:
+    """T6: antes, la ambigüedad de fase de Materials Project solo salía a la
+    luz al EJECUTAR el batch ya confirmado (`execute_calc`), donde la
+    repregunta perdía `awaiting_params` en el camino, cortaba el resto del
+    batch y no quedaba nada esperando la respuesta. `_prepare_batch` ahora
+    la resuelve en el PREVIEW, antes de stagear — igual que ya hace con la
+    cara de la losa o la red de un compuesto."""
+
+    def _batch_con_zro2(self, service, router, **extra_params):
+        router.next_plan = Plan(steps=[
+            PlanStep(action=Intent.CREATE_DIR, parametros={"destino_remoto": "runs"}),
+            PlanStep(
+                action=Intent.PREPARE_CALC,
+                parametros={"formula": "ZrO2", **extra_params},
+            ),
+        ])
+        return service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="batch")
+
+    def test_ambiguous_phase_asks_instead_of_staging(self, env):
+        service, router, factory, *_ = env
+        service._structure_provider = FakeStructureProvider(resolution=_zro2_resolution())
+        service._mp_api_key = "secret"
+
+        reply = self._batch_con_zro2(service, router)
+
+        assert reply.awaiting_params
+        assert "tetragonal" in reply.text and "cúbica" in reply.text
+        # Nada se stageó: ni token de confirmación ni plan pendiente.
+        assert not reply.needs_confirmation
+        assert reply.confirmation_token is None
+        gw = factory.gateways["alice"]
+        assert gw.made_dirs == [] and gw.submitted == [] and gw.uploaded_dirs == []
+
+    def test_answering_the_phase_yields_the_batch_confirmation(self, env):
+        service, router, factory, *_ = env
+        service._structure_provider = FakeStructureProvider(resolution=_zro2_resolution())
+        service._mp_api_key = "secret"
+        self._batch_con_zro2(service, router)
+        assert len(router.route_calls) == 1  # el batch original, una sola vez
+
+        # La respuesta a la repregunta («tetragonal») no es un pedido nuevo:
+        # va por el mismo camino que completa cualquier dato faltante
+        # (`extract_params`, no `route`).
+        router.next = RoutedRequest(intent=Intent.PREPARE_CALC, params={"red_cristalina": "tetragonal"})
+        reply = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="tetragonal")
+
+        assert not reply.awaiting_params
+        assert reply.needs_confirmation and reply.confirmation_token
+        assert "Batch" in reply.text
+        # El router no se volvió a consultar con `route()`: la respuesta se
+        # interpretó con `extract_params` y el batch se re-despachó directo.
+        assert len(router.route_calls) == 1
+        assert factory.gateways.get("alice") is None or factory.gateways["alice"].submitted == []
+
+    def test_phase_already_given_stages_normally(self, env):
+        service, router, factory, *_ = env
+        service._structure_provider = FakeStructureProvider(resolution=_zro2_resolution())
+        service._mp_api_key = "secret"
+
+        reply = self._batch_con_zro2(service, router, red_cristalina="tetragonal")
+
+        assert not reply.awaiting_params
+        assert reply.needs_confirmation and reply.confirmation_token
+        assert "Batch" in reply.text
+        # La consulta a MP no se evita (hace falta para armar la estructura
+        # al confirmar), pero con la fase dada no se pregunta nada, y el
+        # preview sigue sin tocar el cluster.
+        gw = factory.gateways["alice"]
+        assert gw.made_dirs == [] and gw.submitted == [] and gw.uploaded_dirs == []
 
 
 class TestCompoundHeuristic:

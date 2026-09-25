@@ -365,6 +365,97 @@ def describe_calc_request(req: "VaspCalcRequest") -> str:
     )
 
 
+def _wants_mp(req: "VaspCalcRequest") -> bool:
+    """La estructura de `req` viene de Materials Project (no de ASE).
+
+    Mismo criterio en ejecución (`_resolve_structure`) y en preview
+    (`phase_question`): un `mp_id` explícito, `source=mp`, o un compuesto
+    (2+ elementos) sin fuente forzada."""
+    elements = elements_of(req.formula)
+    return (
+        req.mp_id is not None
+        or req.source is StructureSource.MP
+        or (req.source is StructureSource.AUTO and len(elements) > 1)
+    )
+
+
+def _resolve_mp_structure(
+    svc: "BecarioService", req: "VaspCalcRequest",
+) -> "StructureResolution | Reply":
+    """Consulta Materials Project para `req` y devuelve la resolución, o el
+    `Reply` de la pregunta de fase si hay polimorfos ambiguos y no se pidió
+    ninguno. Solo se llama cuando ya se decidió que la estructura viene de
+    MP (`_wants_mp`); no toca el cluster ni escribe nada — puede llamarse
+    tanto en ejecución como en preview del batch.
+
+    Puede levantar `StructureResolutionError`: la maneja cada llamador
+    según lo que necesite decir (en ejecución, un error detallado; en
+    preview, se prefiere dejarlo pasar y que falle recién al confirmar).
+    """
+    elements = elements_of(req.formula)
+    # La fase viaja en `red_cristalina`: en un compuesto ese campo nombra el
+    # sistema cristalino ("la ZrO2 tetragonal"), no un prototipo de ASE. No
+    # se agregó un campo propio al router a propósito — el schema tiene
+    # presupuesto (ADR-0006) y este sentido no colisiona: un prototipo de
+    # compuesto (fluorite, rocksalt) no es un sistema cristalino.
+    system = normalize_crystal_system(req.crystal) if req.crystal else None
+
+    if req.mp_id:
+        query = StructureQuery(mp_id=req.mp_id)
+    elif len(elements) > 1:
+        query = StructureQuery(
+            formula=req.formula, elements=tuple(elements), crystal_system=system
+        )
+    else:
+        query = StructureQuery(formula=req.formula)
+
+    resolution = svc._structure_provider.resolve(query)
+
+    # Sin fase pedida y con polimorfos a la vista: se pregunta. Resolver
+    # calla la ambigüedad devolviendo el del hull, que para ZrO2 es la
+    # monoclínica — la fase de ambiente, y la equivocada si el usuario
+    # estaba pensando en la tetragonal de un recubrimiento.
+    if system is None and not req.mp_id:
+        phases = _other_phases(resolution)
+        if phases:
+            return _ask_for_phase(req.formula, resolution, phases)
+
+    return resolution
+
+
+def phase_question(svc: "BecarioService", req: "VaspCalcRequest") -> "Reply | None":
+    """Repregunta de fase adelantada al PREVIEW del batch.
+
+    Antes, la ambigüedad de fase de Materials Project solo salía a la luz
+    al EJECUTAR el batch ya confirmado (`execute_calc` -> `_resolve_structure`),
+    donde una `Reply(awaiting_params=True)` se convertía en un `ok=False` sin
+    `awaiting_params` que cortaba el resto del batch y no dejaba nada
+    esperando la respuesta. `_prepare_batch` llama a esto ANTES de stagear,
+    con la misma lógica de `_resolve_structure` (vía `_resolve_mp_structure`,
+    para no duplicarla) pero sin construir la estructura ni tocar el
+    cluster — la consulta a MP es de solo lectura, así que adelantarla acá
+    es seguro (mismo principio que ya aplica `_prepare_batch` con la cara de
+    la losa: no dejar aprobar un plan que después no se puede cumplir).
+
+    Devuelve `None` cuando no aplica: fuente RELAXED (lee el cluster, no se
+    toca en preview), elemento simple, fase ya dada, `mp_id` explícito, MP
+    sin configurar, o la consulta a MP falla — estos últimos dos se dejan
+    para la ejecución, que ya sabe reportarlos con el detalle correcto.
+    """
+    if req.source is StructureSource.RELAXED or req.mp_id or not _wants_mp(req):
+        return None
+    system = normalize_crystal_system(req.crystal) if req.crystal else None
+    if system is not None:
+        return None
+    if svc._structure_provider is None or not svc._mp_api_key:
+        return None
+    try:
+        resolution = _resolve_mp_structure(svc, req)
+    except StructureResolutionError:
+        return None
+    return resolution if isinstance(resolution, Reply) else None
+
+
 def _resolve_structure(
     svc: "BecarioService", ctx: _Ctx, req: "VaspCalcRequest",
 ) -> "tuple[object, str] | Reply":
@@ -394,13 +485,7 @@ def _resolve_structure(
             return Reply(text=exc.message)
         return relaxed.atoms, relaxed.note() + _cut_basis_note(req, relaxed.atoms)
 
-    elements = elements_of(req.formula)
-    wants_mp = (
-        req.mp_id is not None
-        or req.source is StructureSource.MP
-        or (req.source is StructureSource.AUTO and len(elements) > 1)
-    )
-    if not wants_mp:
+    if not _wants_mp(req):
         return None, ""  # camino ASE: el generador la arma (sin key)
 
     if svc._structure_provider is None or not svc._mp_api_key:
@@ -409,36 +494,14 @@ def _resolve_structure(
             "configurar la API key (BECARIO_MP_API_KEY).", ok=False
         )
 
-    # La fase viaja en `red_cristalina`: en un compuesto ese campo nombra el
-    # sistema cristalino ("la ZrO2 tetragonal"), no un prototipo de ASE. No
-    # se agregó un campo propio al router a propósito — el schema tiene
-    # presupuesto (ADR-0006) y este sentido no colisiona: un prototipo de
-    # compuesto (fluorite, rocksalt) no es un sistema cristalino.
-    system = normalize_crystal_system(req.crystal) if req.crystal else None
-
-    if req.mp_id:
-        query = StructureQuery(mp_id=req.mp_id)
-    elif len(elements) > 1:
-        query = StructureQuery(
-            formula=req.formula, elements=tuple(elements), crystal_system=system
-        )
-    else:
-        query = StructureQuery(formula=req.formula)
-
     try:
-        resolution = svc._structure_provider.resolve(query)
+        resolution = _resolve_mp_structure(svc, req)
     except StructureResolutionError as exc:
         return _mp_error_reply(exc)
+    if isinstance(resolution, Reply):
+        return resolution
 
-    # Sin fase pedida y con polimorfos a la vista: se pregunta. Resolver
-    # calla la ambigüedad devolviendo el del hull, que para ZrO2 es la
-    # monoclínica — la fase de ambiente, y la equivocada si el usuario
-    # estaba pensando en la tetragonal de un recubrimiento.
-    if system is None and not req.mp_id:
-        phases = _other_phases(resolution)
-        if phases:
-            return _ask_for_phase(req.formula, resolution, phases)
-
+    system = normalize_crystal_system(req.crystal) if req.crystal else None
     return resolution.atoms, _mp_note(resolution, system) + _cut_basis_note(req, resolution.atoms)
 
 
