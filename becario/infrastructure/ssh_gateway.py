@@ -11,6 +11,7 @@ import difflib
 import logging
 import re
 import shlex
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
@@ -154,45 +155,65 @@ class SSHClusterGateway:
         self._keepalive_interval = keepalive_interval
         self._client: Optional[paramiko.SSHClient] = None
         self._home_dir: Optional[str] = None
+        # El bot corre servicios en un pool de 8 hilos más el tick del job
+        # monitor: dos hilos podían pasar el "if self._client is not None"
+        # a la vez, cada uno conectar el suyo, y el segundo pisaba
+        # `self._client` dejando el primero abierto y huérfano para
+        # siempre. El lock serializa solo el get-or-create; `_run_once`
+        # ejecuta el comando remoto ya afuera de este método, así que la
+        # sección crítica no incluye tiempo de red del comando en sí.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Conexión (perezosa y reutilizable)
     # ------------------------------------------------------------------
     def _connection(self) -> paramiko.SSHClient:
-        if self._client is not None:
-            transport = self._client.get_transport()
-            if transport is not None and transport.is_active():
-                return self._client
-        client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.connect(
-            hostname=self._host,
-            port=self._port,
-            username=self._user,
-            key_filename=self._key_path,
-            timeout=self._connect_timeout,
-        )
-        # Sin keepalive, una conexión que muere en silencio —VPN que se
-        # corta, wifi que cambia, una NAT que expira sin mandar RST— no se
-        # entera nunca: el TCP sigue "abierto" para los dos lados, el hilo
-        # lector de paramiko se queda esperando bytes que no van a llegar, y
-        # cualquier comando en curso cuelga PARA SIEMPRE. Con keepalive el
-        # peer muerto se detecta en decenas de segundos, paramiko cierra el
-        # transporte, y el `_run` de abajo lo ve como un error normal.
-        #
-        # Esto arregla la causa; el deadline de `_run` es el paracaídas para
-        # todo lo demás que pueda tardar sin límite.
-        transport = client.get_transport()
-        if transport is not None:
-            transport.set_keepalive(int(self._keepalive_interval))
-        self._client = client
-        return client
+        with self._lock:
+            if self._client is not None:
+                transport = self._client.get_transport()
+                if transport is not None and transport.is_active():
+                    return self._client
+                # Transporte muerto: se reemplaza, pero el cliente viejo
+                # sigue teniendo sockets/hilos lectores propios y hay que
+                # soltarlos explícitamente o quedan huérfanos. Si cerrarlo
+                # también falla (ya está muerto, total), no importa: el
+                # objetivo es soltar lo que se pueda, no diagnosticarlo.
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+            client = paramiko.SSHClient()
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+            client.connect(
+                hostname=self._host,
+                port=self._port,
+                username=self._user,
+                key_filename=self._key_path,
+                timeout=self._connect_timeout,
+            )
+            # Sin keepalive, una conexión que muere en silencio —VPN que se
+            # corta, wifi que cambia, una NAT que expira sin mandar RST— no
+            # se entera nunca: el TCP sigue "abierto" para los dos lados, el
+            # hilo lector de paramiko se queda esperando bytes que no van a
+            # llegar, y cualquier comando en curso cuelga PARA SIEMPRE. Con
+            # keepalive el peer muerto se detecta en decenas de segundos,
+            # paramiko cierra el transporte, y el `_run` de abajo lo ve
+            # como un error normal.
+            #
+            # Esto arregla la causa; el deadline de `_run` es el paracaídas
+            # para todo lo demás que pueda tardar sin límite.
+            transport = client.get_transport()
+            if transport is not None:
+                transport.set_keepalive(int(self._keepalive_interval))
+            self._client = client
+            return client
 
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        with self._lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
 
     def _run(self, command: str, *, reintentable: bool = False) -> CommandResult:
         """Corre un comando remoto.
@@ -639,23 +660,31 @@ class SSHClusterGatewayFactory:
         self._command_timeout = command_timeout
         self._keepalive_interval = keepalive_interval
         self._cache: dict[str, SSHClusterGateway] = {}
+        # Mismo motivo que el lock de SSHClusterGateway: dos hilos pidiendo
+        # `for_identity` para el mismo `ssh_user` a la vez podían construir
+        # dos gateways, cada uno con su propio cliente SSH; el segundo en
+        # escribir pisaba la entrada del caché y el primero quedaba vivo
+        # pero inalcanzable, sin que nadie lo cerrara jamás.
+        self._lock = threading.Lock()
 
     def for_identity(self, identity: ClusterIdentity) -> SSHClusterGateway:
-        gateway = self._cache.get(identity.ssh_user)
-        if gateway is None:
-            gateway = SSHClusterGateway(
-                host=identity.ssh_host or self._default_host,
-                user=identity.ssh_user,
-                key_path=identity.ssh_key_path,
-                port=self._default_port,
-                connect_timeout=self._connect_timeout,
-                command_timeout=self._command_timeout,
-                keepalive_interval=self._keepalive_interval,
-            )
-            self._cache[identity.ssh_user] = gateway
-        return gateway
+        with self._lock:
+            gateway = self._cache.get(identity.ssh_user)
+            if gateway is None:
+                gateway = SSHClusterGateway(
+                    host=identity.ssh_host or self._default_host,
+                    user=identity.ssh_user,
+                    key_path=identity.ssh_key_path,
+                    port=self._default_port,
+                    connect_timeout=self._connect_timeout,
+                    command_timeout=self._command_timeout,
+                    keepalive_interval=self._keepalive_interval,
+                )
+                self._cache[identity.ssh_user] = gateway
+            return gateway
 
     def close_all(self) -> None:
-        for gateway in self._cache.values():
-            gateway.close()
-        self._cache.clear()
+        with self._lock:
+            for gateway in self._cache.values():
+                gateway.close()
+            self._cache.clear()

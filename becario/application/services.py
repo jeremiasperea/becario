@@ -318,7 +318,13 @@ class BecarioService:
         # Un paso que falló al ejecutarse marca la decisión como 'error':
         # señal débil (pudo fallar el cluster, no el ruteo) pero separa
         # estos casos de los 'routed' limpios al armar el dataset.
-        if decision_id is not None and not reply.ok:
+        #
+        # `awaiting_params` queda afuera a propósito: una repregunta (falta
+        # la fase de un compuesto, el índice de Miller de una losa) es un
+        # pedido bien ruteado al que le falta un dato, no un error de
+        # ejecución — marcarla 'error' ensuciaba el dataset con decisiones
+        # que el router entendió perfectamente.
+        if decision_id is not None and not reply.ok and not reply.awaiting_params:
             self._set_decision_outcome(decision_id, "error")
         return reply
 
@@ -581,6 +587,17 @@ class BecarioService:
                     # obligar a rearmar los N pasos.
                     self._arm_if_awaiting(ctx, plan, i, req)
                     return req
+                # La ambigüedad de fase de Materials Project (¿tetragonal o
+                # monoclínica?) es el mismo caso que la cara de la losa: si
+                # se descubre recién al EJECUTAR el batch ya confirmado, la
+                # repregunta pierde el `awaiting_params` en el camino
+                # (`execute_calc`) y no queda nada esperando la respuesta.
+                # Se adelanta acá, antes de stagear — la consulta a MP es
+                # de solo lectura, no toca el cluster.
+                pregunta_fase = calc.phase_question(self, req)
+                if pregunta_fase is not None:
+                    self._arm_if_awaiting(ctx, plan, i, pregunta_fase)
+                    return pregunta_fase
                 n_calc += 1
                 line = calc.describe_calc_request(req)
             else:
@@ -1215,10 +1232,15 @@ class BecarioService:
         if executor is None:  # pragma: no cover - defensivo
             return Reply(text="⚠️ Acción pendiente desconocida.")
         try:
-            _ok, text = executor(ctx, action)
+            ok, text = executor(ctx, action)
         except Exception:
             return self._fallo_tras_confirmar(action)
-        return Reply(text=text)
+        # `ok` se descartaba acá: un scancel/sbatch que el cluster rechazó
+        # (SSH arriba, comando abajo, sin excepción) volvía como `ok=True`
+        # por default — el canal de salida no tiene forma de distinguir
+        # "confirmado y salió bien" de "confirmado y falló", y nada aguas
+        # arriba (bitácora, tests) lo ve tampoco.
+        return Reply(text=text, ok=ok)
 
     def _fallo_tras_confirmar(self, action: PendingAction) -> Reply:
         """Qué hacer cuando la ejecución de una acción YA confirmada revienta.

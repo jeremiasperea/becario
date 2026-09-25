@@ -7,6 +7,8 @@ R4 (mp-id), R9 (conversión) y R6/R7 (mapeo de errores).
 """
 from __future__ import annotations
 
+import threading
+
 import pytest
 import requests
 from ase import Atoms
@@ -363,3 +365,58 @@ class TestLaEsperaTieneTope:
             _provider(fake).resolve(StructureQuery(formula="Fe2O3"))
 
         assert exc.value.reason is StructureResolutionReason.NETWORK
+
+
+class TestElIntentoTieneTopeDeReloj:
+    """El tope de la sesión no cubre todo lo que `mp_api` hace por la red.
+
+    El constructor de cada rester consulta `/heartbeat` con un `requests.get`
+    sin timeout, antes de que exista una sesión a la que ponerle tope. Así
+    quedó la batería 12 horas trabada en un handshake SSL. Acá el
+    `rester_factory` imita ese constructor: se bloquea y no vuelve.
+    """
+
+    def test_un_constructor_que_no_vuelve_termina_en_fallo_de_red(self):
+        liberar = threading.Event()
+        intentos: list[int] = []
+
+        def constructor_colgado():
+            intentos.append(1)
+            liberar.wait()  # como el handshake: no vuelve solo
+            raise AssertionError("no debería llegar a usarse")
+
+        provider = MaterialsProjectProvider(
+            api_key="dummy", rester_factory=constructor_colgado, deadline=0.05
+        )
+        try:
+            with pytest.raises(StructureResolutionError) as exc:
+                provider.resolve(StructureQuery(formula="ZrO2"))
+        finally:
+            liberar.set()  # suelta los hilos abandonados
+
+        # Fallo de red y no un cuelgue: la capa de arriba puede decir «no
+        # pude hablar con MP», y la política de reintento lo trata como tal.
+        assert exc.value.reason is StructureResolutionReason.NETWORK
+        assert len(intentos) == 3
+
+    def test_lo_que_termina_a_tiempo_pasa_intacto(self):
+        docs = [_Doc("mp-19770", _iron_oxide(5.0), 0.0, "Fe2O3")]
+        provider = MaterialsProjectProvider(
+            api_key="dummy", rester_factory=lambda: _FakeRester(docs=docs), deadline=5.0
+        )
+
+        res = provider.resolve(StructureQuery(formula="Fe2O3"))
+
+        assert res.mp_id == "mp-19770"
+
+    def test_un_error_adentro_del_intento_sale_tal_cual(self):
+        # El hilo no se come los errores: un NO_MATCH sigue siendo NO_MATCH
+        # (y por eso sigue sin reintentarse).
+        provider = MaterialsProjectProvider(
+            api_key="dummy", rester_factory=lambda: _FakeRester(docs=[]), deadline=5.0
+        )
+
+        with pytest.raises(StructureResolutionError) as exc:
+            provider.resolve(StructureQuery(formula="Fe2O3"))
+
+        assert exc.value.reason is StructureResolutionReason.NO_MATCH

@@ -4,6 +4,7 @@ verificación de que los comandos SSH generados están correctamente quoteados.
 import json
 import time
 
+import paramiko
 import pytest
 
 from becario.domain.models import (
@@ -769,6 +770,156 @@ class TestSSHClusterGatewayFactory:
         identity = ClusterIdentity(telegram_user_id=1, ssh_user="alice", ssh_key_path="/k/a")
         gw = factory.for_identity(identity)
         assert gw._host == "cluster-general.edu.ar"
+
+    def test_concurrent_for_identity_same_user_constructs_only_one(self, monkeypatch):
+        """El bot pide `for_identity` desde el pool de 8 hilos y el tick del
+        job monitor: sin lock, varios hilos pasan el `is None` a la vez y
+        cada uno arma su propio gateway, pisando el caché entre ellos."""
+        import threading
+
+        factory = SSHClusterGatewayFactory(default_host="cluster.edu.ar")
+        identity = ClusterIdentity(telegram_user_id=1, ssh_user="alice", ssh_key_path="/k/a")
+
+        construidos: list[int] = []
+        original_init = SSHClusterGateway.__init__
+
+        def init_lento(self, *args, **kwargs):
+            construidos.append(1)
+            # Ensancha la ventana de la carrera: sin esto, `__init__` es tan
+            # rápido que el lock del SO ya alcanza a serializar los hilos
+            # por casualidad y el test no prueba nada.
+            time.sleep(0.02)
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(SSHClusterGateway, "__init__", init_lento)
+
+        n_hilos = 8
+        barrier = threading.Barrier(n_hilos)
+        resultados: list[SSHClusterGateway] = []
+        resultados_lock = threading.Lock()
+
+        def pedir():
+            barrier.wait()
+            gw = factory.for_identity(identity)
+            with resultados_lock:
+                resultados.append(gw)
+
+        threads = [threading.Thread(target=pedir) for _ in range(n_hilos)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(construidos) == 1
+        assert len({id(gw) for gw in resultados}) == 1
+
+
+# ---------------------------------------------------------------------------
+# SSHClusterGateway — conexión concurrente
+# ---------------------------------------------------------------------------
+
+
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.activo = True
+
+    def is_active(self) -> bool:
+        return self.activo
+
+    def set_keepalive(self, interval: int) -> None:
+        pass
+
+
+class _FakeSSHClient:
+    """Doble de `paramiko.SSHClient` sin red: conecta instantáneo (o con
+    la demora que el test le pida) y expone un transporte falso que el
+    propio test puede matar para simular una VPN cortada."""
+
+    def __init__(self, demora_connect: float = 0.0) -> None:
+        self.transport = _FakeTransport()
+        self.cerrado = False
+        self._demora_connect = demora_connect
+
+    def load_system_host_keys(self) -> None:
+        pass
+
+    def set_missing_host_key_policy(self, policy) -> None:
+        pass
+
+    def connect(self, **kwargs) -> None:
+        if self._demora_connect:
+            time.sleep(self._demora_connect)
+
+    def get_transport(self):
+        return self.transport
+
+    def close(self) -> None:
+        self.cerrado = True
+        self.transport.activo = False
+
+
+class TestSSHClusterGatewayConnection:
+    def test_concurrent_connection_same_gateway_connects_only_once(self, monkeypatch):
+        """Mismo defecto que en la factory, pero adentro de un gateway: el
+        pool de hilos podía abrir dos conexiones para la misma cuenta y
+        dejar una huérfana sin cerrar nunca."""
+        import threading
+
+        construidos: list[_FakeSSHClient] = []
+
+        def fabrica():
+            # La demora imita el tiempo real de `connect()` por red: es lo
+            # que ensancha la ventana de la carrera check-then-act.
+            client = _FakeSSHClient(demora_connect=0.02)
+            construidos.append(client)
+            return client
+
+        monkeypatch.setattr(paramiko, "SSHClient", fabrica)
+
+        gw = SSHClusterGateway(host="fake", user="fake", key_path="/dev/null")
+        n_hilos = 8
+        barrier = threading.Barrier(n_hilos)
+        resultados: list[_FakeSSHClient] = []
+        resultados_lock = threading.Lock()
+
+        def pedir():
+            barrier.wait()
+            client = gw._connection()
+            with resultados_lock:
+                resultados.append(client)
+
+        threads = [threading.Thread(target=pedir) for _ in range(n_hilos)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(construidos) == 1
+        assert len({id(c) for c in resultados}) == 1
+
+    def test_dead_transport_closes_stale_client_before_replacing(self, monkeypatch):
+        creados: list[_FakeSSHClient] = []
+
+        def fabrica():
+            client = _FakeSSHClient()
+            creados.append(client)
+            return client
+
+        monkeypatch.setattr(paramiko, "SSHClient", fabrica)
+
+        gw = SSHClusterGateway(host="fake", user="fake", key_path="/dev/null")
+        primero = gw._connection()
+        assert len(creados) == 1
+
+        # La VPN se corta en silencio: el transporte queda inactivo pero
+        # nadie llamó a `close()` todavía.
+        primero.transport.activo = False
+
+        segundo = gw._connection()
+
+        assert len(creados) == 2
+        assert segundo is not primero
+        assert primero.cerrado is True  # el viejo se soltó, no quedó huérfano
 
 
 # ---------------------------------------------------------------------------

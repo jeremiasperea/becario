@@ -352,8 +352,14 @@ class TelegramBot:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "voice.ogg"
             await voice_file.download_to_drive(path)
+            # `path.read_bytes()` como argumento posicional se evaluaría
+            # ACÁ, en el event loop, antes de entrar a `_run_blocking` —
+            # exactamente el bloqueo que `_run_blocking` existe para evitar.
+            # Con el lambda, la lectura del archivo también corre en el
+            # hilo del worker, adentro del `with` que todavía lo tiene.
             text = await self._run_blocking(
-                update.effective_chat, self._transcriber.transcribe, path.read_bytes()
+                update.effective_chat,
+                lambda: self._transcriber.transcribe(path.read_bytes()),
             )
         if not text.strip():
             await self._enviar(

@@ -17,6 +17,8 @@ red ni el cluster.
 """
 import argparse
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
@@ -891,3 +893,53 @@ class TestElCLIAdministraLoQueElBotAcepta:
 
         assert exc.value.code == 1
         assert "no es un objeto JSON" in capsys.readouterr().out
+
+
+class TestGuardadoAtomico:
+    """`_save` es el único punto de escritura de `users.json`, el control de
+    acceso del bot. Si la corrida muere a mitad de camino (disco lleno,
+    `kill -9`, corte de luz) mejor que quede el roster viejo intacto y no
+    uno truncado a medio escribir — el escenario más caro para arreglar es
+    justo ese, porque es el mismo archivo que decide quién puede operar el
+    cluster.
+    """
+
+    def test_el_archivo_queda_con_permisos_restrictivos(self, tmp_path):
+        path = tmp_path / "users.json"
+
+        _save(path, {"users": [_entrada(111, "alice")]})
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    def test_un_roster_existente_conserva_sus_permisos(self, tmp_path):
+        # El reemplazo atómico crea un archivo nuevo: sin copiar el modo, un
+        # roster que el bot lee por grupo (0640) quedaría en 0600 y el bot,
+        # si corre con otra cuenta, dejaría de poder leerlo.
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"))
+        os.chmod(path, 0o640)
+
+        _save(path, {"users": [_entrada(111, "alice"), _entrada(222, "bob")]})
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+    def test_una_falla_en_el_reemplazo_no_toca_el_roster_ni_deja_temporales(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "users.json"
+        _roster(path, _entrada(111, "alice"))
+        antes = path.read_bytes()
+
+        def _replace_que_revienta(*args, **kwargs):
+            raise OSError("disco lleno")
+
+        monkeypatch.setattr(os, "replace", _replace_que_revienta)
+
+        with pytest.raises(OSError):
+            _save(path, {"users": [_entrada(111, "alice"), _entrada(222, "bob")]})
+
+        # El roster viejo sigue intacto: la falla fue ANTES del reemplazo.
+        assert path.read_bytes() == antes
+        # Y el temporal que sí llegó a escribirse no quedó huérfano en disco.
+        temporales = [p for p in tmp_path.iterdir() if p.name != "users.json"]
+        assert temporales == []
