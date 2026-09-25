@@ -2,13 +2,21 @@
 # a resolver la estructura por Materials Project. Se intentó 5 veces.
 # El síntoma es el más caro del proyecto: el paso de crear la carpeta anda,
 # y los tres pasos de cálculo se olvidan de qué material era.
+#
+# Antes esperaba `ok`: el batch se stageaba con los tres cálculos. Era un ok
+# diferido — «bcc, fcc y hcp» no son fases de ZrO2, y al confirmar el paso 3
+# caía en la pregunta de fase, fallaba y cortaba el batch con las carpetas ya
+# creadas. La vista previa ahora hace esa pregunta ANTES de stagear, así que
+# el primer turno es una repregunta (`dato`). Lo que el escenario protege
+# sigue igual: que el material no se pierda entre pasos.
 id: CV10
 titulo: crear carpeta ZrO2 + tres relajaciones en sus subcarpetas
 origen: chat_messages 44,46,55,60,65 (5 intentos)
 sintoma: "⚠️ Decime qué material querés calcular" x3 después de haber creado la carpeta ZrO2
 
 > quiero que crees una carpeta llamada ZrO2 en la carpeta de corridas, dentro quiero que corras tres bulks y hagas relajacion de las estructuras para 3 tipos de celdas de ZrO2 bulk bcc, fcc y hcp, cada una en sus respectivas carpetas
-espera: ok
+espera: dato
 no_contiene: Decime qué material querés calcular
 no_contiene: No pude interpretar
 contiene: ZrO2
+contiene: fases
