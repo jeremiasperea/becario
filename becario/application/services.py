@@ -318,7 +318,13 @@ class BecarioService:
         # Un paso que falló al ejecutarse marca la decisión como 'error':
         # señal débil (pudo fallar el cluster, no el ruteo) pero separa
         # estos casos de los 'routed' limpios al armar el dataset.
-        if decision_id is not None and not reply.ok:
+        #
+        # `awaiting_params` queda afuera a propósito: una repregunta (falta
+        # la fase de un compuesto, el índice de Miller de una losa) es un
+        # pedido bien ruteado al que le falta un dato, no un error de
+        # ejecución — marcarla 'error' ensuciaba el dataset con decisiones
+        # que el router entendió perfectamente.
+        if decision_id is not None and not reply.ok and not reply.awaiting_params:
             self._set_decision_outcome(decision_id, "error")
         return reply
 
@@ -1215,10 +1221,15 @@ class BecarioService:
         if executor is None:  # pragma: no cover - defensivo
             return Reply(text="⚠️ Acción pendiente desconocida.")
         try:
-            _ok, text = executor(ctx, action)
+            ok, text = executor(ctx, action)
         except Exception:
             return self._fallo_tras_confirmar(action)
-        return Reply(text=text)
+        # `ok` se descartaba acá: un scancel/sbatch que el cluster rechazó
+        # (SSH arriba, comando abajo, sin excepción) volvía como `ok=True`
+        # por default — el canal de salida no tiene forma de distinguir
+        # "confirmado y salió bien" de "confirmado y falló", y nada aguas
+        # arriba (bitácora, tests) lo ve tampoco.
+        return Reply(text=text, ok=ok)
 
     def _fallo_tras_confirmar(self, action: PendingAction) -> Reply:
         """Qué hacer cuando la ejecución de una acción YA confirmada revienta.

@@ -475,6 +475,25 @@ class TestConfirmationFlow:
         service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
         assert [j.value for j in factory.gateways["alice"].cancelled] == ["777"]
 
+    def test_a_failed_single_step_confirm_reports_ok_false(self, env):
+        """`_ok, text = executor(...)` seguido de `Reply(text=text)` tiraba
+        el `ok` del executor: un scancel que el cluster RECHAZA (sin
+        excepción — SSH llegó, el comando dijo que no) volvía siempre
+        `ok=True`. Nada aguas arriba puede distinguir "confirmado y salió
+        bien" de "confirmado y falló" si el propio Reply miente."""
+        service, router, factory, *_ = env
+        router.next = RoutedRequest(intent=Intent.CANCEL_JOB, params={"job_id": "777"})
+        prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="cancelá el 777")
+
+        factory.gateways["alice"].cancel_job = lambda job_id: CommandResult(
+            ok=False, stderr="Invalid job id specified"
+        )
+
+        reply = service.confirm(prep.confirmation_token, requester_id=ALICE.telegram_user_id)
+
+        assert not reply.ok
+        assert "❌" in reply.text
+
     def test_expired_or_unknown_token(self, env):
         service, *_ = env
         reply = service.confirm("token_inexistente", requester_id=ALICE.telegram_user_id)
@@ -1974,6 +1993,22 @@ class TestRouterDecisionLogging:
         router.next = RoutedRequest(intent=Intent.CREATE_DIR, params={})
         service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="creame la carpeta")
         assert log.outcomes == {1: "error"}
+
+    def test_awaiting_params_reply_is_not_labeled_error(self, env_with_log):
+        """Una repregunta («¿qué cara?») es un pedido bien ruteado al que le
+        falta un dato, no un fallo de ejecución: no puede ensuciar el
+        dataset con la misma etiqueta que un paso que de verdad falló."""
+        service, router, log = env_with_log
+        router.next = RoutedRequest(
+            intent=Intent.MODIFY_STRUCTURE,
+            params={"formula": "ZrO2", "tipo_estructura": "slab"},
+        )
+        reply = service.handle_text(
+            chat_id=1, user_id=ALICE.telegram_user_id, text="armá un slab de ZrO2"
+        )
+        assert reply.awaiting_params
+        assert not reply.ok  # justamente el caso que antes se confundía con error
+        assert log.outcomes == {}
 
     def test_unresolved_decision_stays_unlabeled(self, env_with_log):
         service, router, log = env_with_log
