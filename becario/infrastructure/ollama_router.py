@@ -206,6 +206,24 @@ class RouterDecision(BaseModel):
     steps: list[RouterStep] = Field(min_length=1, max_length=5)
 
 
+# Los datos que `consultar_resultados` sabe contestar, leídos del ÚNICO
+# lugar donde viven (`DESCRIPCIONES`) en vez de repetidos a mano.
+#
+# Estaban escritos aparte y se desincronizaron: la línea decía "parámetros
+# de red, celda relajada, energía" —tres de los cinco datos del
+# vocabulario— y las vueltas iónicas no tenían dónde caer. "Cuántas
+# vueltas iónicas hizo?" se ruteaba a [ver_archivo, explicar], que no es
+# una consulta de resultados, así que `_backfill_dato` no corría y el
+# plan moría en el fail-closed del camino multi-paso: el usuario leía
+# "No pude interpretar tu pedido" sobre el archivo que el bot acababa de
+# mostrarle (CV33).
+#
+# Derivarlo cierra el agujero de raíz: agregar un `DatoDeCorrida` ahora
+# actualiza las DOS pasadas a la vez, y no puede volver a pasar que la
+# pasada corta conozca un dato que el schema grande no sabe recibir.
+_DATOS_CONSULTABLES = "; ".join(DESCRIPCIONES.values())
+
+
 _SYSTEM_PROMPT = (
     "Sos el enrutador de B.E.C.A.R.I.O., un asistente HPC para simulación "
     "computacional de materiales. Analizá el mensaje del usuario y decidí "
@@ -221,7 +239,7 @@ _SYSTEM_PROMPT = (
     "- 'consultar_db': SOLO historial de trabajos/cálculos pasados (fechas, "
     "nombres y estados) — nunca archivos ni carpetas\n"
     "- 'consultar_resultados': resultados FÍSICOS de un cálculo ya hecho: "
-    "parámetros de red, celda relajada, energía\n"
+    f"{_DATOS_CONSULTABLES}\n"
     "- 'revisar_estado': estado de trabajos en cola (squeue/sacct)\n"
     "- 'cancelar_calculo': cancelar un trabajo\n"
     "- 'crear_directorio': crear una carpeta/directorio en el cluster; "

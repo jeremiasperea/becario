@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-27T00:42:41+00:00",
+  "generated_at": "2026-09-03T16:00:04+00:00",
   "attempts": 3,
   "fixtures_dir": "tests/fixtures/router",
   "fixtures": [
@@ -12,21 +12,21 @@
     "single_prepare_relax.txt",
     "single_submit_job.txt"
   ],
-  "router_fingerprint": "27df6c47b7ace08d",
+  "router_fingerprint": "6200284920e6cb14",
   "models": [
     {
       "model": "gemma3:4b",
       "skipped": false,
       "hits": 6,
       "total": 8,
-      "median_latency_seconds": 7.651,
+      "median_latency_seconds": 6.709,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 2.887,
+          "latency_seconds": 2.582,
           "error": null
         },
         {
@@ -34,7 +34,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 2.661,
+          "latency_seconds": 2.569,
           "error": null
         },
         {
@@ -42,7 +42,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.224,
+          "latency_seconds": 8.253,
           "error": null
         },
         {
@@ -50,7 +50,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.238,
+          "latency_seconds": 8.717,
           "error": null
         },
         {
@@ -58,7 +58,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.226,
+          "latency_seconds": 5.104,
           "error": null
         },
         {
@@ -66,7 +66,7 @@
           "ok": false,
           "passes": 0,
           "attempts": 3,
-          "latency_seconds": 12.852,
+          "latency_seconds": 13.232,
           "error": "faltan params {'encut_min': 250, 'encut_max': 450}, obtuve {'formula': 'Zr', 'red_cristalina': 'hcp', 'tipo_calculo': 'convergencia_encut', 'tags_incar': {}, 'magnetico': False}"
         },
         {
@@ -74,15 +74,15 @@
           "ok": false,
           "passes": 0,
           "attempts": 3,
-          "latency_seconds": 12.112,
-          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'modificar_estructura']"
+          "latency_seconds": 16.583,
+          "error": "esperaba steps=['preparar_calculo'], obtuve ['preparar_calculo', 'modificar_estructura', 'preparar_calculo']"
         },
         {
           "name": "single_submit_job.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 5.049,
+          "latency_seconds": 4.788,
           "error": null
         }
       ]
@@ -92,14 +92,14 @@
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 9.016,
+      "median_latency_seconds": 8.616,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.79,
+          "latency_seconds": 3.131,
           "error": null
         },
         {
@@ -107,7 +107,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 3.546,
+          "latency_seconds": 3.103,
           "error": null
         },
         {
@@ -115,7 +115,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 10.681,
+          "latency_seconds": 10.603,
           "error": null
         },
         {
@@ -123,7 +123,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.69,
+          "latency_seconds": 12.237,
           "error": null
         },
         {
@@ -131,7 +131,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.815,
+          "latency_seconds": 6.846,
           "error": null
         },
         {
@@ -139,7 +139,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.16,
+          "latency_seconds": 12.736,
           "error": null
         },
         {
@@ -147,7 +147,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 9.201,
+          "latency_seconds": 9.078,
           "error": null
         },
         {
@@ -155,7 +155,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.305,
+          "latency_seconds": 6.316,
           "error": null
         }
       ]
@@ -165,14 +165,14 @@
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 20.447,
+      "median_latency_seconds": 19.274,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 8.092,
+          "latency_seconds": 6.451,
           "error": null
         },
         {
@@ -180,7 +180,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.025,
+          "latency_seconds": 5.858,
           "error": null
         },
         {
@@ -188,7 +188,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 23.082,
+          "latency_seconds": 25.064,
           "error": null
         },
         {
@@ -196,7 +196,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 26.543,
+          "latency_seconds": 26.895,
           "error": null
         },
         {
@@ -204,7 +204,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 14.386,
+          "latency_seconds": 14.967,
           "error": null
         },
         {
@@ -212,7 +212,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 26.227,
+          "latency_seconds": 26.348,
           "error": null
         },
         {
@@ -220,7 +220,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.412,
+          "latency_seconds": 24.507,
           "error": null
         },
         {
@@ -228,7 +228,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 11.76,
+          "latency_seconds": 11.989,
           "error": null
         }
       ]
@@ -238,14 +238,14 @@
       "skipped": false,
       "hits": 8,
       "total": 8,
-      "median_latency_seconds": 22.911,
+      "median_latency_seconds": 17.05,
       "fixtures": [
         {
           "name": "edit_explicit_step.txt",
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.83,
+          "latency_seconds": 6.674,
           "error": null
         },
         {
@@ -253,7 +253,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 6.663,
+          "latency_seconds": 7.335,
           "error": null
         },
         {
@@ -261,7 +261,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 22.938,
+          "latency_seconds": 15.957,
           "error": null
         },
         {
@@ -269,7 +269,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 24.666,
+          "latency_seconds": 27.343,
           "error": null
         },
         {
@@ -277,7 +277,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 13.982,
+          "latency_seconds": 14.921,
           "error": null
         },
         {
@@ -285,7 +285,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 41.947,
+          "latency_seconds": 43.105,
           "error": null
         },
         {
@@ -293,7 +293,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 35.992,
+          "latency_seconds": 38.347,
           "error": null
         },
         {
@@ -301,7 +301,7 @@
           "ok": true,
           "passes": 3,
           "attempts": 3,
-          "latency_seconds": 12.281,
+          "latency_seconds": 12.876,
           "error": null
         }
       ]
