@@ -292,6 +292,33 @@ class TestVoiceChatLogging:
         ]
         assert service.calls == []  # nunca llegó al servicio
 
+    def test_voice_file_is_read_off_the_event_loop(self, monkeypatch):
+        # `path.read_bytes()` como argumento posicional de `_run_blocking`
+        # se evaluaba ANTES de entrar al hilo del worker, en el loop: este
+        # test lo detecta mirando desde qué hilo se llama a `read_bytes`.
+        import threading
+
+        original_read_bytes = Path.read_bytes
+        lecturas_en_el_loop = []
+
+        def read_bytes_registrando(self):
+            lecturas_en_el_loop.append(
+                threading.current_thread() is threading.main_thread()
+            )
+            return original_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes_registrando)
+
+        chat_log = FakeChatLog()
+        bot, service = _make_bot(
+            Reply(text="ok"), chat_log, transcriber=FakeTranscriber("listo")
+        )
+        chat = FakeChat(chat_id=555)
+
+        asyncio.run(bot._on_voice(FakeVoiceUpdate(chat, user_id=7), None))
+
+        assert lecturas_en_el_loop == [False]
+
 
 class TestCallbackChatLogging:
     def _run_callback(self, data: str, reply_text: str):
