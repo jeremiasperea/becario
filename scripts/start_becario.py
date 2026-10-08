@@ -8,9 +8,9 @@ modelo ofrece bajarlo. Después le pasa el control a `main.py`, que vuelve a
 validar por su cuenta — el gate de verdad sigue siendo el de la app.
 
 Uso:
-    python3 scripts/start_becario.py           # interactivo
-    python3 scripts/start_becario.py --yes     # sin preguntas (systemd, CI)
-    python3 scripts/start_becario.py --timeout 90
+    uv run scripts/start_becario.py           # interactivo
+    uv run scripts/start_becario.py --yes     # sin preguntas (systemd, CI)
+    uv run scripts/start_becario.py --timeout 90
 
 Solo levanta Ollama si `BECARIO_OLLAMA_URL` apunta a esta máquina: contra un
 servidor remoto no hay nada que arrancar localmente, así que avisa y corta.

@@ -38,10 +38,10 @@ fixture. Ese archivo es el que se commitea y compara entre corridas — la
 consola sola no deja comparar 4/6 contra 6/6 sin que alguien lo anote a mano.
 
 Uso:
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/live_router_check.py
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/live_router_check.py \
         --models gemma3:4b,gemma4:12b --url http://localhost:11434 --attempts 5
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/live_router_check.py \
         --models qwen2.5-coder:14b --timeout 300 --json docs/scoreboard_router.json
 
 Fixtures: `tests/fixtures/router/{single,multi,edit}_*.txt` — formato
@@ -441,7 +441,7 @@ def check_scoreboard(
                 f"no está medido en el tablero (medidos: {medidos or 'ninguno'}): "
                 f"B.E.C.A.R.I.O. estaría sirviendo producción con un modelo "
                 f"del que no hay evidencia. Medilo con:\n"
-                f"  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
+                f"  BECARIO_LIVE_ROUTER_CHECK=1 uv run "
                 f"scripts/live_router_check.py --json docs/scoreboard_router.json "
                 f"--models {default_model}"
             )

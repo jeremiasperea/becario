@@ -10,7 +10,7 @@ La salida (`becario/domain/vasp_tags.json`) se commitea: el manual no es parte
 del repo y no queremos que generar inputs dependa de tenerlo a mano.
 
 Uso:
-    .venv/bin/python scripts/build_vasp_tag_vocabulary.py /ruta/al/manual.md
+    uv run scripts/build_vasp_tag_vocabulary.py /ruta/al/manual.md
 
 Tres fuentes, en orden de confiabilidad:
   1. la tabla "All parameters" de §6.1 — trae descripción corta y sección;

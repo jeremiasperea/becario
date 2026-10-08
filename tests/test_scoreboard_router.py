@@ -320,7 +320,7 @@ class TestCommittedScoreboard:
             "el tablero del router está vencido:\n  - "
             + "\n  - ".join(problems)
             + "\n\nRe-corré (~11 min, necesita Ollama arriba):\n"
-            "  BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
+            "  BECARIO_LIVE_ROUTER_CHECK=1 uv run "
             "scripts/live_router_check.py --json docs/scoreboard_router.json"
         )
 

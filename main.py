@@ -4,7 +4,7 @@
 y las cablea entre sí (Dependency Injection manual — no hace falta más).
 
 Uso:
-    python3 main.py
+    uv run main.py
 
 La primera vez, si no encuentra configuración, un asistente interactivo pide
 token del bot, host del cluster y Ollama, y los guarda en un `.env` local
@@ -12,7 +12,7 @@ token del bot, host del cluster y Ollama, y los guarda en un `.env` local
 las variables a mano.
 
 Para registrar tu cuenta del cluster (no se hace por Telegram):
-    python3 scripts/manage_users.py add
+    uv run scripts/manage_users.py add
 """
 from __future__ import annotations
 
@@ -247,7 +247,7 @@ def main() -> None:
         print(
             "\n⚠️  Todavía no registraste tu cuenta del cluster, así que el bot\n"
             "    no va a poder ejecutar nada hasta que lo hagas. Corré:\n\n"
-            "        python3 scripts/manage_users.py add\n"
+            "        uv run scripts/manage_users.py add\n"
         )
 
     # 4) Verificar el token temprano (mensaje claro en vez de un traceback de PTB).

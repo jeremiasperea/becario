@@ -2,7 +2,7 @@
 """¿Conviene partir el router en dos etapas (clasificador + extractor)?
 
 La idea que motiva este harness: en vez de una sola llamada con el schema
-grande (11 intents), hacer una primera pasada que decida la FAMILIA del
+grande (12 intents), hacer una primera pasada que decida la FAMILIA del
 pedido (sistema / cálculo) y una segunda con un schema chico y un prompt
 afinado para esa familia. Suena bien y tiene precedente en el propio
 código: `extract_structure()` ya es exactamente eso para el eje del
@@ -46,10 +46,10 @@ limita `testpaths` a `tests/`— y además exige `BECARIO_LIVE_ROUTER_CHECK=1`,
 el mismo cinturón que `live_router_check.py`.
 
 Uso:
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/medir_schemas_router.py
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/medir_schemas_router.py \
         --familia calculo --repeticiones 5
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/medir_schemas_router.py \
         --modelo gemma4:12b --json docs/medicion_schemas.json
 """
 from __future__ import annotations
@@ -419,7 +419,7 @@ def main() -> int:
         print(
             "Este harness pega contra un Ollama real y tarda varios minutos.\n"
             "Corrélo a propósito:\n\n"
-            "    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python "
+            "    BECARIO_LIVE_ROUTER_CHECK=1 uv run "
             "scripts/medir_schemas_router.py\n"
         )
         return 2

@@ -8,7 +8,7 @@ NO reemplaza la prueba en Telegram: los botones de confirmación (✅ / ❌ / �
 viajan por callbacks de Telegram y acá no existen. Todo lo que dependa de
 apretar un botón hay que probarlo en el chat.
 
-Uso:  .venv/bin/python scripts/consola.py [user_id]
+Uso:  uv run scripts/consola.py [user_id]
 
 Se corre desde la raíz del repo (necesita `main.py` y el `.env`).
 """

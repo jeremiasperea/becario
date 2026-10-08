@@ -41,10 +41,10 @@ El brazo B pega contra un Ollama REAL, así que corre fuera de pytest
 `BECARIO_LIVE_ROUTER_CHECK=1`, el mismo cinturón que `live_router_check.py`.
 
 Uso:
-    .venv/bin/python scripts/medir_preguntas_de_contenido.py
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python \
+    uv run scripts/medir_preguntas_de_contenido.py
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run \
         scripts/medir_preguntas_de_contenido.py --ruteo
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run \
         scripts/medir_preguntas_de_contenido.py --ruteo \
         --modelo qwen2.5-coder:14b --json docs/medicion_contenido.json
 """

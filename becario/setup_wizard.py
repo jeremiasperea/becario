@@ -114,6 +114,6 @@ def run_setup_wizard(env_path: Path = ENV_PATH) -> None:
     print("=" * 64)
     print(
         "\nÚltimo paso antes de usar el bot: registrá tu cuenta del cluster con\n\n"
-        "    python3 scripts/manage_users.py add\n\n"
+        "    uv run scripts/manage_users.py add\n\n"
         "(te va a pedir tu id de Telegram, tu usuario SSH y tu clave privada).\n"
     )
