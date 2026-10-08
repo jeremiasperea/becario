@@ -76,31 +76,30 @@ primera vez que arrancás, un **asistente interactivo** te pide los datos y los
 guarda en un archivo `.env` **local** (que no se sube a git, ver `.gitignore`).
 
 ```bash
-# 1) Entorno virtual del proyecto (ya está en .gitignore)
-python3 -m venv .venv
-source .venv/bin/activate
+# 1) Entorno y dependencias: uv crea .venv (ya está en .gitignore) e instala
+#    exactamente lo fijado en uv.lock.
+uv sync --extra dev
 
-# 2) Dependencias
-pip install -e ".[dev]"
-
-# 3) Arrancá: la primera vez, el asistente te pide token del bot, host del
+# 2) Arrancá: la primera vez, el asistente te pide token del bot, host del
 #    cluster y Ollama, y crea el .env por vos.
-python3 main.py
+uv run main.py
 
-# 4) Registrá tu cuenta del cluster (interactivo: te pregunta los datos):
-python3 scripts/manage_users.py add
+# 3) Registrá tu cuenta del cluster (interactivo: te pregunta los datos):
+uv run scripts/manage_users.py add
 
-# 5) Volvé a arrancar; ya no vuelve a pedir nada.
-python3 main.py
+# 4) Volvé a arrancar; ya no vuelve a pedir nada.
+uv run main.py
 ```
 
 El venv no es opcional por comodidad: `pymatgen` y `mp-api` arrastran numpy,
 scipy y spglib con versiones propias. Mezclarlas con el Python del sistema es
-pedir un conflicto que después no sabés de dónde salió.
+pedir un conflicto que después no sabés de dónde salió. `uv.lock` se versiona
+para que todos instalen las mismas versiones; si cambiás dependencias en
+`pyproject.toml`, corré `uv lock` y commiteá el lock junto.
 
-Si preferís no activarlo, invocá el intérprete del venv a mano
+`uv run` usa el intérprete de `.venv`, igual que invocarlo a mano
 (`.venv/bin/python main.py`). El launcher hace `execv` con `sys.executable`, así
-que si lo corrés con el Python del venv, `main.py` arranca en el mismo entorno.
+que `main.py` arranca siempre en el mismo entorno.
 
 Los secretos y datos locales (`.env`, `users.json`, `becario.db`) están en
 `.gitignore` y **no** deben subirse a ningún repositorio. El `.env` se crea con
