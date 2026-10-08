@@ -32,8 +32,8 @@ fixture (`single_prepare_encut`) en TODOS los tamaños, incluido el actual:
 su fallo no es de tamaño.
 
 Uso:
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/calibrar_schema.py
-    BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/calibrar_schema.py \
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/calibrar_schema.py
+    BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/calibrar_schema.py \
         qwen2.5:7b gemma3:4b
 """
 from __future__ import annotations

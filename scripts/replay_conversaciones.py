@@ -18,10 +18,10 @@ autocontenida: los mensajes que solo tienen sentido como respuesta a una
 repregunta («tetragonal») incluyen el turno que la provoca.
 
 Uso:
-    .venv/bin/python scripts/replay_conversaciones.py
-    .venv/bin/python scripts/replay_conversaciones.py --solo CV17,CV18
-    .venv/bin/python scripts/replay_conversaciones.py --repeticiones 3
-    .venv/bin/python scripts/replay_conversaciones.py --json informe.json
+    uv run scripts/replay_conversaciones.py
+    uv run scripts/replay_conversaciones.py --solo CV17,CV18
+    uv run scripts/replay_conversaciones.py --repeticiones 3
+    uv run scripts/replay_conversaciones.py --json informe.json
 
 Aislamiento (importante): por defecto NO toca la base ni el directorio de
 corridas de producción. Usa una copia temporal de la base y un `remote_base`

@@ -21,9 +21,9 @@ usuario pudo ignorar una respuesta absurda) y 'cancelled'/'error'
 necesitan revisión manual antes de servir de ground truth.
 
 Uso:
-    .venv/bin/python scripts/export_router_dataset.py                # JSONL a stdout
-    .venv/bin/python scripts/export_router_dataset.py --db becario.db --outcome confirmed
-    .venv/bin/python scripts/export_router_dataset.py --fixtures tests/fixtures/router_real/
+    uv run scripts/export_router_dataset.py                # JSONL a stdout
+    uv run scripts/export_router_dataset.py --db becario.db --outcome confirmed
+    uv run scripts/export_router_dataset.py --fixtures tests/fixtures/router_real/
 """
 from __future__ import annotations
 

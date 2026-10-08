@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Chequeo de salud de B.E.C.A.R.I.O.
 
-    .venv/bin/python scripts/salud.py
-    .venv/bin/python scripts/salud.py --json        # para un cron o un panel
-    .venv/bin/python scripts/salud.py --dias 30     # ventana de las métricas
+    uv run scripts/salud.py
+    uv run scripts/salud.py --json        # para un cron o un panel
+    uv run scripts/salud.py --dias 30     # ventana de las métricas
 
 Existe porque para un servicio que corre desatendido el único síntoma era
 alguien diciendo «che, no me contesta» — que es, textualmente, lo que pasó
