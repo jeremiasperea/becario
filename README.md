@@ -9,20 +9,27 @@ Clean Architecture con dependencias apuntando hacia el dominio:
 ```
 presentation/telegram_bot.py     ← Telegram (python-telegram-bot, long polling)
         │
-application/services.py          ← Casos de uso (BecarioService)
+application/services.py          ← Casos de uso (BecarioService); delega en handlers/
         │  depende solo de ↓
 domain/models.py + ports.py      ← Entidades validadas (Pydantic) + interfaces (Protocol)
         ▲  implementados por
 application/
     services.py                  ← BecarioService (casos de uso conversacionales)
-    job_monitor.py                ← JobMonitorService (polling + notificación, cierra el loop)
+    handlers/                    ← un módulo por familia de intenciones (calc, jobs,
+                                   queries, remote_files)
+    plan_executor.py             ← PlanExecutor (ejecuta el plan paso a paso, ADR-0006)
+    job_monitor.py               ← JobMonitorService (polling + notificación, cierra el loop)
 infrastructure/
     ollama_router.py             ← IntentRouter    (Ollama structured outputs)
     ase_builder.py               ← StructureBuilder (ASE: bulk/moléculas/POSCAR)
+    materials_project.py         ← StructureProvider (Materials Project, compuestos)
+    vasp_inputs.py               ← CalcInputGenerator (INCAR/KPOINTS/POSCAR/script)
+    whisper_transcriber.py       ← Transcriber (faster-whisper, notas de voz)
     ssh_gateway.py               ← ClusterGateway + ClusterGatewayFactory
                                    (paramiko + shlex.quote + SFTP, una conexión por cuenta)
     user_registry.py             ← UserRegistry (roster JSON, sin altas por Telegram)
     storage.py                   ← HistoryRepository, JobTracker (SQLite, por owner_id)
+                                   CalcRunRepository, ChatLogRepository, RouterDecisionLog
                                    ConfirmationStore + PendingEditStore (SQLite + TTL,
                                    ownership por token; hay variante en memoria para tests)
 main.py                          ← Composition root (única DI del proyecto)
@@ -53,10 +60,10 @@ Administrar el roster (dar de alta/baja a alguien) es una operación fuera
 de Telegram, con `scripts/manage_users.py`:
 
 ```bash
-python3 scripts/manage_users.py add --telegram-id 111111111 \
+uv run scripts/manage_users.py add --telegram-id 111111111 \
     --ssh-user jperez --ssh-key /home/becario/.ssh/id_jperez --name "Juan Pérez"
-python3 scripts/manage_users.py list
-python3 scripts/manage_users.py remove --telegram-id 111111111
+uv run scripts/manage_users.py list
+uv run scripts/manage_users.py remove --telegram-id 111111111
 ```
 
 ### Seguridad (defensa en profundidad)
@@ -97,8 +104,7 @@ pedir un conflicto que después no sabés de dónde salió. `uv.lock` se version
 para que todos instalen las mismas versiones; si cambiás dependencias en
 `pyproject.toml`, corré `uv lock` y commiteá el lock junto.
 
-`uv run` usa el intérprete de `.venv`, igual que invocarlo a mano
-(`.venv/bin/python main.py`). El launcher hace `execv` con `sys.executable`, así
+`uv run` usa el intérprete de `.venv` (el mismo que crea `uv sync`). El launcher hace `execv` con `sys.executable`, así
 que `main.py` arranca siempre en el mismo entorno.
 
 Los secretos y datos locales (`.env`, `users.json`, `becario.db`) están en
@@ -120,9 +126,9 @@ demonio del sistema es orquestación, no responsabilidad del composition root.
 Para eso hay un launcher una capa más afuera:
 
 ```bash
-python3 scripts/start_becario.py        # asegura Ollama y arranca el bot
-python3 scripts/start_becario.py --yes  # sin preguntas (systemd, CI)
-python3 scripts/start_becario.py --check-only   # deja Ollama listo, no arranca el bot
+uv run scripts/start_becario.py        # asegura Ollama y arranca el bot
+uv run scripts/start_becario.py --yes  # sin preguntas (systemd, CI)
+uv run scripts/start_becario.py --check-only   # deja Ollama listo, no arranca el bot
 ```
 
 Qué hace, en orden:
@@ -179,6 +185,7 @@ Wants=ollama.service
 User=jeremias
 WorkingDirectory=/opt/becario
 EnvironmentFile=/opt/becario/.env
+# systemd necesita una ruta absoluta al intérprete; ese .venv lo crea `uv sync`
 ExecStart=/opt/becario/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
@@ -250,9 +257,9 @@ Tres cosas que definen el diseño (`domain/sugerencias.py`):
 ## ¿Está sano? (`scripts/salud.py`)
 
 ```bash
-.venv/bin/python scripts/salud.py            # informe legible
-.venv/bin/python scripts/salud.py --json     # para un cron o un panel
-.venv/bin/python scripts/salud.py --dias 30  # ventana de las métricas
+uv run scripts/salud.py            # informe legible
+uv run scripts/salud.py --json     # para un cron o un panel
+uv run scripts/salud.py --dias 30  # ventana de las métricas
 ```
 
 Sale con código 0 si está sano y 1 si hay algo que mirar, así que sirve
@@ -282,8 +289,8 @@ los pedidos ya empezaron a expirar.
 ## Tests
 
 ```bash
-python3 -m pytest            # ~1376 tests al 2026-09-25
-python3 -m pytest --cov=becario --cov-report=term-missing
+uv run pytest            # ~1381 tests al 2026-10-08
+uv run pytest --cov=becario --cov-report=term-missing
 ```
 
 El número va con fecha a propósito: crece en casi todos los PRs y nadie lo
@@ -307,7 +314,7 @@ andamiaje del prompt y el post-procesamiento, no al LLM. Lo que mide al modelo
 es el harness en vivo, y corre **a mano**:
 
 ```bash
-BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/live_router_check.py \
     --models qwen2.5-coder:14b --timeout 300 --json docs/scoreboard_router.json
 ```
 
@@ -317,7 +324,7 @@ commitear el scoreboard antes de tocar el prompt o el schema del router**: es
 la única forma de saber si un cambio mejoró o empeoró la extracción.
 
 No corre en CI por costo: con `gemma4:12b` medido en 77.9s por llamada
-(`docs/comparacion_modelos.md`), 30 fixtures por 3 intentos son ~117 minutos, y
+(`docs/comparacion_modelos.md`), 8 fixtures por 3 intentos son ~31 minutos, y
 los runners no tienen ni GPU ni los modelos instalados.
 
 Lo que CI sí hace es **negarse a creerle a una medición vencida**.
@@ -344,9 +351,9 @@ Para ampliar el set con casos reales, las decisiones que un humano confirmó en
 producción se vuelven fixtures:
 
 ```bash
-.venv/bin/python scripts/export_router_dataset.py --db becario.db \
+uv run scripts/export_router_dataset.py --db becario.db \
     --fixtures tests/fixtures/router/          # solo las 'confirmed'
-BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/live_router_check.py \
+BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/live_router_check.py \
     --fixtures-dir tests/fixtures/router/
 ```
 
@@ -357,15 +364,15 @@ el modelo suelte el material.
 ### Medición de schemas: ¿conviene partir el router en dos etapas?
 
 ```bash
-BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py
-BECARIO_LIVE_ROUTER_CHECK=1 .venv/bin/python scripts/medir_schemas_router.py \
+BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/medir_schemas_router.py
+BECARIO_LIVE_ROUTER_CHECK=1 uv run scripts/medir_schemas_router.py \
     --familia calculo --repeticiones 5 --json docs/medicion_schemas.json
 ```
 
 Existe para contestar con números una pregunta de diseño que se discute
 seguido: si conviene una primera pasada que clasifique la **familia** del
 pedido (sistema / cálculo) y una segunda con un schema chico y afinado, en
-vez de la única llamada con el schema grande de 11 intents.
+vez de la única llamada con el schema grande de 12 intents.
 
 Tres brazos sobre los mismos pedidos reales de la bitácora:
 
@@ -394,9 +401,9 @@ Para eso está la batería de conversaciones, que corre contra el cluster de
 prueba, Ollama y Materials Project **reales**:
 
 ```bash
-.venv/bin/python scripts/replay_conversaciones.py
-.venv/bin/python scripts/replay_conversaciones.py --solo CV17,CV26 --verboso
-.venv/bin/python scripts/replay_conversaciones.py --repeticiones 3   # mide inestabilidad
+uv run scripts/replay_conversaciones.py
+uv run scripts/replay_conversaciones.py --solo CV17,CV26 --verboso
+uv run scripts/replay_conversaciones.py --repeticiones 3   # mide inestabilidad
 ```
 
 Los escenarios (`tests/conversaciones/*.txt`) no son inventados: salen de
@@ -430,7 +437,7 @@ la diferencia entre un bug y una inestabilidad del muestreo.
 ### Consola local (sin Telegram)
 
 ```bash
-.venv/bin/python scripts/consola.py [user_id]
+uv run scripts/consola.py [user_id]
 ```
 
 `BecarioService` no sabe nada de Telegram —recibe `(chat_id, user_id, texto)`
@@ -646,11 +653,12 @@ equivocarse: que llegue dos veces molesta, que no llegue ninguna rompe el
 
 Y si un trabajo deja de contestar (Slurm lo purga de `sacct` pasado
 `MinJobAge`, por ejemplo), el monitor no lo persigue para siempre: cuenta las
-consultas **seguidas** sin respuesta y tras una hora avisa una vez y lo
+consultas **seguidas** en las que `sacct` contesta que no lo conoce y, tras
+cinco (cinco minutos con el intervalo por defecto), avisa una vez y lo
 suelta.
 
 ```
-🔎 Perdí el rastro del trabajo 4242 (Zr_relajacion): llevo 60 consultas
+🔎 Perdí el rastro del trabajo 4242 (Zr_relajacion): llevo 5 consultas
 seguidas sin poder leer su estado, así que dejo de seguirlo.
 ```
 
@@ -660,9 +668,11 @@ de "esperando turno".
 
 ## Pendientes conocidos
 
-- `Transcriber` es un puerto sin implementación incluida: enchufá tu
-  servicio Whisper implementando `transcribe(audio_bytes) -> str` y
-  pasándolo a `TelegramBot`.
+- `Transcriber` tiene implementación incluida (`FasterWhisperTranscriber`,
+  faster-whisper local): las notas de voz se transcriben con el modelo de
+  `BECARIO_WHISPER_MODEL` (default `small`; `off` las apaga) en el idioma de
+  `BECARIO_WHISPER_LANGUAGE` (default `es`). Si querés otro servicio,
+  implementá `transcribe(audio_bytes) -> str` y pasalo a `TelegramBot`.
 - `Transcriber` no es lo único enchufable: `ConfirmationStore` y
   `PendingEditStore` tienen implementación en memoria además de la de
   SQLite, útil para tests o para correr sin estado en disco. Producción
