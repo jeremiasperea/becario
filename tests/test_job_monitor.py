@@ -296,6 +296,40 @@ class TestJobMonitorService:
         notes = monitor.poll_and_notify()
         assert "extender el barrido" in notes[1].text
 
+    def test_scan_point_with_truncated_oszicar_is_not_a_stale_energy(self):
+        # `read_file` baja un PREFIJO: el último E0 de un OSZICAR que pasa el
+        # tope queda afuera, y usar el del prefijo daría una energía vieja.
+        from becario.application.lectura_oszicar import OSZICAR_MAX_BYTES
+
+        factory = _scan_cluster({300: -16.90, 400: -16.95})
+        cluster = factory.cluster
+        path = "/data/runs/zr/encut_400/OSZICAR"
+        cluster.remote_files[path] = (
+            _oszicar(-10.0) + "x" * OSZICAR_MAX_BYTES + "\n" + _oszicar(-16.95)
+        )
+        pedidos: dict[str, Optional[int]] = {}
+
+        def read_file(remote_path, max_bytes=None):
+            pedidos[remote_path] = max_bytes
+            content = cluster.remote_files.get(remote_path)
+            if content is not None and max_bytes is not None:
+                content = content[:max_bytes]
+            return content
+
+        cluster.read_file = read_file
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert pedidos[path] == OSZICAR_MAX_BYTES
+        assert "Convergencia de ENCUT" not in notes[1].text
+        assert "demasiado grande" in notes[1].text and "encut_400" in notes[1].text
+
     def test_failed_scan_does_not_harvest(self):
         factory = _scan_cluster({300: -16.90, 400: -16.95})
         factory.cluster.state = "FAILED"

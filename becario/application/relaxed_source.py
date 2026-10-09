@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Optional
 from ..domain.models import CalcKind, JobId, JobStatus
 from ..domain.vasp_tags import cita
 from ..domain.ports import ClusterGateway
+from .lectura_oszicar import INCAR_MAX_BYTES, leer_oszicar
 
 if TYPE_CHECKING:  # pragma: no cover - solo para anotar
     from ase import Atoms
@@ -36,11 +37,6 @@ logger = logging.getLogger(__name__)
 _IONIC_STEP_RE = re.compile(r"^\s*\d+\s+F=", re.MULTILINE)
 _NSW_RE = re.compile(r"^\s*NSW\s*=\s*(\d+)", re.MULTILINE | re.IGNORECASE)
 
-# Topes de lectura: el INCAR es diminuto y el OSZICAR crece con los pasos
-# iónicos (una línea por paso electrónico). `read_file` baja solo el prefijo,
-# así que esto acota cuánto viaja por SFTP.
-_INCAR_MAX_BYTES = 8_000
-_OSZICAR_MAX_BYTES = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -185,15 +181,16 @@ def _check_convergence(
     ampliar el puerto para leer la cola. Si los pasos llegaron al tope, la
     corrida se quedó sin presupuesto, que es exactamente el caso peligroso.
     """
-    incar = cluster.read_file(f"{run_dir}/INCAR", max_bytes=_INCAR_MAX_BYTES)
-    oszicar = cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
+    incar = cluster.read_file(f"{run_dir}/INCAR", max_bytes=INCAR_MAX_BYTES)
+    lectura = leer_oszicar(cluster, run_dir)
+    oszicar = lectura.texto
     if not incar or not oszicar:
         return None, (
             "⚠️ No pude verificar si esa relajación convergió "
             f"(falta INCAR u OSZICAR en {run_dir}). Revisala antes de confiar "
             "en la estructura."
         )
-    if len(oszicar) >= _OSZICAR_MAX_BYTES:
+    if lectura.truncado:
         # `read_file` baja solo un PREFIJO: si el OSZICAR llegó al tope, los
         # pasos que faltan son justo los del final. Contar sobre eso daría
         # MENOS pasos que NSW y diría "convergió" — el error hacia el lado

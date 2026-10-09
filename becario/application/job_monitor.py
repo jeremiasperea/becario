@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from ..domain.datos_de_corrida import ultima_energia
 from ..domain.models import JobId, JobStatus
 from ..domain.ports import (
     ClusterGateway,
@@ -21,11 +22,10 @@ from ..domain.ports import (
     JobTracker,
     UserRegistry,
 )
+from .lectura_oszicar import leer_oszicar
 
 logger = logging.getLogger(__name__)
 
-# Última energía E0 de un OSZICAR (una por paso iónico; para NSW=0 hay una sola).
-_E0_RE = re.compile(r"E0=\s*([-+0-9.Ee]+)")
 _ENCUT_DIR_RE = re.compile(r"\Aencut_(\d+)\Z")
 
 # Criterio de convergencia estándar para el barrido de ENCUT.
@@ -350,21 +350,31 @@ class JobMonitorService:
 
         points: list[tuple[int, float]] = []
         missing: list[str] = []
+        truncated: list[str] = []
         for name in scan_dirs:
-            energy = _parse_last_e0(cluster.read_file(f"{run_dir}/{name}/OSZICAR"))
+            oszicar = leer_oszicar(cluster, f"{run_dir}/{name}")
+            # Cortado, el último E0 quedó afuera: usar el del prefijo daría
+            # una energía vieja. El punto se descarta, pero se dice por qué.
+            if oszicar.truncado:
+                truncated.append(name)
+                continue
+            energy = ultima_energia(oszicar.texto)
             if energy is None:
                 missing.append(name)
             else:
                 points.append((int(name.split("_")[1]), energy))
 
         if len(points) < 2:
-            return Notification(
-                chat_id=0,
-                text=(
-                    f"⚠️ El barrido terminó pero no pude leer energías suficientes "
-                    f"en {run_dir} (revisá los vasp.out de {', '.join(missing) or 'los puntos'})."
-                ),
+            text = (
+                f"⚠️ El barrido terminó pero no pude leer energías suficientes "
+                f"en {run_dir} (revisá los vasp.out de {', '.join(missing) or 'los puntos'})."
             )
+            if truncated:
+                text += (
+                    f" El OSZICAR de {', '.join(truncated)} es demasiado grande "
+                    "para leerlo entero desde acá."
+                )
+            return Notification(chat_id=0, text=text)
 
         e_ref = points[-1][1]  # energía al ENCUT más alto
         per_atom = n_atoms or 1
@@ -413,18 +423,6 @@ def _tail(text: str, n_lines: int = 10, max_chars: int = 700) -> str:
     if len(clipped) > max_chars:
         clipped = "…" + clipped[-max_chars:]
     return clipped
-
-
-def _parse_last_e0(oszicar: Optional[str]) -> Optional[float]:
-    if not oszicar:
-        return None
-    matches = _E0_RE.findall(oszicar)
-    if not matches:
-        return None
-    try:
-        return float(matches[-1])
-    except ValueError:
-        return None
 
 
 def _parse_poscar_n_atoms(poscar: Optional[str]) -> Optional[int]:
