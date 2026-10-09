@@ -222,10 +222,10 @@ class TestTruncatedOszicarIsNotMistakenForConvergence:
     que caer del lado seguro."""
 
     def test_truncated_oszicar_is_unverifiable_not_converged(self):
-        from becario.application.relaxed_source import _OSZICAR_MAX_BYTES
+        from becario.application.lectura_oszicar import OSZICAR_MAX_BYTES
 
         cluster = FakeCluster()
-        cluster.files[f"{RUN_DIR}/OSZICAR"] = "x" * _OSZICAR_MAX_BYTES
+        cluster.files[f"{RUN_DIR}/OSZICAR"] = "x" * OSZICAR_MAX_BYTES
         result = _resolve(cluster=cluster)
         assert result.converged is None, "no puede afirmar que convergió"
         assert "demasiado grande" in result.warning

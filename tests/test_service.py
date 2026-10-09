@@ -1795,6 +1795,34 @@ class TestPreguntasPorUnDatoDeLaCorrida:
         assert "OSZICAR" in reply.text
 
 
+    @staticmethod
+    def _oszicar_cortado():
+        # El E0 verdadero queda DESPUÉS del tope de lectura: sobre el prefijo
+        # solo se ve el viejo, y contar pasos daría de menos.
+        from becario.application.lectura_oszicar import OSZICAR_MAX_BYTES
+
+        viejo = "   1 F= -.17000000E+02 E0= -.17012345E+02  d E =-.17E+02\n"
+        relleno = "x" * OSZICAR_MAX_BYTES + "\n"
+        nuevo = "   2 F= -.17095638E+02 E0= -.17097775E+02  d E =0.46E-03\n"
+        return viejo + relleno + nuevo
+
+    def test_un_oszicar_cortado_no_da_una_energia_vieja(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory, oszicar=self._oszicar_cortado())
+        reply = self._preguntar(service, router, "energia")
+        assert not reply.ok
+        assert "-17.012345" not in reply.text
+        assert "tope de lectura" in reply.text
+
+    def test_un_oszicar_cortado_no_cuenta_de_menos(self, env):
+        service, router, factory, *_ = env
+        self._setup(service, factory, oszicar=self._oszicar_cortado())
+        reply = self._preguntar(service, router, "pasos_ionicos")
+        assert not reply.ok
+        assert "paso(s) iónico(s)" not in reply.text
+        assert "tope de lectura" in reply.text
+
+
 class TestQueryResults:
     """'dame los parámetros de red del Zr' lee la celda de la corrida
     previa (CONTCAR si hubo relajación) en vez de contestar el historial."""
@@ -1828,6 +1856,22 @@ class TestQueryResults:
         assert "γ = 120.00°" in reply.text
         assert "E0 = -17.046660 eV" in reply.text
         assert "CONTCAR" in reply.text
+
+    def test_la_red_lee_el_oszicar_acotado_y_omite_un_e0_viejo(self, env):
+        from becario.application.lectura_oszicar import OSZICAR_MAX_BYTES
+
+        service, router, factory, *_ = env
+        cluster = self._setup_run(service, factory)
+        cluster.remote_files[f"{self.RUN_DIR}/OSZICAR"] = (
+            "   1 F= -.17000000E+02 E0= -.17012345E+02  d E =0.0\n"
+            + "x" * OSZICAR_MAX_BYTES
+            + "\n   2 F= -.17046660E+02 E0= -.17046660E+02  d E =0.0\n"
+        )
+        reply = self._ask(service, router)
+        assert "a = 3.2300" in reply.text
+        assert "E0 =" not in reply.text
+        i = cluster.read_calls.index(f"{self.RUN_DIR}/OSZICAR")
+        assert cluster.read_max_bytes[i] == OSZICAR_MAX_BYTES
 
     def test_prefers_relaxation_over_more_recent_scan(self, env):
         service, router, factory, *_ = env

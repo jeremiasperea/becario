@@ -25,12 +25,11 @@ from ...domain.datos_de_corrida import (
 from ...domain.models import CalcKind, HistoryFilter
 from ...domain.sugerencias import CorridaPrevia, render
 from ..context import Reply, _Ctx
-from ..job_monitor import _parse_last_e0
 from ..rechazos import registrar_rechazo, VOCABULARIO
 # Los MISMOS topes de lectura que usa `relaxed_source` para el mismo par
 # de archivos: si divergieran, dos caminos contestarían distinto sobre
 # la convergencia de la misma corrida.
-from ..relaxed_source import _INCAR_MAX_BYTES, _OSZICAR_MAX_BYTES
+from ..lectura_oszicar import INCAR_MAX_BYTES, leer_oszicar
 
 if TYPE_CHECKING:
     from ..services import BecarioService
@@ -181,7 +180,9 @@ def query_results(svc: "BecarioService", ctx: _Ctx, params: dict) -> Reply:
         f"α = {alpha:.2f}°,  β = {beta:.2f}°,  γ = {gamma:.2f}°",
         f"(fuente: {source})",
     ]
-    energy = _parse_last_e0(ctx.cluster.read_file(f"{run_dir}/OSZICAR"))
+    # Un OSZICAR cortado daría un E0 viejo: se omite, igual que si faltara.
+    oszicar = leer_oszicar(ctx.cluster, run_dir)
+    energy = None if oszicar.truncado else ultima_energia(oszicar.texto)
     if energy is not None:
         lines.append(f"E0 = {energy:.6f} eV")
     lines.append(f"📂 {run_dir}")
@@ -303,17 +304,19 @@ def _contestar_dato(
     cabeza = _encabezado(row)
 
     if pedido is DatoDeCorrida.PASOS_IONICOS:
-        pasos = contar_pasos_ionicos(
-            ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
-        )
+        oszicar = leer_oszicar(ctx.cluster, run_dir)
+        if oszicar.truncado:
+            return _oszicar_truncado(cabeza, run_dir)
+        pasos = contar_pasos_ionicos(oszicar.texto)
         if pasos is None:
             return _sin_archivo("OSZICAR", run_dir)
         return Reply(text=f"🔄 {cabeza}: {pasos} paso(s) iónico(s).\n📂 {run_dir}")
 
     if pedido is DatoDeCorrida.ENERGIA:
-        energia = ultima_energia(
-            ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
-        )
+        oszicar = leer_oszicar(ctx.cluster, run_dir)
+        if oszicar.truncado:
+            return _oszicar_truncado(cabeza, run_dir)
+        energia = ultima_energia(oszicar.texto)
         if energia is None:
             return _sin_archivo("OSZICAR", run_dir)
         return Reply(text=f"⚡ {cabeza}: E0 = {energia:.6f} eV\n📂 {run_dir}")
@@ -342,16 +345,16 @@ def _contestar_convergencia(ctx: _Ctx, cabeza: str, run_dir: str) -> Reply:
     vez de contarse: sobre un prefijo faltan justo los pasos del final, así
     que el conteo daría de menos y diría «convergió». El error caro es ese.
     """
-    oszicar = ctx.cluster.read_file(f"{run_dir}/OSZICAR", max_bytes=_OSZICAR_MAX_BYTES)
-    incar = ctx.cluster.read_file(f"{run_dir}/INCAR", max_bytes=_INCAR_MAX_BYTES)
-    pasos, nsw = contar_pasos_ionicos(oszicar), nsw_de(incar)
+    oszicar = leer_oszicar(ctx.cluster, run_dir)
+    incar = ctx.cluster.read_file(f"{run_dir}/INCAR", max_bytes=INCAR_MAX_BYTES)
+    pasos, nsw = contar_pasos_ionicos(oszicar.texto), nsw_de(incar)
     if pasos is None or nsw is None:
         return Reply(
             text=f"⚠️ No pude verificar la convergencia de {cabeza}: falta el "
             f"OSZICAR o el NSW del INCAR.\n📂 {run_dir}",
             ok=False,
         )
-    if oszicar is not None and len(oszicar) >= _OSZICAR_MAX_BYTES:
+    if oszicar.truncado:
         return Reply(
             text=f"⚠️ El OSZICAR de {cabeza} es demasiado grande para "
             f"verificarlo desde acá; revisalo a mano.\n📂 {run_dir}",
@@ -367,6 +370,16 @@ def _contestar_convergencia(ctx: _Ctx, cabeza: str, run_dir: str) -> Reply:
     return Reply(
         text=f"✅ {cabeza} convergió: {pasos} de {nsw} pasos iónicos "
         f"disponibles.\n📂 {run_dir}"
+    )
+
+
+def _oszicar_truncado(cabeza: str, run_dir: str) -> Reply:
+    """El dato vive al final del OSZICAR y la lectura se cortó antes."""
+    return Reply(
+        text=f"⚠️ El OSZICAR de {cabeza} supera el tope de lectura: lo que "
+        f"está al final no llegó, así que no puedo verificar ese dato desde "
+        f"acá. Revisalo a mano.\n📂 {run_dir}",
+        ok=False,
     )
 
 
