@@ -40,6 +40,7 @@ from ..domain.models import (
     PlanStep,
     RouterFailureReason,
     RouterUnavailableError,
+    StructureKind,
 )
 from ..domain.ports import (
     CalcInputGenerator,
@@ -513,7 +514,7 @@ class BecarioService:
         lo que lo distingue de otra estructura del mismo material."""
         formula = p.get("formula") or p.get("formula_quimica") or "?"
         detalles = []
-        if (kind := p.get("tipo_estructura")) and kind != "bulk":
+        if (kind := p.get("tipo_estructura")) and kind != StructureKind.BULK.value:
             detalles.append(str(kind))
         if miller := p.get("miller"):
             detalles.append("(" + "".join(str(i) for i in miller) + ")")

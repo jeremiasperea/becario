@@ -17,15 +17,33 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..domain.datos_de_corrida import DESCRIPCIONES, NINGUNO, DatoDeCorrida
 from ..domain.models import (
+    Axis,
+    CalcKind,
     Intent,
+    OutputFormat,
     Plan,
     PlanStep,
     RouterFailureReason,
     RouterUnavailableError,
+    StructureKind,
+    StructureSource,
 )
 from ..reintentos import reintentar
 
 logger = logging.getLogger(__name__)
+
+
+# Los vocabularios cerrados del schema se leen de los enums de dominio, como
+# `_DATOS_CONSULTABLES` más abajo: si se agrega un miembro, la descripción
+# que ve el LLM lo nombra sin que nadie se acuerde de editarla acá.
+def _enumerar(valores) -> str:
+    """'a, b o c' a partir de los valores, en orden de declaración."""
+    nombres = [v.value for v in valores]
+    return ", ".join(nombres[:-1]) + " o " + nombres[-1]
+
+
+# `AUTO` no se ofrece: es el default de "no lo dijo", no algo que el LLM elija.
+_FUENTES_ELEGIBLES = [f for f in StructureSource if f is not StructureSource.AUTO]
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +108,7 @@ class RouterParams(BaseModel):
         default=None, description="fórmula con símbolos químicos: Zr, W, ZrO2"
     )
     tipo_estructura: Optional[str] = Field(
-        default=None, description="bulk, molecule o slab"
+        default=None, description=_enumerar(StructureKind)
     )
     # Losa/superficie. `miller` NO se adivina: si el pedido habla de una
     # superficie y no lo trae, el servicio lo pide (guía en `_SYSTEM_PROMPT`).
@@ -99,7 +117,7 @@ class RouterParams(BaseModel):
     )
     capas: Optional[int] = Field(default=None, description="capas de la losa")
     eje_vacio: Optional[str] = Field(
-        default=None, description="eje del vacío de la losa: x, y o z"
+        default=None, description=f"eje del vacío de la losa: {_enumerar(Axis)}"
     )
     red_cristalina: Optional[str] = Field(
         default=None, description="diamond, fcc, bcc, hcp, rocksalt, zincblende…"
@@ -114,7 +132,7 @@ class RouterParams(BaseModel):
         default=None, description="espesor del vacío, en Å"
     )
     formato_salida: Optional[str] = Field(
-        default=None, description="formato del archivo: vasp, cif o xyz"
+        default=None, description=f"formato del archivo: {_enumerar(OutputFormat)}"
     )
     # Dónde ancla `destino_remoto`. Existe porque «mi home» no era
     # expresable: el modelo de rutas conocía solo "absoluta" y "relativa a
@@ -150,11 +168,11 @@ class RouterParams(BaseModel):
         default=None, description="id de Materials Project: mp-149"
     )
     fuente_estructura: Optional[str] = Field(
-        default=None, description="ase, mp o relajado"
+        default=None, description=_enumerar(_FUENTES_ELEGIBLES)
     )
     # cálculo VASP completo:
     tipo_calculo: Optional[str] = Field(
-        default=None, description="relajacion, estatico, convergencia_encut o dos"
+        default=None, description=_enumerar(CalcKind)
     )
     encut: Optional[int] = Field(default=None, description="ENCUT en eV")
     encut_min: Optional[int] = Field(default=None, description="inicio del barrido de ENCUT, en eV")
@@ -224,6 +242,22 @@ class RouterDecision(BaseModel):
 _DATOS_CONSULTABLES = "; ".join(DESCRIPCIONES.values())
 
 
+# Cómo reconoce el LLM cada `CalcKind` en el pedido. Las claves son
+# exactamente el enum (lo verifica `tests/test_contrato_vocabulario_router.py`).
+_GLOSAS_CALCULO = {
+    CalcKind.RELAX: "relajar/optimizar/minimizar estructura o parámetros de red",
+    CalcKind.STATIC: "energía de un punto",
+    CalcKind.ENCUT_SCAN: "curva/barrido/convergencia de ENCUT o del cutoff",
+    CalcKind.DOS: "densidad de estados, DOS, PDOS, estados proyectados",
+}
+# Las comas y las "o" reproducen al byte el texto que se midió a mano: el
+# prompt es parte del baseline del router y no se retoca de paso.
+_items_calculo = [f"'{k.value}' ({g})" for k, g in _GLOSAS_CALCULO.items()]
+_TIPOS_DE_CALCULO = ", ".join(_items_calculo[:2]) + "".join(
+    f", o {i}" for i in _items_calculo[2:]
+)
+
+
 _SYSTEM_PROMPT = (
     "Sos el enrutador de B.E.C.A.R.I.O., un asistente HPC para simulación "
     "computacional de materiales. Analizá el mensaje del usuario y decidí "
@@ -231,10 +265,7 @@ _SYSTEM_PROMPT = (
     "- 'modificar_estructura': solo crear/generar archivos de estructuras "
     "atómicas (bulk, moléculas, superceldas, POSCAR para VASP)\n"
     "- 'preparar_calculo': preparar y correr un cálculo DFT/VASP completo. "
-    "tipo_calculo: 'relajacion' (relajar/optimizar/minimizar estructura o "
-    "parámetros de red), 'estatico' (energía de un punto), o "
-    "'convergencia_encut' (curva/barrido/convergencia de ENCUT o del cutoff), "
-    "o 'dos' (densidad de estados, DOS, PDOS, estados proyectados)\n"
+    f"tipo_calculo: {_TIPOS_DE_CALCULO}\n"
     "- 'enviar_slurm': lanzar un script de cálculo que YA existe en el cluster\n"
     "- 'consultar_db': SOLO historial de trabajos/cálculos pasados (fechas, "
     "nombres y estados) — nunca archivos ni carpetas\n"
