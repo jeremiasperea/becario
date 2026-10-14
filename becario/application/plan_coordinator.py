@@ -20,7 +20,7 @@ from ..domain.models import (
     PlanStep,
 )
 from .context import Reply, _Ctx
-from .handlers import jobs
+from .handlers import calc, jobs
 from .plan_executor import PlanExecutor
 from .textos import HELP_TEXT
 
@@ -164,3 +164,122 @@ def prepare_destructive_tail(
         confirmation_token=token,
         allow_modify=bool(built.request_intent),
     )
+
+
+# ----------------------------------------------------------------------
+# Batch (ADR-0007): se stagea entero y se ejecuta todo al confirmar
+# ----------------------------------------------------------------------
+def prepare_batch(svc: "BecarioService", ctx: _Ctx, plan: Plan) -> Reply:
+    """Batch (ADR-0007): valida y describe cada paso SIN tocar el cluster,
+    stagea el plan entero con una sola confirmación. Recién al confirmar
+    se ejecuta todo. Fail-closed: un cálculo inválido aborta el batch sin
+    efectos."""
+    actions: list[PendingAction] = []
+    preview: list[str] = []
+    n_calc = 0
+    for i, step in enumerate(plan.steps, start=1):
+        if step.action is Intent.PREPARE_CALC:
+            req = calc._build_calc_request(svc, step.parametros)
+            if isinstance(req, Reply):
+                # Cálculo inválido: nada se ejecuta. Si lo que falta es un
+                # dato pedible, el batch entero queda esperando en vez de
+                # obligar a rearmar los N pasos.
+                svc._arm_if_awaiting(ctx, plan, i, req)
+                return req
+            # La ambigüedad de fase de Materials Project (¿tetragonal o
+            # monoclínica?) es el mismo caso que la cara de la losa: si
+            # se descubre recién al EJECUTAR el batch ya confirmado, la
+            # repregunta pierde el `awaiting_params` en el camino
+            # (`execute_calc`) y no queda nada esperando la respuesta.
+            # Se adelanta acá, antes de stagear — la consulta a MP es
+            # de solo lectura, no toca el cluster.
+            pregunta_fase = calc.phase_question(svc, req)
+            if pregunta_fase is not None:
+                svc._arm_if_awaiting(ctx, plan, i, pregunta_fase)
+                return pregunta_fase
+            n_calc += 1
+            line = calc.describe_calc_request(req)
+        else:
+            # Los pasos de estructura también se validan ANTES de
+            # stagear: un slab sin cara no se puede armar, y stagearlo
+            # haría que el usuario apruebe un plan incumplible y se
+            # entere recién al confirmar. Mismo trato que el cálculo.
+            if step.action is Intent.MODIFY_STRUCTURE:
+                problema = calc.validate_structure_params(step.parametros)
+                if problema is not None:
+                    svc._arm_if_awaiting(ctx, plan, i, problema)
+                    return problema
+            line = svc._describe_batch_step(step)
+        preview.append(f"{i}. {line}")
+        actions.append(PendingAction(
+            chat_id=ctx.chat_id, requester_id=ctx.user_id,
+            intent=step.action, description=line, payload=dict(step.parametros),
+            # El pedido original viaja con cada paso, igual que en el
+            # camino de un solo cálculo: es lo que habilita el ✏️. Sin
+            # esto, frente al batch MÁS equivocado de la sesión —ocho
+            # pasos, con el material y la red mal— las únicas salidas
+            # eran ✅ y ❌: aprobar algo que no es lo pedido, o tirar el
+            # plan entero y volver a escribirlo.
+            request_intent=step.action, request_params=dict(step.parametros),
+        ))
+    pending = PendingPlan(
+        chat_id=ctx.chat_id, requester_id=ctx.user_id, steps=actions,
+        decision_id=ctx.decision_id, execute_all=True,
+    )
+    token = svc._confirmations.put(pending)
+    header = (
+        f"📋 Batch de {len(plan.steps)} pasos"
+        + (f" · {n_calc} trabajo(s) SLURM al confirmar" if n_calc else "")
+        + ":"
+    )
+    return Reply(
+        text=(
+            f"{header}\n" + "\n".join(preview)
+            + "\n\n⚠️ Nada se ejecutó todavía. ¿Confirmás el batch entero?"
+        ),
+        needs_confirmation=True,
+        confirmation_token=token,
+        allow_modify=pending.allow_modify,
+    )
+
+
+def execute_batch(
+    svc: "BecarioService", plan: PendingPlan, requester_id: int, identity, cluster,
+) -> Reply:
+    """Ejecuta un batch confirmado, EN ORDEN y con corte al primer fallo
+    (misma semántica sin-rollback de ADR-0006, ahora sobre el plan
+    entero). Cada paso se reporta ✅/❌/⏸."""
+    ctx = _Ctx(
+        chat_id=plan.steps[0].chat_id, user_id=requester_id,
+        identity=identity, cluster=cluster,
+    )
+    lines: list[str] = []
+    ok_all = True
+    for i, action in enumerate(plan.steps, start=1):
+        if not ok_all:
+            lines.append(f"{i}. ⏸ {action.description} — omitido")
+            continue
+        try:
+            reply = svc._execute_batch_step(ctx, action)
+        except Exception:
+            # Un paso que revienta corta el batch igual que uno que
+            # falla (misma semántica sin-rollback de ADR-0006): lo ya
+            # ejecutado queda hecho y los que siguen se omiten. La
+            # diferencia es que de ESTE paso no sabemos el desenlace.
+            reply = svc._fallo_tras_confirmar(action)
+        # El texto del handler ya trae su propio ✅/🚀/⚠️; solo lo
+        # numeramos (evita duplicar el mark).
+        lines.append(f"{i}. {reply.text}")
+        ok_all = ok_all and reply.ok
+    return Reply(text="\n".join(lines), ok=ok_all)
+
+def execute_batch_step(svc: "BecarioService", ctx: _Ctx, action: PendingAction) -> Reply:
+    """Ejecuta un paso de batch al confirmar: `preparar_calculo` genera,
+    sube y ENVÍA de una (la confirmación del batch ya lo avaló); el resto
+    usa su handler normal, que materializa en el acto."""
+    if action.intent is Intent.PREPARE_CALC:
+        return calc.execute_calc(svc, ctx, action.payload)
+    handler = svc._intent_handlers().get(action.intent)
+    if handler is None:  # pragma: no cover - defensivo
+        return Reply(text=f"paso '{action.intent.value}' no ejecutable", ok=False)
+    return handler(ctx, action.payload)
