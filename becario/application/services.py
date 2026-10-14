@@ -27,8 +27,6 @@ from pydantic import ValidationError
 from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
 from ..domain.fuera_de_alcance import fuera_de_alcance
 from ..domain.models import (
-    _MATERIAL_INTENTS,
-    _MAX_AUTOMATERIALIZE_STEPS,
     Intent,
     descartar_numeros_inventados,
     PendingAction,
@@ -37,7 +35,6 @@ from ..domain.models import (
     Plan,
     PlanStep,
     RouterUnavailableError,
-    StructureKind,
 )
 from ..domain.ports import (
     CalcInputGenerator,
@@ -64,6 +61,7 @@ from .handlers.remote_files import (  # noqa: F401
     _VIEW_FILE_MAX_BYTES,
     _truncate_listing,
 )
+from . import plan_describer
 from .plan_executor import PlanExecutor
 from .rechazos import registrar_rechazo, PRE_ROUTER, ROUTER
 # Compatibilidad: los textos se mudaron a `textos.py`; se re-exportan acá
@@ -253,29 +251,10 @@ class BecarioService:
 
     @classmethod
     def _looks_compound(cls, text: str) -> bool:
-        """Heurística barata para pedidos largos/compuestos. Conservadora
-        donde importa: un falso positivo es inocuo — `decompose()` devuelve
-        una sola instrucción y se rutea igual (ver `_decompose_plan`); solo
-        un pedido realmente compuesto justifica saltear el `route()`
-        directo. No pretende clasificar: solo decidir a quién preguntar
-        primero."""
-        words = text.split()
-        if len(words) >= 16:
-            return True
-        lowered = f" {text.lower()} "
-        markers = sum(lowered.count(m) for m in cls._COMPOUND_MARKERS)
-        return markers >= 1 and len(words) >= 10
+        """Ver `plan_describer.looks_compound`."""
+        return plan_describer.looks_compound(text, cls._COMPOUND_MARKERS)
 
-    @staticmethod
-    def _needs_decomposition(plan: Plan) -> bool:
-        """Firma exacta del fallo medido: plan multi-paso con algún
-        cálculo sin material."""
-        if len(plan.steps) < 2:
-            return False
-        return any(
-            s.action is Intent.PREPARE_CALC and not s.parametros.get("formula")
-            for s in plan.steps
-        )
+    _needs_decomposition = staticmethod(plan_describer.needs_decomposition)
 
     def _decompose_plan(self, text: str) -> Optional[Plan]:
         """Parte el pedido en instrucciones simples auto-contenidas y rutea
@@ -388,83 +367,15 @@ class BecarioService:
 
     @classmethod
     def _is_batch_plan(cls, plan: Plan) -> bool:
-        """Un plan es BATCH (ADR-0007) si excede la composición chica que se
-        auto-materializa —— más de `_MAX_AUTOMATERIALIZE_STEPS` pasos O varios
-        cálculos —— y está formado SOLO por pasos materializables y
-        `preparar_calculo` (sin cola realmente destructiva). Estos planes
-        salen del descompositor; se confirman enteros antes de tocar el
-        cluster, así que nada se auto-ejecuta y el cap deja de gatear el
-        blast-radius (lo hace la confirmación)."""
-        n_calc = sum(1 for s in plan.steps if s.action is Intent.PREPARE_CALC)
-        if not n_calc and len(plan.steps) <= _MAX_AUTOMATERIALIZE_STEPS:
-            return False
-        return all(
-            s.action in cls._MATERIALIZABLE_STEP_INTENTS or s.action is Intent.PREPARE_CALC
-            for s in plan.steps
-        )
+        """Ver `plan_describer.is_batch_plan`."""
+        return plan_describer.is_batch_plan(plan, cls._MATERIALIZABLE_STEP_INTENTS)
 
-    @staticmethod
-    def _describe_structure_step(p: dict) -> str:
-        """Una línea para un paso de estructura: material primero, después
-        lo que lo distingue de otra estructura del mismo material."""
-        formula = p.get("formula") or p.get("formula_quimica") or "?"
-        detalles = []
-        if (kind := p.get("tipo_estructura")) and kind != StructureKind.BULK.value:
-            detalles.append(str(kind))
-        if miller := p.get("miller"):
-            detalles.append("(" + "".join(str(i) for i in miller) + ")")
-        if capas := p.get("capas"):
-            detalles.append(f"{capas} capas")
-        if red := p.get("red_cristalina"):
-            detalles.append(str(red))
-        if celda := p.get("supercelda"):
-            detalles.append("×".join(str(n) for n in celda))
-        if fuente := p.get("fuente_estructura"):
-            detalles.append(f"desde {fuente}")
-        cola = f" ({', '.join(detalles)})" if detalles else ""
-        return f"🧱 generar estructura de {formula}{cola}"
+    _describe_structure_step = staticmethod(plan_describer.describe_structure_step)
 
     @classmethod
     def _describe_batch_step(cls, step: PlanStep) -> str:
-        """Qué va a hacer este paso, en una línea, para el preview del batch.
-
-        No es cosmética: en un batch NADA se ejecuta hasta que el usuario
-        confirma, así que esta línea es lo ÚNICO sobre lo que decide. Un
-        `• listar_archivos` pelado —el nombre crudo del enum— le pide que
-        apruebe a ciegas.
-
-        Cada rama nombra los parámetros que el handler correspondiente
-        realmente lee; cuando un parámetro falta y el sistema resuelve un
-        default, la línea dice cuál es ese default en vez de callarlo.
-        """
-        p = step.parametros
-        if step.action is Intent.CREATE_DIR:
-            return f"📁 crear carpeta {p.get('destino_remoto', '?')}"
-        if step.action is Intent.LIST_FILES:
-            # Sin ruta, `list_files` lista la base de corridas.
-            return f"📂 listar {p.get('destino_remoto') or 'tus corridas'}"
-        if step.action is Intent.VIEW_FILE:
-            # `view_file` acepta nombre suelto (resuelto contra la última
-            # corrida) o ruta absoluta, nunca los dos.
-            if destino := p.get("destino_remoto"):
-                return f"👁 ver {destino}"
-            if nombre := p.get("nombre_archivo"):
-                return f"👁 ver {nombre} (de tu última corrida)"
-            return "👁 ver un archivo (falta cuál)"
-        if step.action is Intent.MODIFY_STRUCTURE:
-            return cls._describe_structure_step(p)
-        if step.action is Intent.QUERY_RESULTS:
-            formula = p.get("formula") or p.get("formula_quimica")
-            return f"📈 resultados de {formula}" if formula else "📈 resultados del último cálculo"
-        if step.action is Intent.QUERY_DB:
-            if filtro := p.get("filtro_busqueda"):
-                return f"📊 historial que contenga {filtro!r}"
-            return "📊 historial de cálculos"
-        if step.action is Intent.CHECK_STATUS:
-            if job := p.get("job_id"):
-                return f"🔎 estado del trabajo {job}"
-            return "🔎 estado de tus trabajos en cola"
-        return f"• {step.action.value}"
+        """Ver `plan_describer.describe_batch_step`."""
+        return plan_describer.describe_batch_step(step, cls._describe_structure_step)
 
     def _prepare_batch(self, ctx: _Ctx, plan: Plan) -> Reply:
         """Batch (ADR-0007): valida y describe cada paso SIN tocar el cluster,
@@ -820,50 +731,8 @@ class BecarioService:
             ),
         )
 
-    @staticmethod
-    def _plan_steps_as_requests(plan: Plan) -> list[tuple[Intent, dict]]:
-        """El plan como lista de pedidos originales, que es lo que guarda
-        `_PendingEdit`: re-armar SIEMPRE parte de acá, nunca de un payload
-        ya materializado."""
-        return [(s.action, dict(s.parametros)) for s in plan.steps]
-
-    @staticmethod
-    def _propagate_answer(
-        steps: list[tuple[Intent, dict]],
-        answered_index: int,
-        base_params: dict,
-        new_params: dict,
-    ) -> None:
-        """Lleva el dato recién contestado a los pasos posteriores que hablan
-        del MISMO material y tienen el mismo hueco. Muta `steps` in place.
-
-        "Armá el slab de ZrO2 y relajalo" son dos pasos sobre una sola
-        superficie: si al usuario le faltó la cara, le falta a los dos. Sin
-        esto, contesta «(001)», el paso 1 se completa y el paso 2 le vuelve
-        a preguntar lo mismo con las mismas palabras — se ve como si el bot
-        lo hubiera ignorado.
-
-        Tres condiciones para no pisar un pedido legítimo:
-
-        - Solo pasos POSTERIORES al contestado (los previos ya se
-          resolvieron con lo que el usuario había dicho entonces).
-        - Solo pasos sobre el mismo material: `formula` igual y ambos de
-          `_MATERIAL_INTENTS`. Dos materiales distintos son dos pedidos.
-        - Solo claves que el paso NO define ya. "Generá el POSCAR de Si
-          (001) y relajá Si (110)" son dos caras dichas a propósito.
-        """
-        material = base_params.get("formula") or base_params.get("formula_quimica")
-        if not material:
-            return
-        for i in range(answered_index, len(steps)):
-            intent, params = steps[i]
-            if intent not in _MATERIAL_INTENTS:
-                continue
-            if (params.get("formula") or params.get("formula_quimica")) != material:
-                continue
-            faltantes = {k: v for k, v in new_params.items() if k not in params}
-            if faltantes:
-                steps[i] = (intent, {**params, **faltantes})
+    _plan_steps_as_requests = staticmethod(plan_describer.plan_steps_as_requests)
+    _propagate_answer = staticmethod(plan_describer.propagate_answer)
 
     def _arm_if_awaiting(
         self, ctx: _Ctx, plan: Plan, index: int, reply: Reply
@@ -878,15 +747,7 @@ class BecarioService:
                 ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan), awaiting_index=index
             )
 
-    def _render_plan_context(self, steps: list[tuple[Intent, dict]]) -> str:
-        """Enumeración legible del plan pendiente: se la mandamos al LLM
-        de `extract_edit` como contexto para el targeting semántico, y
-        se la mostramos al usuario cuando el targeting sale ambiguo."""
-        lines = []
-        for i, (intent, params) in enumerate(steps, start=1):
-            resumen = ", ".join(f"{k}={v}" for k, v in params.items()) or "sin parámetros"
-            lines.append(f"{i}. {intent.value} ({resumen})")
-        return "\n".join(lines)
+    _render_plan_context = staticmethod(plan_describer.render_plan_context)
 
     def _apply_edit(self, ctx: _Ctx, edit: _PendingEdit, text: str) -> Reply:
         """El mensaje describe el cambio. El plan NUNCA se descarta solo:
