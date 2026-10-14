@@ -11,6 +11,7 @@ from typing import Optional
 
 import pytest
 
+from becario.application.context import Reply
 from becario.application.services import (
     NOT_REGISTERED_TEXT,
     BecarioService,
@@ -1934,7 +1935,7 @@ class TestJobTracking:
         router.next = RoutedRequest(
             intent=Intent.SUBMIT_SLURM, params={"script_remoto": "/opt/calc.sh"}
         )
-        prep = service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
+        service.handle_text(chat_id=1, user_id=ALICE.telegram_user_id, text="x")
         # Simulamos un sbatch exitoso pero con salida no parseable.
         factory.gateways["alice"].submit_job = lambda req: CommandResult(
             ok=True, stdout="algo raro sin el patrón esperado"

@@ -10,10 +10,7 @@ reproducen pidiéndole cosas a un sistema sano.
 import logging
 import pytest
 from becario.application.context import Reply
-from becario.domain.models import CommandFailureReason, CommandResult, Intent
-from becario.infrastructure.ssh_gateway import SSHClusterGateway
 from becario.presentation.telegram_bot import TelegramBot
-from .test_service import ALICE, RoutedRequest, env
 from .test_telegram_bot import FAKE_TOKEN, FakeService
 
 

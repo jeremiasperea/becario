@@ -19,7 +19,6 @@ import difflib
 import json
 import re
 from functools import lru_cache
-from typing import Optional
 from pathlib import Path
 from typing import Optional
 

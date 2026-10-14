@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from functools import partial
 from typing import Callable, Optional
 

@@ -9,7 +9,7 @@ vocabulario y no de la imaginación de quien escribió la regla.
 import pytest
 
 from becario.domain.models import CalcKind
-from becario.domain.sugerencias import CorridaPrevia, Sugerencia, render, sugerencias
+from becario.domain.sugerencias import CorridaPrevia, render, sugerencias
 
 
 def _c(kind: CalcKind, *, estado: str = "completado", encut=520, formula="Zr"):
@@ -135,7 +135,10 @@ import json  # noqa: E402
 from becario.application.handlers.queries import suggest  # noqa: E402
 from becario.domain.models import Intent  # noqa: E402
 
-from .test_service import ALICE, RoutedRequest, env  # noqa: E402,F401
+from .test_service import ALICE  # noqa: E402
+from . import test_service as _test_service  # noqa: E402
+
+env = _test_service.env  # re-exporta el fixture `env` para los tests de este módulo
 
 
 def _huella(formula="Zr", calc_kind="relajacion", encut=520) -> str:

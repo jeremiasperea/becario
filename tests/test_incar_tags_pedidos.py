@@ -42,7 +42,7 @@ def _incar(tmp_path, **kw):
 
 def _sin_system(incar: str) -> list[str]:
     """Las líneas del INCAR salvo SYSTEM, que lleva el sello de tiempo."""
-    return [l for l in incar.splitlines() if not l.startswith("SYSTEM")]
+    return [linea for linea in incar.splitlines() if not linea.startswith("SYSTEM")]
 
 
 class TestNoSeCuelaNadaAlIncar:
