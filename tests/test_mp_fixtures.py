@@ -143,6 +143,6 @@ class TestSeamIntegration:
         incar1 = (Path(gen.generate(req, atoms.copy()).local_dir) / "INCAR").read_text()
         incar2 = (Path(gen2.generate(req, atoms.copy()).local_dir) / "INCAR").read_text()
         # SYSTEM lleva timestamp; el resto del INCAR debe ser idéntico
-        body1 = "\n".join(l for l in incar1.splitlines() if not l.startswith("SYSTEM"))
-        body2 = "\n".join(l for l in incar2.splitlines() if not l.startswith("SYSTEM"))
+        body1 = "\n".join(linea for linea in incar1.splitlines() if not linea.startswith("SYSTEM"))
+        body2 = "\n".join(linea for linea in incar2.splitlines() if not linea.startswith("SYSTEM"))
         assert body1 == body2

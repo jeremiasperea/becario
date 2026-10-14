@@ -2,7 +2,6 @@
 notificar, y deja de rastrear una vez que avisó — sin Telegram real."""
 from typing import Optional
 
-import pytest
 
 from becario.application.job_monitor import JobMonitorService
 from becario.domain.models import (

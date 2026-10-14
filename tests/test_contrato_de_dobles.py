@@ -21,7 +21,6 @@ comparando el doble contra el puerto en vez de contra sí mismo — y eso es
 lo que hace este módulo. Cuando un puerto cambie de tipo, esto falla antes
 de que el bug llegue a producción.
 """
-from typing import Optional
 
 import pytest
 
