@@ -28,7 +28,6 @@ from ..incidentes import FALLO_TRAS_CONFIRMAR, nuevo_incidente
 from ..domain.fuera_de_alcance import fuera_de_alcance
 from ..domain.models import (
     Intent,
-    descartar_numeros_inventados,
     PendingAction,
     PendingEdit,
     PendingPlan,
@@ -445,20 +444,8 @@ class BecarioService:
     def _pop_pending_edit(
         self, user_id: int
     ) -> tuple[Optional[_PendingEdit], Optional[_PendingEdit]]:
-        """`(vigente, vencido)`: a lo sumo uno de los dos.
-
-        Se devuelven separados porque "no había nada esperando" y "lo que
-        esperaba se venció" son cosas distintas para quien contesta. Con un
-        solo `None` para ambas, un mensaje que respondía una repregunta
-        —«tetragonal»— se ruteaba en frío y volvía como "no pude interpretar
-        tu pedido": el usuario cree que no lo entendieron cuando en realidad
-        se olvidaron de lo que había preguntado."""
-        edit = self._pending_edits.pop(user_id)
-        if edit is None:
-            return None, None
-        if edit.expired(self._edit_ttl):
-            return None, edit
-        return edit, None
+        """Ver `plan_coordinator.pop_pending_edit`."""
+        return plan_coordinator.pop_pending_edit(self, user_id)
 
     def _stale_confirmation_reply(self, token: str, requester_id: int) -> Reply:
         """Qué contestar cuando el token ya no sirve. Tres casos, no uno.
@@ -481,59 +468,17 @@ class BecarioService:
         return max(1, round(self._edit_ttl / 60))
 
     def _expired_pending_text(self, edit: _PendingEdit) -> str:
-        """Qué se venció y qué había pedido, para que se pueda retomar.
-
-        Se repite el plan anotado a propósito: quien contestó «tetragonal»
-        20 minutos después ya no se acuerda de con qué venía."""
-        return (
-            f"⌛ Cerré la consulta anterior: no recibí respuesta en "
-            f"{self._minutos_ttl()} minutos.\n\n"
-            f"Lo que tenía anotado era:\n{self._render_plan_context(edit.steps)}\n\n"
-            "Si querés seguir, pedímelo de nuevo completo."
-        )
+        """Ver `plan_coordinator.expired_pending_text`."""
+        return plan_coordinator.expired_pending_text(self, edit)
 
     def sweep_expired_pendings(self) -> list[tuple[int, str]]:
-        """Cierra los pedidos vencidos y devuelve `(chat_id, aviso)`.
-
-        La llama el tick del monitor, así que el aviso sale SOLO, cuando
-        vence, en vez de esperar a que el usuario escriba. Sin esto el
-        silencio es ambiguo: quien preguntó algo y no contestó a tiempo no
-        tiene forma de distinguir "sigue esperando" de "se olvidó".
-
-        Solo avisa de los que tienen `chat_id`: los armados antes de que
-        existiera este campo no tienen a dónde ir, y se cierran callados."""
-        vencidos = self._pending_edits.pop_expired(self._edit_ttl)
-        avisos = []
-        for user_id, edit in vencidos:
-            logger.info("Pedido pendiente vencido para user=%s", user_id)
-            if edit.chat_id:
-                avisos.append((edit.chat_id, self._expired_pending_text(edit)))
-        self._purgar_confirmaciones_vencidas()
-        return avisos
+        """Cierra los pedidos vencidos y devuelve `(chat_id, aviso)`; la llama
+        el tick del monitor. Ver `plan_coordinator.sweep_expired_pendings`."""
+        return plan_coordinator.sweep_expired_pendings(self)
 
     def _purgar_confirmaciones_vencidas(self) -> None:
-        """Saca de la base las confirmaciones que nadie tocó a tiempo.
-
-        `purge_expired()` estaba en el puerto y en las dos implementaciones
-        desde que las confirmaciones se persistieron, y **no lo llamaba
-        nadie**: una fila por cada tarjeta que alguien dejó vencer, para
-        siempre. Nada se rompía —`peek` y `pop` miran el TTL, así que una
-        vencida nunca se ejecuta— pero la tabla solo crecía.
-
-        Va acá y no en un barrido aparte porque el vencimiento de una
-        confirmación es exactamente lo mismo que ya se está atendiendo dos
-        líneas más arriba, con el mismo reloj y en el mismo tick.
-
-        Nunca interrumpe: si la base falla, el aviso de los pendientes —que
-        es lo que el usuario está esperando— tiene que salir igual.
-        """
-        try:
-            cuantas = self._confirmations.purge_expired()
-        except Exception:
-            logger.exception("No pude purgar las confirmaciones vencidas")
-            return
-        if cuantas:
-            logger.info("Confirmaciones vencidas purgadas: %s", cuantas)
+        """Ver `plan_coordinator.purgar_confirmaciones_vencidas`."""
+        plan_coordinator.purgar_confirmaciones_vencidas(self)
 
     def _arm_pending_edit(
         self,
@@ -542,20 +487,8 @@ class BecarioService:
         steps: list[tuple[Intent, dict]],
         awaiting_index: Optional[int] = None,
     ) -> None:
-        """Deja un pedido esperando el próximo mensaje del usuario, con el
-        TTL renovado. Lo usan tanto ✏️ Modificar como los handlers que piden
-        un dato faltante (`Reply.awaiting_params`).
-
-        Pide el `chat_id` además del `user_id` porque cuando el TTL vence
-        el aviso se MANDA (ver `sweep_expired_pendings`), y para eso hay
-        que saber a qué chat. Van como ids sueltos y no como `_Ctx`
-        porque el botón ✏️ (`start_modification`) no tiene contexto."""
-        self._pending_edits.put(
-            user_id,
-            PendingEdit(
-                steps=steps, awaiting_index=awaiting_index, chat_id=chat_id
-            ),
-        )
+        """Ver `plan_coordinator.arm_pending_edit`."""
+        plan_coordinator.arm_pending_edit(self, user_id, chat_id, steps, awaiting_index)
 
     _plan_steps_as_requests = staticmethod(plan_describer.plan_steps_as_requests)
     _propagate_answer = staticmethod(plan_describer.propagate_answer)
@@ -563,108 +496,14 @@ class BecarioService:
     def _arm_if_awaiting(
         self, ctx: _Ctx, plan: Plan, index: int, reply: Reply
     ) -> None:
-        """Si el paso `index` (1-based) pidió un dato, deja el plan ENTERO
-        esperando. Se guarda el plan completo y no solo el paso incompleto
-        porque al completarlo hay que volver a despachar todo el pedido —
-        el cálculo que quedó omitido tiene que correr cuando la estructura
-        finalmente se pueda armar."""
-        if reply.awaiting_params:
-            self._arm_pending_edit(
-                ctx.user_id, ctx.chat_id, self._plan_steps_as_requests(plan), awaiting_index=index
-            )
+        """Ver `plan_coordinator.arm_if_awaiting`."""
+        plan_coordinator.arm_if_awaiting(self, ctx, plan, index, reply)
 
     _render_plan_context = staticmethod(plan_describer.render_plan_context)
 
     def _apply_edit(self, ctx: _Ctx, edit: _PendingEdit, text: str) -> Reply:
-        """El mensaje describe el cambio. El plan NUNCA se descarta solo:
-        si no se entiende (o el targeting sale ambiguo) se vuelve a
-        preguntar, y solo un «cancelar» explícito lo tira.
-
-        - Un solo paso editable: camino de hoy, byte a byte (`extract_params`,
-          se mezcla con el pedido original, se llama al handler directo).
-        - Varios pasos: `extract_edit` targetea el paso (semántico o
-          «paso N»); un cambio aceptado re-arma el plan ENTERO desde los
-          pedidos originales vía `_dispatch_plan` — nunca parchea un
-          payload ya materializado (diseño §4.6)."""
-        if _is_cancel_message(text):
-            return Reply(
-                text="❌ Plan descartado. Pedime el cálculo de nuevo cuando quieras."
-            )
-
-        if len(edit.steps) == 1:
-            try:
-                new_params = self._router.extract_params(text)
-            except RouterUnavailableError as exc:
-                return self._router_failure_con_plan_vivo(ctx, edit, exc)
-            new_params, inventados = descartar_numeros_inventados(new_params, text)
-            if inventados:
-                logger.warning(
-                    "descartados por número inventado (user=%s): %s",
-                    ctx.user_id, inventados,
-                )
-            if not new_params:
-                # Devolver el plan al estante (con TTL renovado) para reintentar.
-                self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
-                return Reply(
-                    text="⚠️ No entendí qué querés cambiar. Decímelo de otra "
-                    'forma (p. ej. «usá 2 nodos», «ENCUT máximo 600»), o escribí '
-                    "«cancelar» para descartar el plan."
-                )
-            intent, base_params = edit.steps[0]
-            merged = {**base_params, **new_params}
-            logger.info(
-                "plan modificado por user=%s: base=%s cambio=%s",
-                ctx.user_id, base_params, new_params,
-            )
-            handler = self._intent_handlers()[intent]
-            reply = handler(ctx, merged)
-            if reply.awaiting_params:
-                # Sigue faltando el dato, pero lo que SÍ trajo este mensaje ya
-                # está en `merged`: se re-arma con lo acumulado, así el llenado
-                # es progresivo y no se pierde lo respondido hasta acá.
-                self._arm_pending_edit(ctx.user_id, ctx.chat_id, [(intent, merged)])
-            elif not reply.ok:
-                # El cambio no se pudo aplicar (parámetros inválidos, un
-                # rechazo del dominio…). El plan de ANTES seguía siendo
-                # válido, así que vuelve al estante para reintentar: el
-                # docstring de arriba promete que solo un «cancelar» lo tira,
-                # y sin esta rama un error de validación se lo llevaba puesto.
-                self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
-            return reply
-
-        if edit.awaiting_index is not None:
-            # Sabemos QUÉ paso está incompleto, así que no hay nada que
-            # targetear: se usa el extractor simple y el dato va derecho al
-            # hueco. Targetear "la (001)" sería inventarse un problema que
-            # ya está resuelto — y saldría ambiguo casi siempre.
-            return self._fill_awaiting_step(ctx, edit, text)
-
-        plan_context = self._render_plan_context(edit.steps)
-        try:
-            target_index, delta = self._router.extract_edit(plan_context, text)
-        except RouterUnavailableError as exc:
-            return self._router_failure_con_plan_vivo(ctx, edit, exc)
-        n = len(edit.steps)
-        if target_index is None or not (1 <= target_index <= n) or not delta:
-            # Ambiguo: NUNCA se fusiona ni se ejecuta. Plan al estante, sin
-            # tocar, con TTL renovado.
-            self._arm_pending_edit(ctx.user_id, ctx.chat_id, edit.steps)
-            return Reply(
-                text="🤔 No estoy seguro a qué paso del plan te referís. "
-                "Decímelo apuntando el paso (p. ej. «paso 2: usá la "
-                "partición gpu»), o escribí «cancelar» para descartar el "
-                f"plan.\n\nPlan actual:\n{plan_context}"
-            )
-
-        new_steps = list(edit.steps)
-        intent, base_params = new_steps[target_index - 1]
-        new_steps[target_index - 1] = (intent, {**base_params, **delta})
-        logger.info(
-            "plan modificado (paso %s) por user=%s: base=%s cambio=%s",
-            target_index, ctx.user_id, base_params, delta,
-        )
-        plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
-        return self._dispatch_plan(ctx, plan)
+        """Ver `plan_coordinator.apply_edit`."""
+        return plan_coordinator.apply_edit(self, ctx, edit, text)
 
     def _router_failure_con_plan_vivo(
         self,
@@ -674,66 +513,16 @@ class BecarioService:
         *,
         awaiting_index: Optional[int] = None,
     ) -> Reply:
-        """Fallo de infraestructura mientras se editaba/completaba un plan.
-
-        Lo importante acá no es el mensaje: es que el plan vuelve al estante
-        con el TTL renovado. Un fallo del servidor no puede costarle al
-        usuario un pedido que ya estaba armado — el docstring de
-        `_apply_edit` promete que solo un «cancelar» explícito lo descarta, y
-        esa promesa vale también cuando quien falla somos nosotros.
-        """
-        logger.error(
-            "Router no disponible (%s) editando el plan de user=%s: %s",
-            exc.reason.value, ctx.user_id, exc,
-        )
-        self._arm_pending_edit(
-            ctx.user_id, ctx.chat_id, edit.steps, awaiting_index=awaiting_index
-        )
-        return Reply(
-            text=_router_failure_text(exc)
-            + "\n\n📌 Tu plan sigue esperando: cuando vuelva a andar, repetime "
-            "el cambio y sigo desde donde estábamos.",
-            ok=False,
-            awaiting_params=True,
+        """Ver `plan_coordinator.router_failure_con_plan_vivo`."""
+        return plan_coordinator.router_failure_con_plan_vivo(
+            self, ctx, edit, exc, awaiting_index=awaiting_index
         )
 
     def _fill_awaiting_step(
         self, ctx: _Ctx, edit: _PendingEdit, text: str
     ) -> Reply:
-        """Completa el paso que quedó esperando un dato y re-despacha el plan.
-
-        El plan se re-arma ENTERO desde los pedidos originales: los pasos que
-        se habían omitido por depender del incompleto vuelven a correr, que es
-        el punto de haber guardado el plan completo y no solo el hueco."""
-        assert edit.awaiting_index is not None
-        try:
-            new_params = self._router.extract_params(text)
-        except RouterUnavailableError as exc:
-            return self._router_failure_con_plan_vivo(
-                ctx, edit, exc, awaiting_index=edit.awaiting_index
-            )
-        if not new_params:
-            self._arm_pending_edit(
-                ctx.user_id, ctx.chat_id, edit.steps, awaiting_index=edit.awaiting_index
-            )
-            return Reply(
-                text="⚠️ No pude sacar el dato de ahí. Repetímelo solo "
-                '(p. ej. «(001)»), o escribí «cancelar» para descartar '
-                "el pedido.",
-                ok=False,
-                awaiting_params=True,
-            )
-
-        new_steps = list(edit.steps)
-        intent, base_params = new_steps[edit.awaiting_index - 1]
-        new_steps[edit.awaiting_index - 1] = (intent, {**base_params, **new_params})
-        self._propagate_answer(new_steps, edit.awaiting_index, base_params, new_params)
-        logger.info(
-            "dato faltante completado (paso %s) por user=%s: %s",
-            edit.awaiting_index, ctx.user_id, new_params,
-        )
-        plan = Plan(steps=[PlanStep(action=i, parametros=p) for i, p in new_steps])
-        return self._dispatch_plan(ctx, plan)
+        """Ver `plan_coordinator.fill_awaiting_step`."""
+        return plan_coordinator.fill_awaiting_step(self, ctx, edit, text)
 
     def start_modification(self, token: str, requester_id: int, chat_id: int) -> Reply:
         """Botón ✏️ Modificar: descarta el plan pendiente y espera que el
