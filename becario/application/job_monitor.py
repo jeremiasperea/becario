@@ -401,6 +401,11 @@ class JobMonitorService:
         ]
         if missing:
             lines.append(f"(sin datos: {', '.join(missing)})")
+        if truncated:
+            lines.append(
+                f"(OSZICAR demasiado grande para leerlo desde acá, punto "
+                f"descartado: {', '.join(truncated)})"
+            )
         lines.append("")
         if recommended is not None:
             lines.append(

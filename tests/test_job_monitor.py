@@ -329,6 +329,38 @@ class TestJobMonitorService:
         assert "Convergencia de ENCUT" not in notes[1].text
         assert "demasiado grande" in notes[1].text and "encut_400" in notes[1].text
 
+    def test_truncated_point_is_named_even_when_the_curve_is_built(self):
+        # Con dos puntos buenos la curva se arma igual; el cortado no puede
+        # desaparecer callado, o el ENCUT recomendado parece salir de todos.
+        from becario.application.lectura_oszicar import OSZICAR_MAX_BYTES
+
+        factory = _scan_cluster({300: -16.90, 400: -16.95, 500: -16.96})
+        cluster = factory.cluster
+        path = "/data/runs/zr/encut_500/OSZICAR"
+        cluster.remote_files[path] = (
+            _oszicar(-10.0) + "x" * OSZICAR_MAX_BYTES + "\n" + _oszicar(-16.96)
+        )
+
+        def read_file(remote_path, max_bytes=None):
+            content = cluster.remote_files.get(remote_path)
+            if content is not None and max_bytes is not None:
+                content = content[:max_bytes]
+            return content
+
+        cluster.read_file = read_file
+        tracker = FakeTracker([_job(
+            status=JobStatus.RUNNING, workflow="encut_scan",
+            script_path="/data/runs/zr/run_vasp.sh",
+        )])
+        monitor = JobMonitorService(
+            registry=FakeRegistry(), cluster_factory=factory,
+            tracker=tracker, history=FakeHistory(),
+        )
+        notes = monitor.poll_and_notify()
+        assert "Convergencia de ENCUT" in notes[1].text
+        assert "-10.0" not in notes[1].text
+        assert "demasiado grande" in notes[1].text and "encut_500" in notes[1].text
+
     def test_failed_scan_does_not_harvest(self):
         factory = _scan_cluster({300: -16.90, 400: -16.95})
         factory.cluster.state = "FAILED"
