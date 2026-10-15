@@ -52,9 +52,12 @@ def _imports(path: Path, raiz: Path = PAQUETE) -> list[tuple[int, str]]:
 @pytest.mark.parametrize("capa", sorted(PROHIBIDAS))
 def test_la_capa_no_importa_capas_externas(capa):
     prohibidos = tuple(f"becario.{p}" for p in PROHIBIDAS[capa])
+    archivos = sorted((PAQUETE / capa).rglob("*.py"))
+    # Si la capa se renombra, el test no debe pasar en vacío.
+    assert archivos, f"no hay archivos en becario/{capa}"
     violaciones = [
         f"{path.relative_to(PAQUETE.parent)}:{linea} importa {destino}"
-        for path in sorted((PAQUETE / capa).rglob("*.py"))
+        for path in archivos
         for linea, destino in _imports(path)
         if destino in prohibidos or destino.startswith(tuple(p + "." for p in prohibidos))
     ]
